@@ -70,25 +70,31 @@ COLOR_PAPER = discord.Color.from_str("#F4F1EA")
 COLOR_PAPER_WHITE = discord.Color.from_str("#FEFEFE")
 COLOR_DANGER = discord.Color.from_str("#B91C1C")  # forfeit / hard errors only
 
-# Paper & pencil theme (light canvas)
-RGB_BG = "#FFFFFF"                # solid white canvas
-RGB_EMPTY = "#FFFFFF"             # clean white cells
-RGB_GIVEN_CELL = "#F8F6F2"        # subtle clue wash
-RGB_SELECT = "#E8ECF2"            # soft slate selection
-RGB_BOX_HL = "#F4F1EA"            # quiet box highlight (paper cream)
-RGB_CONFLICT = "#F8DCDC"          # only allowed accent: soft red
-RGB_LINE = "#000000"              # sharp black grid (thin)
-RGB_THICK = "#000000"             # sharp black 3×3 borders
-RGB_TEXT = "#2C2C2C"              # dark graphite (player ink)
-RGB_TEXT_GIVEN = "#000000"        # bold black clues
-RGB_TEXT_CONFLICT = "#A02828"     # ink on conflict cells
-RGB_PENCIL = "#96948E"            # soft graphite drafts
-RGB_HEADER = "#464440"
-RGB_OUTLINE = "#000000"
+# Discord dark slate theme — large standalone board (not embed-sized)
+RGB_BG = "#36393F"                # Discord dark slate canvas
+RGB_CARD = "#2F3136"              # rounded panel behind the grid
+RGB_CARD_BORDER = "#B9BBBE"       # soft light-gray outer rim
+RGB_EMPTY = "#40444B"             # cell fill
+RGB_GIVEN_CELL = "#36393F"        # slightly darker wash for clues
+RGB_SELECT = "#4F545C"            # selected cell
+RGB_BOX_HL = "#3C3F45"            # active 3×3 highlight
+RGB_CONFLICT = "#5C2B2B"          # soft red conflict wash
+RGB_LINE = "#4E5058"              # soft low-contrast cell dividers
+RGB_THICK = "#8E9297"             # clearer 3×3 block borders
+RGB_TEXT = "#FFFFFF"              # player ink — crisp on dark cells
+RGB_TEXT_GIVEN = "#1E1F22"        # locked clues — near-black (drawn on light chips)
+RGB_GIVEN_CHIP = "#DCDDDE"        # light chip behind given digits
+RGB_TEXT_CONFLICT = "#FA777C"     # conflict digits
+RGB_PENCIL = "#A3A6AA"            # draft marks
+RGB_HEADER = "#DCDDDE"            # caption text on slate
+RGB_OUTLINE = "#C7C8CA"           # selection / box focus ring
 
-# Fixed Discord attachment canvas — never change size between stages
-BOARD_CANVAS = 600
-BOARD_HEADER_H = 44
+# Fixed Discord attachment canvas — larger = fuller chat preview
+BOARD_CANVAS = 720
+BOARD_HEADER_H = 40
+BOARD_CARD_PAD = 28
+BOARD_CARD_RADIUS = 22
+BOARD_INNER_PAD = 14
 
 COLS = "ABCDEFGHI"
 
@@ -498,18 +504,21 @@ def parse_cell(raw: str) -> tuple[int, int] | None:
 
 
 def board_font(size: int = 22, *, bold: bool = False) -> ImageFont.ImageFont:
-    """Regular = light pen/pencil; bold = printed clues."""
+    """Clean sans-serif — Segoe UI / DejaVu / Arial."""
     if bold:
         candidates = (
+            Path("C:/Windows/Fonts/segoeuib.ttf"),
             Path("C:/Windows/Fonts/arialbd.ttf"),
             Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+            Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
             Path("C:/Windows/Fonts/arial.ttf"),
         )
     else:
         candidates = (
+            Path("C:/Windows/Fonts/segoeui.ttf"),
             Path("C:/Windows/Fonts/arial.ttf"),
             Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-            Path("C:/Windows/Fonts/segoeui.ttf"),
+            Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
         )
     for path in candidates:
         if path.exists():
@@ -527,35 +536,49 @@ def render_board(
     highlight_box: int | None = None,
     difficulty: str | None = None,
 ) -> BytesIO:
-    """Paper theme: only RED marks rule conflicts. No solution-matching colors."""
-    _ = solution  # intentionally unused — no green/yellow solution hints
+    """Dark slate board with rounded card — sized for standalone Discord attachments."""
+    _ = solution
     conflicts = conflicts or set()
     canvas = BOARD_CANVAS
     header_h = BOARD_HEADER_H
-    area = canvas - header_h
-    cell = area // 9
-    grid = cell * 9
-    origin_x = (canvas - grid) // 2
-    origin_y = header_h + (area - grid) // 2
+    pad = BOARD_CARD_PAD
+    radius = BOARD_CARD_RADIUS
+    inner = BOARD_INNER_PAD
 
-    img = Image.new("RGB", (canvas, canvas), RGB_BG)  # light theme: #FFFFFF
+    img = Image.new("RGB", (canvas, canvas), RGB_BG)
     draw = ImageDraw.Draw(img)
-    font_player = board_font(max(22, cell * 26 // 48), bold=False)
-    font_given = board_font(max(22, cell * 26 // 48), bold=True)
-    header_font = board_font(18, bold=False)
-    # Smaller, lighter face for draft marks
-    pencil_font = board_font(max(9, cell * 11 // 48), bold=False)
 
+    # Difficulty label on the dark canvas (above the card)
     tier_name = difficulty_label(difficulty)
+    header_font = board_font(17, bold=False)
     hb = draw.textbbox((0, 0), tier_name, font=header_font)
     htw, hth = hb[2] - hb[0], hb[3] - hb[1]
     draw.text(
-        ((canvas - htw) / 2, (header_h - hth) / 2 - 1),
+        ((canvas - htw) / 2, (header_h - hth) / 2),
         tier_name,
         fill=RGB_HEADER,
         font=header_font,
     )
-    draw.line((0, header_h - 1, canvas, header_h - 1), fill=RGB_LINE, width=1)
+
+    # Rounded outer container
+    card = (pad, header_h, canvas - pad, canvas - pad)
+    draw.rounded_rectangle(card, radius=radius, fill=RGB_CARD, outline=RGB_CARD_BORDER, width=2)
+
+    # Grid geometry inside the card
+    grid_left = pad + inner
+    grid_top = header_h + inner
+    grid_right = canvas - pad - inner
+    grid_bottom = canvas - pad - inner
+    grid_w = grid_right - grid_left
+    grid_h = grid_bottom - grid_top
+    cell = min(grid_w, grid_h) // 9
+    grid = cell * 9
+    origin_x = grid_left + (grid_w - grid) // 2
+    origin_y = grid_top + (grid_h - grid) // 2
+
+    font_player = board_font(max(24, cell * 28 // 48), bold=False)
+    font_given = board_font(max(24, cell * 28 // 48), bold=True)
+    pencil_font = board_font(max(10, cell * 12 // 48), bold=False)
 
     box_cells: set[tuple[int, int]] = set()
     if highlight_box is not None:
@@ -572,15 +595,14 @@ def render_board(
             val = cell_value(board, r, c)
             marks = list(board[r][c].get("pencil_marks") or [])
 
-            # Background: paper white; red ONLY on conflicts; quiet selection/box tints
             if (r, c) in conflicts:
                 fill = RGB_CONFLICT
             elif selected == (r, c):
                 fill = RGB_SELECT
-            elif given[r][c]:
-                fill = RGB_GIVEN_CELL
             elif (r, c) in box_cells:
                 fill = RGB_BOX_HL
+            elif given[r][c]:
+                fill = RGB_GIVEN_CELL
             else:
                 fill = RGB_EMPTY
 
@@ -592,6 +614,13 @@ def render_board(
                     color = RGB_TEXT_CONFLICT
                     font = font_player
                 elif given[r][c]:
+                    # Light chip so near-black clues stay readable on dark cells
+                    chip = max(4, cell // 10)
+                    draw.rounded_rectangle(
+                        (x0 + chip, y0 + chip, x1 - chip, y1 - chip),
+                        radius=max(4, cell // 8),
+                        fill=RGB_GIVEN_CHIP,
+                    )
                     color = RGB_TEXT_GIVEN
                     font = font_given
                 else:
@@ -606,11 +635,10 @@ def render_board(
                     font=font,
                 )
             elif marks:
-                # Neat mini-3×3 graphite drafts (handwriting-style notes)
                 inset = max(2, cell // 16)
-                inner = cell - 2 * inset
-                slot_w = inner / 3
-                slot_h = inner / 3
+                inner_m = cell - 2 * inset
+                slot_w = inner_m / 3
+                slot_h = inner_m / 3
                 for n in range(1, 10):
                     if n not in marks:
                         continue
@@ -627,29 +655,40 @@ def render_board(
                         font=pencil_font,
                     )
 
+    # Soft cell lines, stronger 3×3 borders (no harsh black)
     for i in range(10):
-        width_line = 3 if i % 3 == 0 else 1
-        color = RGB_THICK if i % 3 == 0 else RGB_LINE
+        is_block = i % 3 == 0
+        width_line = 3 if is_block else 1
+        color = RGB_THICK if is_block else RGB_LINE
         pos_y = origin_y + i * cell
         pos_x = origin_x + i * cell
         draw.line((origin_x, pos_y, origin_x + grid, pos_y), fill=color, width=width_line)
         draw.line((pos_x, origin_y, pos_x, origin_y + grid), fill=color, width=width_line)
 
+    # Re-draw outer card rim so grid lines don't cover the rounded border
+    draw.rounded_rectangle(card, radius=radius, outline=RGB_CARD_BORDER, width=2)
+
     if highlight_box is not None and selected is None:
         br, bc = highlight_box // 3, highlight_box % 3
         x0 = origin_x + bc * 3 * cell
         y0 = origin_y + br * 3 * cell
-        draw.rectangle(
-            (x0, y0, x0 + 3 * cell, y0 + 3 * cell),
+        draw.rounded_rectangle(
+            (x0 + 1, y0 + 1, x0 + 3 * cell - 1, y0 + 3 * cell - 1),
+            radius=6,
             outline=RGB_OUTLINE,
-            width=3,
+            width=2,
         )
 
     if selected is not None:
         r, c = selected
         x0 = origin_x + c * cell
         y0 = origin_y + r * cell
-        draw.rectangle((x0, y0, x0 + cell, y0 + cell), outline=RGB_OUTLINE, width=2)
+        draw.rounded_rectangle(
+            (x0 + 2, y0 + 2, x0 + cell - 2, y0 + cell - 2),
+            radius=5,
+            outline=RGB_OUTLINE,
+            width=2,
+        )
 
     out = BytesIO()
     img.save(out, format="PNG", compress_level=1)
@@ -657,12 +696,16 @@ def render_board(
     return out
 
 
-def attach_board(embed: discord.Embed, image: BytesIO) -> discord.File:
-    """Attach PNG from an in-memory buffer (never writes board.png to disk)."""
+def board_to_file(image: BytesIO) -> discord.File:
+    """Standalone PNG attachment (full Discord image size — not embed thumbnail)."""
     image.seek(0)
-    embed.set_image(url="attachment://sudoku.png")
-    # discord.File will read from the buffer; wrap a fresh BytesIO so seek is safe
     return discord.File(fp=BytesIO(image.read()), filename="sudoku.png")
+
+
+def attach_board(embed: discord.Embed | None, image: BytesIO) -> discord.File:
+    """Legacy helper: return file only (board is never nested in embeds)."""
+    _ = embed
+    return board_to_file(image)
 
 
 # ---------------------------------------------------------------------------
@@ -673,11 +716,11 @@ STAGE_BOX = "box"
 STAGE_CELL = "cell"
 STAGE_NUMBER = "number"
 
-# Stage 1 — directional arrows (index 0–8 = boxes 1–9), not Sudoku digits
+# Stage 1 — single-glyph arrows (fixed width, match digit/dot pads)
 BOX_ARROW_LABELS = (
-    "↖️", "⬆️", "↗️",
-    "⬅️", "🔄", "➡️",
-    "↙️", "⬇️", "↘️",
+    "↖", "↑", "↗",
+    "←", "·", "→",
+    "↙", "↓", "↘",
 )
 
 
@@ -755,28 +798,34 @@ def selected_cell(game: dict) -> tuple[int, int]:
     return game["sel_r"], game["sel_c"]
 
 
-def build_embed(game: dict, *, status: str | None = None) -> discord.Embed:
-    """Title only + board image — Paper theme."""
-    _ = status
-    mode = game["mode"]
+def board_caption(game: dict, *, status: str | None = None) -> str:
+    """Compact text above the standalone board image."""
+    mode = game.get("mode", "solo")
     if mode == "daily":
-        title = f"Daily · {game.get('daily_date', utc_today())}"
+        title = f"**Daily** · {game.get('daily_date', utc_today())}"
     elif mode == "challenge":
-        title = "Challenge"
+        title = "**Challenge**"
     else:
-        title = "Sudoku"
-    embed = paper_embed(f"✏️ {title}")
+        title = "**Sudoku**"
+    bits = [title]
     if game.get("difficulty"):
-        embed.add_field(name="Mode", value=mode.capitalize(), inline=True)
-        embed.add_field(name="Difficulty", value=difficulty_label(game.get("difficulty")), inline=True)
-        filled = filled_count(game["board"])
-        embed.add_field(name="Progress", value=f"{filled}/81", inline=True)
-    return embed
+        bits.append(difficulty_label(game.get("difficulty")))
+    filled = filled_count(game["board"]) if game.get("board") else 0
+    bits.append(f"{filled}/81")
+    line = " · ".join(bits)
+    if status:
+        return f"{line}\n{status}"
+    return line
 
 
-def board_file_for(game: dict, *, status: str | None = None) -> tuple[discord.Embed, discord.File]:
+def build_embed(game: dict, *, status: str | None = None) -> discord.Embed:
+    """Text-only fallback — live boards use standalone attachments instead."""
+    return paper_embed("Sudoku", description=board_caption(game, status=status))
+
+
+def board_file_for(game: dict, *, status: str | None = None) -> tuple[str, discord.File]:
+    """Caption + large PNG attachment (no embed)."""
     conflicts = find_conflicts(game["board"])
-    embed = build_embed(game, status=status)
     stage = game.get("ui_stage", STAGE_BOX)
     highlight_box = game.get("box_id") if stage in (STAGE_CELL, STAGE_NUMBER) else None
     selected = selected_cell(game) if stage == STAGE_NUMBER else None
@@ -789,7 +838,7 @@ def board_file_for(game: dict, *, status: str | None = None) -> tuple[discord.Em
         highlight_box=highlight_box,
         difficulty=game.get("difficulty"),
     )
-    return embed, attach_board(embed, image)
+    return board_caption(game, status=status), board_to_file(image)
 
 
 # ---------------------------------------------------------------------------
@@ -1090,8 +1139,8 @@ async def post_game_panel(
     game: dict,
 ) -> discord.Message:
     view = SudokuView(key, bot)
-    embed, file = board_file_for(game)
-    msg = await destination.send(embed=embed, view=view, file=file)
+    content, file = board_file_for(game)
+    msg = await destination.send(content=content, view=view, file=file)
     view.message = msg
     game["message_id"] = msg.id
     return msg
@@ -1290,12 +1339,14 @@ async def handle_challenge_completion(
         if remaining
         else "Settling match…"
     )
-    done = paper_embed(
-        "Board complete",
-        description=f"Time: **{format_time(elapsed)}**. {wait_msg}",
+    caption = f"**Board complete** · Time: **{format_time(elapsed)}**. {wait_msg}"
+    file = board_to_file(image)
+    await interaction.response.edit_message(
+        content=caption,
+        embed=None,
+        view=None,
+        attachments=[file],
     )
-    file = attach_board(done, image)
-    await interaction.response.edit_message(embed=done, view=None, attachments=[file])
     view.stop()
     await remove_game(view.game_key)
 
@@ -1755,10 +1806,10 @@ class BoardRefreshView(discord.ui.View):
             await interaction.response.send_message("Not your board.", ephemeral=True)
             return
         view = SudokuView(self.game_key, self.bot)
-        embed, file = board_file_for(game)
+        content, file = board_file_for(game)
         await interaction.response.edit_message(
-            content=None,
-            embed=embed,
+            content=content,
+            embed=None,
             attachments=[file],
             view=view,
         )
@@ -1858,48 +1909,99 @@ class SudokuView(discord.ui.View):
 
     def _sync_pencil_button(self, game: dict) -> None:
         pencil_on = game.get("pencil_mode", False)
-        target = self._cid("num:pencil")
+        target = self._cid("nav:pencil")
         for child in self.children:
             if getattr(child, "custom_id", None) == target:
-                child.label = "Pencil Mode: ON" if pencil_on else "Pencil Mode"  # type: ignore[attr-defined]
-                # Flat styling only — no green/yellow board mirroring
+                child.label = "Pencil✓" if pencil_on else "Pencil"  # type: ignore[attr-defined]
                 child.style = discord.ButtonStyle.success if pencil_on else discord.ButtonStyle.secondary  # type: ignore[attr-defined]
                 break
 
-    def _add_hint_button(self, row: int, prefix: str) -> None:
+    def _add_spacer(self, row: int, suffix: str) -> None:
+        """Disabled pad filler so every stage keeps the same 3+3 button geometry."""
+        btn = discord.ui.Button(
+            label="·",
+            style=discord.ButtonStyle.secondary,
+            row=row,
+            disabled=True,
+            custom_id=self._cid(suffix),
+        )
+        self.add_item(btn)
+
+    def _add_fixed_nav(self, game: dict, stage: str) -> None:
+        """
+        Rows 3–4 are identical across stages (positions never jump):
+          row 3: Back | Pencil | ·
+          row 4: Hint | I QUITTT | ·
+        """
+        back = discord.ui.Button(
+            label="Back",
+            style=discord.ButtonStyle.secondary,
+            row=3,
+            disabled=(stage == STAGE_BOX),
+            custom_id=self._cid("nav:back"),
+        )
+        back.callback = self.on_nav_back
+        self.add_item(back)
+
+        pencil_on = game.get("pencil_mode", False)
+        pencil = discord.ui.Button(
+            label="Pencil✓" if pencil_on else "Pencil",
+            style=discord.ButtonStyle.success if pencil_on else discord.ButtonStyle.secondary,
+            row=3,
+            disabled=(stage != STAGE_NUMBER),
+            custom_id=self._cid("nav:pencil"),
+        )
+        pencil.callback = self.on_toggle_pencil
+        self.add_item(pencil)
+        self._add_spacer(3, "nav:mid")
+
         hint = discord.ui.Button(
             label="Hint",
             style=discord.ButtonStyle.secondary,
-            row=row,
-            custom_id=self._cid(f"{prefix}:hint"),
+            row=4,
+            custom_id=self._cid("nav:hint"),
         )
         hint.callback = self.on_hint
         self.add_item(hint)
 
-    def _add_quit_button(self, row: int, prefix: str) -> None:
         quit_btn = discord.ui.Button(
             label="I QUITTT",
             style=discord.ButtonStyle.danger,
-            row=row,
-            custom_id=self._cid(f"{prefix}:forfeit"),
+            row=4,
+            custom_id=self._cid("nav:quit"),
         )
         quit_btn.callback = self.on_forfeit
         self.add_item(quit_btn)
+        self._add_spacer(4, "nav:end")
+
+    async def on_nav_back(self, interaction: discord.Interaction) -> None:
+        game = games.get(self.game_key)
+        if not game:
+            return
+        stage = game.get("ui_stage", STAGE_BOX)
+        if stage == STAGE_CELL:
+            await self.on_back_to_grid(interaction)
+        elif stage == STAGE_NUMBER:
+            await self.on_back_to_cells(interaction)
+        else:
+            await interaction.response.defer()
+
+    def _pad_label(self, text: str) -> str:
+        """Keep pad labels one visible glyph so Discord button widths stay stable."""
+        t = (text or "·").strip()[:1] or "·"
+        return t
 
     def _build_stage_box(self, game: dict) -> None:
-        # 3×3 directional pad → box indices 0–8 (top-left … bottom-right)
         for i, label in enumerate(BOX_ARROW_LABELS):
             btn = discord.ui.Button(
-                label=label,
+                label=self._pad_label(label),
                 style=discord.ButtonStyle.secondary,
                 row=i // 3,
-                custom_id=self._cid(f"box:{i}"),
+                custom_id=self._cid(f"pad:{i}"),
             )
             btn.callback = self._box_cb(i)
             self.add_item(btn)
-
-        self._add_hint_button(3, "box")
-        self._add_quit_button(3, "box")
+        self._add_fixed_nav(game, STAGE_BOX)
 
     def _build_stage_cell(self, game: dict) -> None:
         conflicts = find_conflicts(game["board"])
@@ -1908,78 +2010,47 @@ class SudokuView(discord.ui.View):
             r, c = cell_in_box(box_id, i)
             val = cell_value(game["board"], r, c)
             given = game["given"][r][c]
-            notes = list(game["board"][r][c].get("pencil_marks") or [])
 
             if given:
                 style = discord.ButtonStyle.secondary
-                label = str(val)
+                label = self._pad_label(str(val))
                 disabled = True
             elif (r, c) in conflicts:
                 style = discord.ButtonStyle.danger
-                label = str(val) if val else "."
+                label = self._pad_label(str(val) if val else "·")
                 disabled = False
             elif val:
                 style = discord.ButtonStyle.secondary
-                label = str(val)
+                label = self._pad_label(str(val))
                 disabled = False
             else:
+                # Always a single dot — pencil marks live on the board image only
                 style = discord.ButtonStyle.secondary
-                label = "." if not notes else "·" + "".join(str(n) for n in notes[:4])
+                label = "·"
                 disabled = False
 
             btn = discord.ui.Button(
-                label=label[:80],
+                label=label,
                 style=style,
                 row=i // 3,
                 disabled=disabled,
-                custom_id=self._cid(f"cell:{box_id}:{i}"),
+                custom_id=self._cid(f"pad:{i}"),
             )
             btn.callback = self._cell_cb(i)
             self.add_item(btn)
-
-        back = discord.ui.Button(
-            label="Back to Grid",
-            style=discord.ButtonStyle.secondary,
-            row=3,
-            custom_id=self._cid("cell:back"),
-        )
-        back.callback = self.on_back_to_grid
-        self.add_item(back)
-        self._add_hint_button(3, "cell")
-        self._add_quit_button(3, "cell")
+        self._add_fixed_nav(game, STAGE_CELL)
 
     def _build_stage_number(self, game: dict) -> None:
         for d in range(1, 10):
             btn = discord.ui.Button(
-                label=str(d),
+                label=self._pad_label(str(d)),
                 style=discord.ButtonStyle.secondary,
                 row=(d - 1) // 3,
-                custom_id=self._cid(f"num:{d}"),
+                custom_id=self._cid(f"pad:{d - 1}"),
             )
             btn.callback = self._digit_cb(d)
             self.add_item(btn)
-
-        back = discord.ui.Button(
-            label="Back to Cells",
-            style=discord.ButtonStyle.secondary,
-            row=3,
-            custom_id=self._cid("num:back"),
-        )
-        back.callback = self.on_back_to_cells
-        self.add_item(back)
-
-        pencil_on = game.get("pencil_mode", False)
-        pencil = discord.ui.Button(
-            label="Pencil Mode: ON" if pencil_on else "Pencil Mode",
-            style=discord.ButtonStyle.success if pencil_on else discord.ButtonStyle.secondary,
-            row=3,
-            custom_id=self._cid("num:pencil"),
-        )
-        pencil.callback = self.on_toggle_pencil
-        self.add_item(pencil)
-
-        self._add_hint_button(4, "num")
-        self._add_quit_button(4, "num")
+        self._add_fixed_nav(game, STAGE_NUMBER)
 
     def _box_cb(self, box_id: int):
         async def _cb(interaction: discord.Interaction):
@@ -2035,19 +2106,22 @@ class SudokuView(discord.ui.View):
         if ended or not game:
             final = embed or paper_embed("Game over")
             self.stop()
-            await interaction.response.edit_message(embed=final, view=None, attachments=[])
+            await interaction.response.edit_message(
+                content=None,
+                embed=final,
+                view=None,
+                attachments=[],
+            )
             return
 
         stage = game.get("ui_stage", STAGE_BOX)
-        # Keep Stage 3 keypad mounted with stable custom_ids — only swap image/embed
-        if stage == STAGE_NUMBER and self._built_stage == STAGE_NUMBER and self.children:
-            self._sync_pencil_button(game)
-        else:
-            self.rebuild(game)
+        # Always rebuild — fixed pad/nav geometry must remount when stage changes
+        self.rebuild(game)
 
-        built, file = board_file_for(game, status=status)
+        content, file = board_file_for(game, status=status)
         await interaction.response.edit_message(
-            embed=built,
+            content=content,
+            embed=None,
             attachments=[file],
             view=self,
         )
@@ -2102,13 +2176,12 @@ class SudokuView(discord.ui.View):
         label = cell_label(r, c)
 
         if game["given"][r][c]:
-            game["ui_stage"] = STAGE_NUMBER
+            game["ui_stage"] = STAGE_CELL
             await self.refresh(interaction, status=f"**{label}** is a locked clue.")
             return
 
         # Pencil mode: toggle draft, keep keypad open (Stage 3)
         if game.get("pencil_mode"):
-            # Clear any real value when drafting (keep cell as empty + marks)
             set_cell_value(game["board"], r, c, 0)
             notes = toggle_pencil(game["board"], r, c, digit)
             game["ui_stage"] = STAGE_NUMBER
@@ -2119,12 +2192,12 @@ class SudokuView(discord.ui.View):
             )
             return
 
-        # Pen mode: tap same digit again to erase; otherwise place / overwrite
+        # Pen mode: place/erase then return to cell picker (Stage 2)
         current = cell_value(game["board"], r, c)
         if current == digit:
             set_cell_value(game["board"], r, c, 0)
             game["board"][r][c]["pencil_marks"] = []
-            game["ui_stage"] = STAGE_NUMBER
+            game["ui_stage"] = STAGE_CELL
             await sync_challenge_board(game)
             await self.refresh(interaction, status=None)
             return
@@ -2152,14 +2225,19 @@ class SudokuView(discord.ui.View):
                 conflicts=set(),
                 difficulty=game.get("difficulty"),
             )
-            file = attach_board(embed, image)
+            file = board_to_file(image)
             await remove_game(key)
             self.stop()
-            await interaction.response.edit_message(embed=embed, view=None, attachments=[file])
+            await interaction.response.edit_message(
+                content="**Puzzle solved!**",
+                embed=None,
+                view=None,
+                attachments=[file],
+            )
+            await interaction.followup.send(embed=embed)
             return
 
-        game["ui_stage"] = STAGE_NUMBER
-        # Conflict feedback is visual-only (red cells on the board image)
+        game["ui_stage"] = STAGE_CELL
         await self.refresh(interaction, status=None)
 
     async def on_hint(self, interaction: discord.Interaction) -> None:
@@ -2214,10 +2292,16 @@ class SudokuView(discord.ui.View):
                 conflicts=set(),
                 difficulty=game.get("difficulty"),
             )
-            file = attach_board(embed, image)
+            file = board_to_file(image)
             await remove_game(self.game_key)
             self.stop()
-            await interaction.response.edit_message(embed=embed, view=None, attachments=[file])
+            await interaction.response.edit_message(
+                content="**Puzzle solved!**",
+                embed=None,
+                view=None,
+                attachments=[file],
+            )
+            await interaction.followup.send(embed=embed)
             return
 
         await self.refresh(
@@ -2397,8 +2481,8 @@ async def _wait_ready():
 
 async def start_panel(interaction: discord.Interaction, key: tuple[int, int], game: dict) -> None:
     view = SudokuView(key, bot)
-    embed, file = board_file_for(game)
-    await interaction.response.send_message(embed=embed, view=view, file=file)
+    content, file = board_file_for(game)
+    await interaction.response.send_message(content=content, view=view, file=file)
     view.message = await interaction.original_response()
     game["message_id"] = view.message.id
     await persist_game(key, game)
@@ -2429,10 +2513,10 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
         try:
             msg = await channel.fetch_message(game["message_id"])
             view = SudokuView(key, bot)
-            embed, file = board_file_for(game)
+            content, file = board_file_for(game)
             await msg.edit(
-                content="♻️ Session restored after restart — controls refreshed.",
-                embed=embed,
+                content=f"♻️ Session restored after restart — controls refreshed.\n{content}",
+                embed=None,
                 attachments=[file],
                 view=view,
             )
@@ -2848,12 +2932,9 @@ async def hint_cmd(interaction: discord.Interaction):
                         conflicts=set(),
                         difficulty=game.get("difficulty"),
                     )
-                    done = paper_embed(
-                        "Board complete",
-                        description=f"Time: **{format_time(elapsed)}** (hint finish).",
-                    )
-                    file = attach_board(done, image)
-                    await msg.edit(embed=done, view=None, attachments=[file])
+                    caption = f"**Board complete** · Time: **{format_time(elapsed)}** (hint finish)."
+                    file = board_to_file(image)
+                    await msg.edit(content=caption, embed=None, view=None, attachments=[file])
                 except discord.HTTPException:
                     pass
             if match and challenge_ready_to_settle(match):
@@ -2873,23 +2954,29 @@ async def hint_cmd(interaction: discord.Interaction):
             conflicts=set(),
             difficulty=game.get("difficulty"),
         )
-        file = attach_board(embed, image)
+        file = board_to_file(image)
         await remove_game(key)
         channel = bot.get_channel(game.get("channel_id"))
         if game.get("message_id") and channel is not None:
             try:
                 msg = await channel.fetch_message(game["message_id"])
-                await msg.edit(embed=embed, view=None, attachments=[file])
+                await msg.edit(
+                    content="**Puzzle solved!**",
+                    embed=None,
+                    view=None,
+                    attachments=[file],
+                )
             except discord.HTTPException:
                 pass
+        await interaction.followup.send(embed=embed)
         return
 
     channel = bot.get_channel(game.get("channel_id"))
     if game.get("message_id") and channel is not None:
         try:
             msg = await channel.fetch_message(game["message_id"])
-            embed, file = board_file_for(game)
-            await msg.edit(embed=embed, attachments=[file])
+            content, file = board_file_for(game)
+            await msg.edit(content=content, embed=None, attachments=[file])
         except discord.HTTPException:
             pass
 
