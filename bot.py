@@ -84,7 +84,7 @@ RGB_THICK = "#202020"             # sharp charcoal 3×3 borders
 RGB_TEXT = "#1D4ED8"              # player ink — deep blue
 RGB_TEXT_GIVEN = "#111111"        # locked clues — sharp black
 RGB_TEXT_CONFLICT = "#B91C1C"
-RGB_PENCIL = "#6B7280"            # draft marks
+RGB_PENCIL = "#2A2A2A"            # graphite pencil marks — high contrast on paper
 RGB_HEADER = "#44403C"
 RGB_OUTLINE = "#007BFF"           # vibrant blue selection ring
 
@@ -368,12 +368,12 @@ def make_puzzle(difficulty: float | str = DEFAULT_DIFFICULTY, seed: int | None =
     else:
         weight = float(difficulty)
     if seed is not None:
-        random.seed(seed)
-    puzzle = Sudoku(3).difficulty(weight)
+        puzzle = Sudoku(3, seed=seed).difficulty(weight)
+    else:
+        puzzle = Sudoku(3).difficulty(weight)
     solved = puzzle.solve()
     if solved is None:
-        if seed is not None:
-            random.seed()
+        # Rare unsolvable draw — retry without a fixed seed
         return make_puzzle(difficulty, seed=None)
 
     board = [
@@ -382,8 +382,6 @@ def make_puzzle(difficulty: float | str = DEFAULT_DIFFICULTY, seed: int | None =
     ]
     given = [[cell["value"] != 0 for cell in row] for row in board]
     solution = [[int(cell) for cell in row] for row in solved.board]
-    if seed is not None:
-        random.seed()
     return board, given, solution
 
 
@@ -393,38 +391,45 @@ def daily_difficulty_for_date(day: str) -> str:
     return DAILY_WEEKDAY_DIFFICULTY[d.weekday()]
 
 
-def make_daily_puzzle(guild_id: int, day: str) -> tuple[list[list[dict]], list[list[bool]], list[list[int]], str]:
-    """Same calendar date → same seed/grid for all players; difficulty from weekday schedule."""
-    _ = guild_id  # reserved for future per-guild variants; seed is date-only for shared grids
+def make_daily_puzzle(
+    guild_id: int,
+    day: str,
+    user_id: int,
+) -> tuple[list[list[dict]], list[list[bool]], list[list[int]], str]:
+    """Same day + difficulty for everyone; unique grid per player (anti-copy)."""
     diff_key = daily_difficulty_for_date(day)
-    seed = int(hashlib.sha256(f"sudoku9x9:daily:{day}".encode()).hexdigest()[:16], 16)
+    seed = int(
+        hashlib.sha256(
+            f"sudoku9x9:daily:{guild_id}:{day}:{user_id}".encode()
+        ).hexdigest()[:16],
+        16,
+    )
     board, given, solution = make_puzzle(difficulty=diff_key, seed=seed)
     return board, given, solution, diff_key
 
 
 def get_guild_daily(data: dict, guild_id: int) -> dict:
+    """Daily meta for a guild: date, difficulty schedule, and per-user results (no shared board)."""
     gstats = guild_stats(data, guild_id)
     meta = gstats.setdefault("_daily", {})
     day = utc_today()
     expected_diff = daily_difficulty_for_date(day)
     needs_regen = (
         meta.get("date") != day
-        or "board" not in meta
         or meta.get("difficulty") != difficulty_label(expected_diff)
     )
     if needs_regen:
-        board, given, solution, diff_key = make_daily_puzzle(guild_id, day)
         meta["date"] = day
-        meta["board"] = board
-        meta["given"] = given
-        meta["solution"] = solution
-        meta["difficulty"] = difficulty_label(diff_key)
-        meta["difficulty_key"] = diff_key
+        meta["difficulty"] = difficulty_label(expected_diff)
+        meta["difficulty_key"] = expected_diff
         meta["results"] = {}
+        # Drop legacy shared-board fields if present
+        meta.pop("board", None)
+        meta.pop("given", None)
+        meta.pop("solution", None)
         save_data(data)
     else:
-        meta["board"] = normalize_board(meta["board"])
-        meta.setdefault("difficulty_key", daily_difficulty_for_date(day))
+        meta.setdefault("difficulty_key", expected_diff)
         meta.setdefault("difficulty", difficulty_label(meta["difficulty_key"]))
     return meta
 
@@ -598,7 +603,7 @@ def render_board(
 
     font_player = board_font(max(24, cell * 28 // 48), bold=False)
     font_given = board_font(max(24, cell * 28 // 48), bold=True)
-    pencil_font = board_font(max(10, cell * 12 // 48), bold=False)
+    pencil_font = board_font(max(14, cell * 16 // 48), bold=True)
 
     box_cells: set[tuple[int, int]] = set()
     if highlight_box is not None:
@@ -612,8 +617,6 @@ def render_board(
             x0 = origin_x + c * cell
             y0 = origin_y + r * cell
             x1, y1 = x0 + cell, y0 + cell
-            val = cell_value(board, r, c)
-            marks = list(board[r][c].get("pencil_marks") or [])
 
             if (r, c) in conflicts:
                 fill = RGB_CONFLICT
@@ -627,6 +630,43 @@ def render_board(
                 fill = RGB_EMPTY
 
             draw.rectangle((x0, y0, x1, y1), fill=fill)
+
+    # Cell lines first, then bold 3×3 charcoal borders
+    for i in range(10):
+        is_block = i % 3 == 0
+        width_line = 3 if is_block else 1
+        color = RGB_THICK if is_block else RGB_LINE
+        pos_y = origin_y + i * cell
+        pos_x = origin_x + i * cell
+        draw.line((origin_x, pos_y, origin_x + grid, pos_y), fill=color, width=width_line)
+        draw.line((pos_x, origin_y, pos_x, origin_y + grid), fill=color, width=width_line)
+
+    draw.rounded_rectangle(card, radius=radius, outline=RGB_CARD_BORDER, width=2)
+
+    # Selection rings (fills already tint cells — no wash overlay over ink)
+    if highlight_box is not None and selected is None:
+        br, bc = highlight_box // 3, highlight_box % 3
+        bx0 = origin_x + bc * 3 * cell
+        by0 = origin_y + br * 3 * cell
+        bx1 = bx0 + 3 * cell
+        by1 = by0 + 3 * cell
+        draw.rectangle((bx0 + 1, by0 + 1, bx1 - 1, by1 - 1), outline=RGB_OUTLINE, width=4)
+
+    if selected is not None:
+        r, c = selected
+        x0 = origin_x + c * cell
+        y0 = origin_y + r * cell
+        x1 = x0 + cell
+        y1 = y0 + cell
+        draw.rectangle((x0 + 1, y0 + 1, x1 - 1, y1 - 1), outline=RGB_OUTLINE, width=4)
+
+    # Digits + pencil marks last so selection tint never washes them out
+    for r in range(9):
+        for c in range(9):
+            x0 = origin_x + c * cell
+            y0 = origin_y + r * cell
+            val = cell_value(board, r, c)
+            marks = list(board[r][c].get("pencil_marks") or [])
 
             if val:
                 text = str(val)
@@ -648,7 +688,7 @@ def render_board(
                     font=font,
                 )
             elif marks:
-                inset = max(2, cell // 16)
+                inset = max(3, cell // 14)
                 inner_m = cell - 2 * inset
                 slot_w = inner_m / 3
                 slot_h = inner_m / 3
@@ -667,46 +707,6 @@ def render_board(
                         fill=RGB_PENCIL,
                         font=pencil_font,
                     )
-
-    # Cell lines first, then bold 3×3 charcoal borders
-    for i in range(10):
-        is_block = i % 3 == 0
-        width_line = 3 if is_block else 1
-        color = RGB_THICK if is_block else RGB_LINE
-        pos_y = origin_y + i * cell
-        pos_x = origin_x + i * cell
-        draw.line((origin_x, pos_y, origin_x + grid, pos_y), fill=color, width=width_line)
-        draw.line((pos_x, origin_y, pos_x, origin_y + grid), fill=color, width=width_line)
-
-    draw.rounded_rectangle(card, radius=radius, outline=RGB_CARD_BORDER, width=2)
-
-    # High-contrast selection — drawn last so it stays visible over grid lines
-    if highlight_box is not None:
-        br, bc = highlight_box // 3, highlight_box % 3
-        bx0 = origin_x + bc * 3 * cell
-        by0 = origin_y + br * 3 * cell
-        bx1 = bx0 + 3 * cell
-        by1 = by0 + 3 * cell
-        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        od = ImageDraw.Draw(overlay)
-        od.rectangle((bx0, by0, bx1, by1), fill=(173, 216, 230, 90))
-        img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
-        draw = ImageDraw.Draw(img)
-        if selected is None:
-            draw.rectangle((bx0 + 1, by0 + 1, bx1 - 1, by1 - 1), outline=RGB_OUTLINE, width=4)
-
-    if selected is not None:
-        r, c = selected
-        x0 = origin_x + c * cell
-        y0 = origin_y + r * cell
-        x1 = x0 + cell
-        y1 = y0 + cell
-        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        od = ImageDraw.Draw(overlay)
-        od.rectangle((x0, y0, x1, y1), fill=(173, 216, 230, 120))
-        img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
-        draw = ImageDraw.Draw(img)
-        draw.rectangle((x0 + 1, y0 + 1, x1 - 1, y1 - 1), outline=RGB_OUTLINE, width=4)
 
     out = BytesIO()
     img.save(out, format="PNG", compress_level=1)
@@ -817,32 +817,27 @@ def selected_cell(game: dict) -> tuple[int, int]:
 
 
 def board_caption(game: dict, *, status: str | None = None) -> str:
-    """Compact text above the standalone board image."""
-    mode = game.get("mode", "solo")
-    if mode == "daily":
-        title = f"**Daily** · {game.get('daily_date', utc_today())}"
-    elif mode == "challenge":
-        title = "**Challenge**"
-    else:
-        title = "**Sudoku**"
-    bits = [title]
-    if game.get("difficulty"):
-        bits.append(difficulty_label(game.get("difficulty")))
-    filled = filled_count(game["board"]) if game.get("board") else 0
-    bits.append(f"{filled}/81")
-    line = " · ".join(bits)
-    if status:
-        return f"{line}\n{status}"
-    return line
+    """Legacy text caption — live boards stay silent (image + buttons only)."""
+    _ = game, status
+    return " "
 
 
 def build_embed(game: dict, *, status: str | None = None) -> discord.Embed:
     """Text-only fallback — live boards use standalone attachments instead."""
-    return paper_embed("Sudoku", description=board_caption(game, status=status))
+    _ = status
+    mode = game.get("mode", "solo")
+    if mode == "daily":
+        title = f"Daily · {game.get('daily_date', utc_today())}"
+    elif mode == "challenge":
+        title = "Challenge"
+    else:
+        title = "Sudoku"
+    return paper_embed(title)
 
 
 def board_file_for(game: dict, *, status: str | None = None) -> tuple[str, discord.File]:
-    """Caption + large PNG attachment (no embed)."""
+    """Silent caption + large PNG attachment (no embed, no move chatter)."""
+    _ = status
     conflicts = find_conflicts(game["board"])
     stage = game.get("ui_stage", STAGE_BOX)
     highlight_box = game.get("box_id") if stage in (STAGE_CELL, STAGE_NUMBER) else None
@@ -856,7 +851,7 @@ def board_file_for(game: dict, *, status: str | None = None) -> tuple[str, disco
         highlight_box=highlight_box,
         difficulty=game.get("difficulty"),
     )
-    return board_caption(game, status=status), board_to_file(image)
+    return " ", board_to_file(image)
 
 
 # ---------------------------------------------------------------------------
@@ -2144,7 +2139,6 @@ class SudokuView(discord.ui.View):
         self,
         interaction: discord.Interaction,
         *,
-        status: str | None = None,
         ended: bool = False,
         embed: discord.Embed | None = None,
     ) -> None:
@@ -2169,7 +2163,7 @@ class SudokuView(discord.ui.View):
                 return
 
             self.rebuild(game)
-            content, file = board_file_for(game, status=status)
+            content, file = board_file_for(game)
             await interaction.edit_original_response(
                 content=content,
                 embed=None,
@@ -2203,43 +2197,33 @@ class SudokuView(discord.ui.View):
         game = games[self.game_key]
         game["box_id"] = box_id
         game["ui_stage"] = STAGE_CELL
-        await self.refresh(
-            interaction,
-            status=f"Box **{box_id + 1}** selected — pick a cell.",
-        )
+        await self.refresh(interaction)
 
     async def on_pick_cell(self, interaction: discord.Interaction, index: int) -> None:
         game = games[self.game_key]
         r, c = cell_in_box(game["box_id"], index)
         if game["given"][r][c]:
-            await self.refresh(interaction, status="That cell is a locked clue.")
+            await self.refresh(interaction)
             return
         game["sel_r"], game["sel_c"] = r, c
         game["ui_stage"] = STAGE_NUMBER
-        await self.refresh(
-            interaction,
-            status=f"Cell **{cell_label(r, c)}** — enter a number.",
-        )
+        await self.refresh(interaction)
 
     async def on_back_to_grid(self, interaction: discord.Interaction) -> None:
         game = games[self.game_key]
         game["ui_stage"] = STAGE_BOX
         game["pencil_mode"] = False
-        await self.refresh(interaction, status="Pick a box (1–9).")
+        await self.refresh(interaction)
 
     async def on_back_to_cells(self, interaction: discord.Interaction) -> None:
         game = games[self.game_key]
         game["ui_stage"] = STAGE_CELL
-        await self.refresh(
-            interaction,
-            status=f"Back to cells in box **{game['box_id'] + 1}**.",
-        )
+        await self.refresh(interaction)
 
     async def on_toggle_pencil(self, interaction: discord.Interaction) -> None:
         game = games[self.game_key]
         game["pencil_mode"] = not game.get("pencil_mode", False)
-        state = "ON" if game["pencil_mode"] else "OFF"
-        await self.refresh(interaction, status=f"Pencil mode **{state}**.")
+        await self.refresh(interaction)
 
     async def on_digit(self, interaction: discord.Interaction, digit: int) -> None:
         game = games.get(self.game_key)
@@ -2251,27 +2235,27 @@ class SudokuView(discord.ui.View):
             return
 
         r, c = selected_cell(game)
-        label = cell_label(r, c)
 
         if game["given"][r][c]:
             game["ui_stage"] = STAGE_CELL
-            await self.refresh(interaction, status=f"**{label}** is a locked clue.")
+            await self.refresh(interaction)
             return
 
         # Pencil mode: toggle draft marks only (never erase a placed digit)
         if game.get("pencil_mode"):
             if cell_value(game["board"], r, c):
-                await self.refresh(
-                    interaction,
-                    status=f"**{label}** has a number — erase it in pen mode before penciling.",
-                )
+                await self.refresh(interaction)
+                try:
+                    await interaction.followup.send(
+                        f"**{cell_label(r, c)}** has a number — erase it in pen mode before penciling.",
+                        ephemeral=True,
+                    )
+                except discord.HTTPException:
+                    pass
                 return
-            notes = toggle_pencil(game["board"], r, c, digit)
+            toggle_pencil(game["board"], r, c, digit)
             game["ui_stage"] = STAGE_NUMBER
-            await self.refresh(
-                interaction,
-                status=f"Pencil on **{label}**: {notes or 'cleared'}.",
-            )
+            await self.refresh(interaction)
             await sync_challenge_board(game)
             return
 
@@ -2281,7 +2265,7 @@ class SudokuView(discord.ui.View):
             set_cell_value(game["board"], r, c, 0)
             game["board"][r][c]["pencil_marks"] = []
             game["ui_stage"] = STAGE_CELL
-            await self.refresh(interaction, status=None)
+            await self.refresh(interaction)
             await sync_challenge_board(game)
             return
 
@@ -2314,7 +2298,7 @@ class SudokuView(discord.ui.View):
             await remove_game(key)
             self.stop()
             await interaction.edit_original_response(
-                content="**Puzzle solved!**",
+                content=" ",
                 embed=None,
                 view=None,
                 attachments=[file],
@@ -2323,7 +2307,7 @@ class SudokuView(discord.ui.View):
             return
 
         game["ui_stage"] = STAGE_CELL
-        await self.refresh(interaction, status=None)
+        await self.refresh(interaction)
         await sync_challenge_board(game)
 
     async def on_hint(self, interaction: discord.Interaction) -> None:
@@ -2398,7 +2382,7 @@ class SudokuView(discord.ui.View):
             await remove_game(self.game_key)
             self.stop()
             await interaction.edit_original_response(
-                content="**Puzzle solved!**",
+                content=" ",
                 embed=None,
                 view=None,
                 attachments=[file],
@@ -2406,10 +2390,7 @@ class SudokuView(discord.ui.View):
             await interaction.followup.send(embed=embed)
             return
 
-        await self.refresh(
-            interaction,
-            status=f"Hint: **{cell_label(r, c)}** → **{digit}** · left **{stats['hints']}**",
-        )
+        await self.refresh(interaction)
 
     async def on_forfeit(self, interaction: discord.Interaction) -> None:
         game = games.get(self.game_key)
@@ -2618,7 +2599,7 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
             view = SudokuView(key, bot)
             content, file = board_file_for(game)
             await msg.edit(
-                content=f"♻️ Session restored after restart — controls refreshed.\n{content}",
+                content=content,
                 embed=None,
                 attachments=[file],
                 view=view,
@@ -2672,7 +2653,11 @@ async def help_cmd(interaction: discord.Interaction):
     embed = paper_embed("✏️ Sudoku")
     embed.add_field(
         name="Play",
-        value="`/play` · `/daily` · `/challenge` (invite or open lobby)",
+        value=(
+            "`/play` — solo puzzle\n"
+            "`/daily` — same difficulty each day, **unique** board per player\n"
+            "`/challenge` — invite or open lobby (private boards)"
+        ),
         inline=False,
     )
     embed.add_field(name="Step 1", value="Arrow pad → pick a 3×3 box", inline=True)
@@ -2879,7 +2864,7 @@ async def challenge_cmd(
     view.message = await interaction.original_response()
 
 
-@bot.tree.command(name="daily", description="Play today's shared 9×9 daily Sudoku")
+@bot.tree.command(name="daily", description="Play today's daily Sudoku (same level, unique board)")
 async def daily_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message("Server only.", ephemeral=True)
@@ -2931,16 +2916,17 @@ async def daily_cmd(interaction: discord.Interaction):
     }
     save_data(bot.data)
 
+    board, given, solution, diff_key = make_daily_puzzle(guild_id, daily["date"], user_id)
     games[sk] = new_game_state(
         mode="daily",
-        board=copy_grid(daily["board"]),
-        given=[row[:] for row in daily["given"]],
-        solution=copy_grid(daily["solution"]),
+        board=board,
+        given=given,
+        solution=solution,
         owner_id=user_id,
         channel_id=interaction.channel_id,
         guild_id=guild_id,
         daily_date=daily["date"],
-        difficulty=daily.get("difficulty_key") or daily_difficulty_for_date(daily["date"]),
+        difficulty=diff_key,
     )
     try:
         await start_panel(interaction, sk, games[sk])
@@ -3116,7 +3102,7 @@ async def hint_cmd(interaction: discord.Interaction):
             try:
                 msg = await channel.fetch_message(game["message_id"])
                 await msg.edit(
-                    content="**Puzzle solved!**",
+                    content=" ",
                     embed=None,
                     view=None,
                     attachments=[file],
@@ -3131,10 +3117,7 @@ async def hint_cmd(interaction: discord.Interaction):
         try:
             msg = await channel.fetch_message(game["message_id"])
             view = SudokuView(key, bot)
-            content, file = board_file_for(
-                game,
-                status=f"Hint: **{cell_label(r, c)}** → **{digit}** · left **{stats['hints']}**",
-            )
+            content, file = board_file_for(game)
             await msg.edit(content=content, embed=None, attachments=[file], view=view)
             view.message = msg
         except discord.HTTPException:
