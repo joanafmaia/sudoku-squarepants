@@ -2335,12 +2335,36 @@ class ShopView(discord.ui.View):
 # Bot
 # ---------------------------------------------------------------------------
 
+async def _health(_request) -> "web.Response":
+    from aiohttp import web
+
+    return web.Response(text="ok")
+
+
+async def start_health_server(bot: "SudokuBot") -> None:
+    """HTTP keep-alive for Render + UptimeRobot (PORT is set by Render)."""
+    from aiohttp import web
+
+    port = int(os.getenv("PORT", "8080") or 8080)
+    app = web.Application()
+    app.router.add_get("/", _health)
+    app.router.add_get("/health", _health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    bot._health_runner = runner  # type: ignore[attr-defined]
+    print(f"Health server listening on 0.0.0.0:{port} (/ and /health)")
+
+
 class SudokuBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents, help_command=None)
         self.data = load_data()
+        self._health_runner = None
 
     async def setup_hook(self) -> None:
+        await start_health_server(self)
         await match_store.connect()
         kind = type(match_store).__name__
         print(f"Challenge match store: {kind}")

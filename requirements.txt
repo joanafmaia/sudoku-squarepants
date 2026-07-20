@@ -3,3 +3,4 @@ py-sudoku>=1.0.3
 Pillow>=10.0.0
 python-dotenv>=1.0.0
 motor>=3.3.0
+aiohttp>=3.9.0
