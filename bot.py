@@ -72,7 +72,7 @@ COLOR_PAPER_WHITE = discord.Color.from_str("#FFF8DC")  # soft sand
 COLOR_DANGER = discord.Color.from_str("#E11D48")      # jelly-red (forfeit / hard errors)
 COLOR_OCEAN = discord.Color.from_str("#2DD4BF")       # lagoon teal
 
-# Board theme — sunny Bikini Bottom grid
+# Board theme — sunny Bikini Bottom grid (default palette)
 RGB_BG = "#7DD3FC"                # bright lagoon sky
 RGB_CARD = "#FFFBEB"              # sandy paper panel
 RGB_CARD_BORDER = "#F59E0B"       # pineapple gold rim
@@ -88,7 +88,27 @@ RGB_TEXT_GIVEN = "#134E4A"        # locked clues — deep teal
 RGB_TEXT_CONFLICT = "#BE123C"
 RGB_PENCIL = "#64748B"            # soft graphite notes
 RGB_HEADER = "#0F766E"            # lagoon header
+RGB_HEADER_BAR = "#67E8F9"        # header strip fill
 RGB_OUTLINE = "#F59E0B"           # gold selection ring
+
+DEFAULT_BOARD_PALETTE = {
+    "header_bar": RGB_HEADER_BAR,
+    "header_text": RGB_HEADER,
+    "card": RGB_CARD,
+    "card_border": RGB_CARD_BORDER,
+    "empty": RGB_EMPTY,
+    "given_cell": RGB_GIVEN_CELL,
+    "select": RGB_SELECT,
+    "box_hl": RGB_BOX_HL,
+    "conflict": RGB_CONFLICT,
+    "line": RGB_LINE,
+    "thick": RGB_THICK,
+    "text": RGB_TEXT,
+    "text_given": RGB_TEXT_GIVEN,
+    "text_conflict": RGB_TEXT_CONFLICT,
+    "pencil": RGB_PENCIL,
+    "outline": RGB_OUTLINE,
+}
 
 # Fixed Discord attachment canvas — larger = bigger chat preview (full-bleed with keypad)
 BOARD_CANVAS = 800
@@ -127,11 +147,155 @@ WIN_TAUNTS = (
 )
 
 SHOP_TITLES = {
-    "rookie": {"label": "Jellyfisher", "cost": 50},
-    "solver": {"label": "Fry Cook", "cost": 150},
-    "row_master": {"label": "Boatmobile Ace", "cost": 300},
-    "sudoku_pro": {"label": "Goofy Goober", "cost": 500},
-    "legend": {"label": "Pineapple Legend", "cost": 1000},
+    "rookie": {"label": "🪼 Jellyfisher", "cost": 50},
+    "patrick": {"label": "⭐ Starfish Genius", "cost": 100},
+    "solver": {"label": "🍔 Fry Cook", "cost": 150},
+    "larry": {"label": "💪 Larry Lobster", "cost": 220},
+    "barnacle": {"label": "🦸 Barnacle Boy", "cost": 280},
+    "row_master": {"label": "🚗 Boatmobile Ace", "cost": 300},
+    "puff": {"label": "⛵ Boating School Grad", "cost": 350},
+    "dutchman": {"label": "👻 Flying Dutchman", "cost": 450},
+    "sudoku_pro": {"label": "🍦 Goofy Goober", "cost": 500},
+    "plankton": {"label": "🦠 Plankton Plotter", "cost": 650},
+    "mermaid": {"label": "🧜 Mermaid Man", "cost": 800},
+    "legend": {"label": "🍍 Pineapple Legend", "cost": 1000},
+    "neptune": {"label": "👑 King Neptune", "cost": 1500},
+}
+
+# Cosmetic board color packs (applied to the PNG grid)
+SHOP_THEMES = {
+    "jellyfish": {
+        "label": "Jellyfish Fields",
+        "cost": 175,
+        "palette": {
+            "header_bar": "#DDD6FE",
+            "header_text": "#5B21B6",
+            "card": "#FAF5FF",
+            "card_border": "#A78BFA",
+            "empty": "#FEFCFF",
+            "given_cell": "#EDE9FE",
+            "select": "#F0ABFC",
+            "box_hl": "#C4B5FD",
+            "conflict": "#FDA4AF",
+            "line": "#C4B5FD",
+            "thick": "#6D28D9",
+            "text": "#7C3AED",
+            "text_given": "#4C1D95",
+            "text_conflict": "#BE123C",
+            "pencil": "#7C3AED",
+            "outline": "#E879F9",
+        },
+    },
+    "krusty": {
+        "label": "Krusty Krab",
+        "cost": 250,
+        "palette": {
+            "header_bar": "#FECACA",
+            "header_text": "#9F1239",
+            "card": "#FFF7ED",
+            "card_border": "#EA580C",
+            "empty": "#FFFBEB",
+            "given_cell": "#FED7AA",
+            "select": "#FDE047",
+            "box_hl": "#FDBA74",
+            "conflict": "#FB7185",
+            "line": "#FDBA74",
+            "thick": "#C2410C",
+            "text": "#B45309",
+            "text_given": "#7C2D12",
+            "text_conflict": "#BE123C",
+            "pencil": "#9A3412",
+            "outline": "#F59E0B",
+        },
+    },
+    "goober": {
+        "label": "Goofy Goober Ice",
+        "cost": 320,
+        "palette": {
+            "header_bar": "#FBCFE8",
+            "header_text": "#9D174D",
+            "card": "#FDF2F8",
+            "card_border": "#EC4899",
+            "empty": "#FFF1F2",
+            "given_cell": "#FCE7F3",
+            "select": "#A5F3FC",
+            "box_hl": "#F9A8D4",
+            "conflict": "#FDA4AF",
+            "line": "#F9A8D4",
+            "thick": "#BE185D",
+            "text": "#DB2777",
+            "text_given": "#9D174D",
+            "text_conflict": "#BE123C",
+            "pencil": "#9D174D",
+            "outline": "#22D3EE",
+        },
+    },
+    "sandy": {
+        "label": "Sandy's Dome",
+        "cost": 400,
+        "palette": {
+            "header_bar": "#FED7AA",
+            "header_text": "#9A3412",
+            "card": "#FFFBEB",
+            "card_border": "#D97706",
+            "empty": "#FFFBEB",
+            "given_cell": "#FEF3C7",
+            "select": "#FCD34D",
+            "box_hl": "#FDE68A",
+            "conflict": "#FCA5A5",
+            "line": "#D6D3D1",
+            "thick": "#92400E",
+            "text": "#B45309",
+            "text_given": "#78350F",
+            "text_conflict": "#B91C1C",
+            "pencil": "#78716C",
+            "outline": "#EA580C",
+        },
+    },
+    "rock_bottom": {
+        "label": "Rock Bottom",
+        "cost": 550,
+        "palette": {
+            "header_bar": "#334155",
+            "header_text": "#E2E8F0",
+            "card": "#1E293B",
+            "card_border": "#64748B",
+            "empty": "#0F172A",
+            "given_cell": "#334155",
+            "select": "#0EA5E9",
+            "box_hl": "#475569",
+            "conflict": "#F43F5E",
+            "line": "#64748B",
+            "thick": "#94A3B8",
+            "text": "#7DD3FC",
+            "text_given": "#CBD5E1",
+            "text_conflict": "#FB7185",
+            "pencil": "#94A3B8",
+            "outline": "#38BDF8",
+        },
+    },
+    "chum": {
+        "label": "Chum Bucket",
+        "cost": 700,
+        "palette": {
+            "header_bar": "#BBF7D0",
+            "header_text": "#14532D",
+            "card": "#ECFDF5",
+            "card_border": "#16A34A",
+            "empty": "#F0FDF4",
+            "given_cell": "#DCFCE7",
+            "select": "#A3E635",
+            "box_hl": "#86EFAC",
+            "conflict": "#FDA4AF",
+            "line": "#86EFAC",
+            "thick": "#15803D",
+            "text": "#15803D",
+            "text_given": "#14532D",
+            "text_conflict": "#BE123C",
+            "pencil": "#4D7C0F",
+            "outline": "#65A30D",
+        },
+    },
 }
 
 intents = discord.Intents.default()
@@ -183,6 +347,8 @@ def user_stats(gstats: dict, user_id: int) -> dict:
     s.setdefault("name", "Unknown")
     s.setdefault("title", None)
     s.setdefault("owned_titles", [])
+    s.setdefault("board_theme", None)
+    s.setdefault("owned_themes", [])
     s.setdefault("hints", 0)
     s.setdefault("daily_wins", 0)
     s.setdefault("challenge_wins", 0)
@@ -318,6 +484,26 @@ def display_name(stats: dict) -> str:
     if tid and tid in SHOP_TITLES:
         return f"{name} · {SHOP_TITLES[tid]['label']}"
     return name
+
+
+def palette_for_theme(theme_id: str | None) -> dict[str, str]:
+    meta = SHOP_THEMES.get(theme_id or "")
+    if not meta:
+        return DEFAULT_BOARD_PALETTE
+    return {**DEFAULT_BOARD_PALETTE, **meta["palette"]}
+
+
+def equipped_theme_id(stats: dict) -> str | None:
+    tid = stats.get("board_theme")
+    if tid and tid in SHOP_THEMES:
+        return tid
+    return None
+
+
+def sync_theme_to_active_games(user_id: int, guild_id: int, theme_id: str | None) -> None:
+    for game in games.values():
+        if game.get("owner_id") == user_id and game.get("guild_id") == guild_id:
+            game["board_theme"] = theme_id
 
 
 def utc_today() -> str:
@@ -664,6 +850,7 @@ def render_board(
     highlight_box: int | None = None,
     difficulty: str | None = None,
     reward_sponges: int | None = None,
+    theme_id: str | None = None,
 ) -> BytesIO:
     """Bikini Bottom board — bubbly digits, lagoon colors, full-bleed panel.
 
@@ -671,6 +858,7 @@ def render_board(
     (same message width). When ``reward_sponges`` is set, a strip is drawn under the grid.
     """
     _ = solution
+    pal = palette_for_theme(theme_id)
     conflicts = conflicts or set()
     canvas = BOARD_CANVAS
     header_h = BOARD_HEADER_H
@@ -679,12 +867,12 @@ def render_board(
     inner = BOARD_INNER_PAD
     reward_h = BOARD_REWARD_H if reward_sponges is not None else 0
 
-    img = Image.new("RGB", (canvas, canvas + reward_h), RGB_CARD)
+    img = Image.new("RGB", (canvas, canvas + reward_h), pal["card"])
     draw = ImageDraw.Draw(img)
 
     # Full-width header bar (same width as the grid / Discord keyboard)
-    draw.rectangle((0, 0, canvas, header_h), fill="#67E8F9")
-    draw.line((0, header_h - 1, canvas, header_h - 1), fill=RGB_CARD_BORDER, width=2)
+    draw.rectangle((0, 0, canvas, header_h), fill=pal["header_bar"])
+    draw.line((0, header_h - 1, canvas, header_h - 1), fill=pal["card_border"], width=2)
 
     header_label = f"~ {difficulty_label(difficulty)} ~"
     header_font = board_font(18, bold=True)
@@ -693,7 +881,7 @@ def render_board(
     draw.text(
         ((canvas - htw) / 2, (header_h - hth) / 2),
         header_label,
-        fill=RGB_HEADER,
+        fill=pal["header_text"],
         font=header_font,
     )
 
@@ -701,9 +889,11 @@ def render_board(
     card_bottom = canvas - pad
     card = (pad, header_h, canvas - pad, card_bottom)
     if radius > 0:
-        draw.rounded_rectangle(card, radius=radius, fill=RGB_CARD, outline=RGB_CARD_BORDER, width=3)
+        draw.rounded_rectangle(
+            card, radius=radius, fill=pal["card"], outline=pal["card_border"], width=3
+        )
     else:
-        draw.rectangle(card, fill=RGB_CARD, outline=RGB_CARD_BORDER, width=3)
+        draw.rectangle(card, fill=pal["card"], outline=pal["card_border"], width=3)
 
     grid_left = pad + inner
     grid_top = header_h + inner
@@ -734,15 +924,15 @@ def render_board(
             x1, y1 = x0 + cell, y0 + cell
 
             if (r, c) in conflicts:
-                fill = RGB_CONFLICT
+                fill = pal["conflict"]
             elif selected == (r, c):
-                fill = RGB_SELECT
+                fill = pal["select"]
             elif (r, c) in box_cells:
-                fill = RGB_BOX_HL
+                fill = pal["box_hl"]
             elif given[r][c]:
-                fill = RGB_GIVEN_CELL
+                fill = pal["given_cell"]
             else:
-                fill = RGB_EMPTY
+                fill = pal["empty"]
 
             draw.rectangle((x0, y0, x1, y1), fill=fill)
 
@@ -750,13 +940,13 @@ def render_board(
     for i in range(10):
         is_block = i % 3 == 0
         width_line = 3 if is_block else 1
-        color = RGB_THICK if is_block else RGB_LINE
+        color = pal["thick"] if is_block else pal["line"]
         pos_y = origin_y + i * cell
         pos_x = origin_x + i * cell
         draw.line((origin_x, pos_y, origin_x + grid, pos_y), fill=color, width=width_line)
         draw.line((pos_x, origin_y, pos_x, origin_y + grid), fill=color, width=width_line)
 
-    draw.rectangle(card, outline=RGB_CARD_BORDER, width=3)
+    draw.rectangle(card, outline=pal["card_border"], width=3)
 
     # Selection rings (fills already tint cells — no wash overlay over ink)
     if highlight_box is not None and selected is None:
@@ -765,7 +955,7 @@ def render_board(
         by0 = origin_y + br * 3 * cell
         bx1 = bx0 + 3 * cell
         by1 = by0 + 3 * cell
-        draw.rectangle((bx0 + 1, by0 + 1, bx1 - 1, by1 - 1), outline=RGB_OUTLINE, width=4)
+        draw.rectangle((bx0 + 1, by0 + 1, bx1 - 1, by1 - 1), outline=pal["outline"], width=4)
 
     if selected is not None:
         r, c = selected
@@ -773,7 +963,7 @@ def render_board(
         y0 = origin_y + r * cell
         x1 = x0 + cell
         y1 = y0 + cell
-        draw.rectangle((x0 + 1, y0 + 1, x1 - 1, y1 - 1), outline=RGB_OUTLINE, width=4)
+        draw.rectangle((x0 + 1, y0 + 1, x1 - 1, y1 - 1), outline=pal["outline"], width=4)
 
     # Digits + pencil marks last so selection tint never washes them out
     for r in range(9):
@@ -786,13 +976,13 @@ def render_board(
             if val:
                 text = str(val)
                 if (r, c) in conflicts:
-                    color = RGB_TEXT_CONFLICT
+                    color = pal["text_conflict"]
                     font = font_player
                 elif given[r][c]:
-                    color = RGB_TEXT_GIVEN
+                    color = pal["text_given"]
                     font = font_given
                 else:
-                    color = RGB_TEXT
+                    color = pal["text"]
                     font = font_player
                 bbox = draw.textbbox((0, 0), text, font=font)
                 tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -819,7 +1009,7 @@ def render_board(
                     draw.text(
                         (cx - tw / 2, cy - th / 2 - 1),
                         t,
-                        fill=RGB_PENCIL,
+                        fill=pal["pencil"],
                         font=pencil_font,
                     )
 
@@ -965,6 +1155,7 @@ def new_game_state(
     match_id: str | None = None,
     player_slot: str | None = None,
     started_at: float | None = None,
+    board_theme: str | None = None,
 ) -> dict:
     # Persist the human-readable tier name (e.g. "Expertttt")
     tier_name = difficulty_label(difficulty)
@@ -989,6 +1180,7 @@ def new_game_state(
         "hints_used": 0,
         "daily_date": daily_date,
         "message_id": None,
+        "board_theme": board_theme,
     }
 
 
@@ -1072,6 +1264,7 @@ def board_file_for(game: dict, *, status: str | None = None) -> tuple[str, disco
         conflicts=conflicts,
         highlight_box=highlight_box,
         difficulty=game.get("difficulty"),
+        theme_id=game.get("board_theme"),
     )
     return " ", board_to_file(image)
 
@@ -1510,6 +1703,7 @@ async def handle_challenge_completion(
         solution=game["solution"],
         conflicts=set(),
         difficulty=game.get("difficulty"),
+        theme_id=game.get("board_theme"),
     )
     remaining = sum(
         1
@@ -1608,6 +1802,7 @@ async def launch_challenge_match(
     for slot, member, dest in destinations:
         key = challenge_game_key(match_id, member.id)
         player_board = copy_grid(board)
+        pstats = user_stats(guild_stats(bot.data, interaction.guild.id), member.id)
         games[key] = new_game_state(
             mode="challenge",
             board=player_board,
@@ -1620,6 +1815,7 @@ async def launch_challenge_match(
             player_slot=slot,
             difficulty=difficulty,
             started_at=start_time,
+            board_theme=equipped_theme_id(pstats),
         )
         await dest.send(
             f"{member.mention} Speedrun ({len(players)} players) · **{tier}**\n"
@@ -2573,6 +2769,7 @@ class SudokuView(discord.ui.View):
                     conflicts=set(),
                     difficulty=game.get("difficulty"),
                     reward_sponges=max(int(coins), 0),
+                    theme_id=game.get("board_theme"),
                 )
             )
             try:
@@ -2639,38 +2836,71 @@ class SudokuView(discord.ui.View):
 # Shop
 # ---------------------------------------------------------------------------
 
-class ShopSelect(discord.ui.Select):
+class ShopTitleSelect(discord.ui.Select):
     def __init__(self, bot: "SudokuBot"):
         self.bot = bot
         options = [
             discord.SelectOption(
                 label=f"{meta['label']} — {meta['cost']} {SPONGE}",
                 value=f"title:{tid}",
-                description="Cosmetic title",
+                description="Cosmetic title · buy or re-equip",
             )
             for tid, meta in SHOP_TITLES.items()
         ]
-        super().__init__(placeholder="Buy a title…", options=options)
+        super().__init__(placeholder="Titles — buy or equip…", options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        if interaction.guild is None:
-            await interaction.response.send_message("Server only.", ephemeral=True)
-            return
-        choice = self.values[0]
-        gstats = guild_stats(self.bot.data, interaction.guild.id)
-        stats = user_stats(gstats, interaction.user.id)
-        stats["name"] = interaction.user.display_name
+        await _shop_buy_or_equip(interaction, self.bot, self.values[0])
 
-        if not choice.startswith("title:"):
+
+class ShopThemeSelect(discord.ui.Select):
+    def __init__(self, bot: "SudokuBot"):
+        self.bot = bot
+        options = [
+            discord.SelectOption(
+                label=f"🌊 Lagoon Classic — free",
+                value="theme:",
+                description="Default board colors",
+            )
+        ]
+        options.extend(
+            discord.SelectOption(
+                label=f"{meta['label']} — {meta['cost']} {SPONGE}",
+                value=f"theme:{tid}",
+                description="Board color pack · buy or re-equip",
+            )
+            for tid, meta in SHOP_THEMES.items()
+        )
+        super().__init__(placeholder="Board themes — buy or equip…", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        await _shop_buy_or_equip(interaction, self.bot, self.values[0])
+
+
+async def _shop_buy_or_equip(
+    interaction: discord.Interaction,
+    bot: "SudokuBot",
+    choice: str,
+) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+    gstats = guild_stats(bot.data, interaction.guild.id)
+    stats = user_stats(gstats, interaction.user.id)
+    stats["name"] = interaction.user.display_name
+
+    if choice.startswith("title:"):
+        tid = choice.split(":", 1)[1]
+        if tid not in SHOP_TITLES:
             await interaction.response.send_message("Unknown item.", ephemeral=True)
             return
-
-        tid = choice.split(":", 1)[1]
         meta = SHOP_TITLES[tid]
         if tid in stats["owned_titles"]:
             stats["title"] = tid
-            save_data(self.bot.data)
-            await interaction.response.send_message(f"Equipped **{meta['label']}**.", ephemeral=True)
+            save_data(bot.data)
+            await interaction.response.send_message(
+                f"Equipped **{meta['label']}**.", ephemeral=True
+            )
             return
         if stats["coins"] < meta["cost"]:
             await interaction.response.send_message(
@@ -2681,18 +2911,64 @@ class ShopSelect(discord.ui.Select):
         stats["coins"] -= meta["cost"]
         stats["owned_titles"].append(tid)
         stats["title"] = tid
-        save_data(self.bot.data)
+        save_data(bot.data)
         await interaction.response.send_message(
             f"Bought **{meta['label']}** (−{meta['cost']} {SPONGE}). "
             f"Balance: **{format_sponges(stats['coins'])}**.",
             ephemeral=True,
         )
+        return
+
+    if choice.startswith("theme:"):
+        tid = choice.split(":", 1)[1]
+        if not tid:
+            stats["board_theme"] = None
+            save_data(bot.data)
+            sync_theme_to_active_games(interaction.user.id, interaction.guild.id, None)
+            await interaction.response.send_message(
+                "Equipped **🌊 Lagoon Classic**.", ephemeral=True
+            )
+            return
+        if tid not in SHOP_THEMES:
+            await interaction.response.send_message("Unknown item.", ephemeral=True)
+            return
+        meta = SHOP_THEMES[tid]
+        if tid in stats["owned_themes"]:
+            stats["board_theme"] = tid
+            save_data(bot.data)
+            sync_theme_to_active_games(interaction.user.id, interaction.guild.id, tid)
+            await interaction.response.send_message(
+                f"Equipped board theme **{meta['label']}**. Next refresh uses it.",
+                ephemeral=True,
+            )
+            return
+        if stats["coins"] < meta["cost"]:
+            await interaction.response.send_message(
+                f"Need **{format_sponges(meta['cost'])}** (you have {format_sponges(stats['coins'])}).",
+                ephemeral=True,
+            )
+            return
+        stats["coins"] -= meta["cost"]
+        stats["owned_themes"].append(tid)
+        stats["board_theme"] = tid
+        save_data(bot.data)
+        sync_theme_to_active_games(interaction.user.id, interaction.guild.id, tid)
+        await interaction.response.send_message(
+            f"Bought **{meta['label']}** (−{meta['cost']} {SPONGE}). "
+            f"Balance: **{format_sponges(stats['coins'])}**. "
+            f"Active boards pick it up on the next move.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message("Unknown item.", ephemeral=True)
 
 
 class ShopView(discord.ui.View):
     def __init__(self, bot: "SudokuBot"):
         super().__init__(timeout=120)
-        self.add_item(ShopSelect(bot))
+        self.add_item(ShopTitleSelect(bot))
+        self.add_item(ShopThemeSelect(bot))
 
 
 # ---------------------------------------------------------------------------
@@ -2749,7 +3025,7 @@ STATUS_ROTATION = [
     discord.Game(name=f"{SPONGE} /play · I'm ready!"),
     discord.Game(name=f"{WAVE} /daily · Pineapple puzzle"),
     discord.Game(name=f"{JELLY} /challenge · Jellyfish race"),
-    discord.Game(name=f"{SPONGE} /shop · Goofy Goober titles"),
+    discord.Game(name=f"{SPONGE} /shop · titles & board themes"),
 ]
 _status_i = 0
 
@@ -2938,6 +3214,8 @@ async def play_cmd(
 
     diff_key = difficulty.value if difficulty else DEFAULT_DIFFICULTY
     board, given, solution = make_puzzle(diff_key)
+    gstats = guild_stats(bot.data, guild_id)
+    stats = user_stats(gstats, user_id)
     games[sk] = new_game_state(
         mode="solo",
         board=board,
@@ -2947,6 +3225,7 @@ async def play_cmd(
         channel_id=interaction.channel_id,
         guild_id=guild_id,
         difficulty=diff_key,
+        board_theme=equipped_theme_id(stats),
     )
     try:
         await start_panel(interaction, sk, games[sk])
@@ -3164,6 +3443,8 @@ async def daily_cmd(interaction: discord.Interaction):
     save_data(bot.data)
 
     board, given, solution, diff_key = make_daily_puzzle(guild_id, daily["date"], user_id)
+    gstats = guild_stats(bot.data, guild_id)
+    stats = user_stats(gstats, user_id)
     games[sk] = new_game_state(
         mode="daily",
         board=board,
@@ -3174,6 +3455,7 @@ async def daily_cmd(interaction: discord.Interaction):
         guild_id=guild_id,
         daily_date=daily["date"],
         difficulty=diff_key,
+        board_theme=equipped_theme_id(stats),
     )
     try:
         await start_panel(interaction, sk, games[sk])
@@ -3252,15 +3534,23 @@ async def shop_cmd(interaction: discord.Interaction):
     stats["name"] = interaction.user.display_name
     save_data(bot.data)
     owned = ", ".join(SHOP_TITLES[t]["label"] for t in stats["owned_titles"] if t in SHOP_TITLES) or "Empty pockets"
+    themes = ", ".join(SHOP_THEMES[t]["label"] for t in stats["owned_themes"] if t in SHOP_THEMES) or "Lagoon only"
     equipped = SHOP_TITLES[stats["title"]]["label"] if stats.get("title") in SHOP_TITLES else "Civilian"
+    theme_eq = (
+        SHOP_THEMES[stats["board_theme"]]["label"]
+        if stats.get("board_theme") in SHOP_THEMES
+        else "🌊 Lagoon Classic"
+    )
     embed = paper_embed(f"{SPONGE} Krusty Shop")
     embed.description = (
-        f"{BUBBLE} Welcome! Spend sponges on goofy titles.\n"
+        f"{BUBBLE} Welcome! Spend sponges on titles & board themes.\n"
         f"*No refunds. Squidward is watching.*"
     )
     embed.add_field(name=f"Your pocket {SPONGE}", value=f"**{format_sponges(stats['coins'])}**", inline=True)
-    embed.add_field(name="Equipped", value=f"**{equipped}**", inline=True)
-    embed.add_field(name="Closet", value=owned, inline=False)
+    embed.add_field(name="Title", value=f"**{equipped}**", inline=True)
+    embed.add_field(name="Board", value=f"**{theme_eq}**", inline=True)
+    embed.add_field(name="Title closet", value=owned, inline=False)
+    embed.add_field(name="Theme closet", value=themes, inline=False)
     await interaction.response.send_message(embed=embed, view=ShopView(bot), ephemeral=True)
 
 
