@@ -7,6 +7,8 @@ import json
 import os
 import random
 import time
+import asyncio
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
@@ -322,6 +324,112 @@ def save_data(data: dict) -> None:
     except OSError as exc:
         # Don't lose the in-memory award if the disk write fails (e.g. ephemeral FS hiccup)
         print(f"save_data failed: {exc}")
+    # Mirror to Mongo so Render redeploys keep sponges / stats
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    snapshot = deepcopy(data)
+    loop.create_task(_mirror_leaderboard_mongo(snapshot))
+
+
+async def _mirror_leaderboard_mongo(data: dict) -> None:
+    try:
+        await match_store.save_leaderboard(data)
+    except Exception as exc:  # noqa: BLE001
+        print(f"mongo leaderboard save failed: {exc}")
+
+
+async def restore_leaderboard_from_mongo(bot: "SudokuBot") -> None:
+    """Load durable stats from Mongo; recover wiped players from daily_completions."""
+    try:
+        remote = await match_store.load_leaderboard()
+    except Exception as exc:  # noqa: BLE001
+        print(f"load_leaderboard failed: {exc}")
+        remote = None
+
+    if remote:
+        bot.data = remote
+        try:
+            with DATA_FILE.open("w", encoding="utf-8") as f:
+                json.dump(bot.data, f, indent=2)
+        except OSError as exc:
+            print(f"write restored leaderboard failed: {exc}")
+        print("Restored leaderboard from Mongo.")
+    elif bot.data:
+        try:
+            await match_store.save_leaderboard(bot.data)
+            print("Seeded Mongo leaderboard from local file.")
+        except Exception as exc:  # noqa: BLE001
+            print(f"seed leaderboard failed: {exc}")
+
+    # If a redeploy wiped stats but daily claims remain, rebuild the bare minimum
+    try:
+        claims = await match_store.list_daily_completions()
+    except Exception as exc:  # noqa: BLE001
+        print(f"list_daily_completions failed: {exc}")
+        return
+
+    changed = False
+    for doc in claims:
+        try:
+            guild_id = int(doc["guild_id"])
+            user_id = int(doc["user_id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        coins = int(doc.get("coins") or 0)
+        if coins <= 0:
+            continue
+        name = doc.get("name") or "Unknown"
+        day = doc.get("date")
+        elapsed = doc.get("elapsed")
+        gstats = guild_stats(bot.data, guild_id)
+        stats = user_stats(gstats, user_id)
+        daily_meta = gstats.setdefault("_daily", {})
+        results = daily_meta.setdefault("results", {})
+        uid = str(user_id)
+        prior = results.get(uid) or {}
+
+        wiped = int(stats.get("coins") or 0) == 0 and int(stats.get("daily_wins") or 0) == 0
+        if not wiped:
+            # Still mark today's claim so /daily doesn't double-pay after a partial wipe
+            if day and prior.get("won") is not True:
+                if daily_meta.get("date") in (None, day):
+                    daily_meta["date"] = day
+                    results[uid] = {
+                        "won": True,
+                        "time": elapsed,
+                        "name": name,
+                        "coins": coins,
+                    }
+                    changed = True
+            continue
+
+        stats["coins"] = coins
+        stats["wins"] = max(int(stats.get("wins") or 0), 1)
+        stats["games"] = max(int(stats.get("games") or 0), 1)
+        stats["daily_wins"] = max(int(stats.get("daily_wins") or 0), 1)
+        stats["streak"] = max(int(stats.get("streak") or 0), 1)
+        stats["best_streak"] = max(int(stats.get("best_streak") or 0), stats["streak"])
+        if elapsed is not None:
+            try:
+                stats["best_time"] = float(elapsed)
+            except (TypeError, ValueError):
+                pass
+        stats["name"] = name
+        if day:
+            daily_meta["date"] = day
+        results[uid] = {
+            "won": True,
+            "time": elapsed,
+            "name": name,
+            "coins": coins,
+        }
+        changed = True
+        print(f"Recovered {name} ({user_id}): {coins} sponges from daily claim {day}")
+
+    if changed:
+        save_data(bot.data)
 
 
 def guild_stats(data: dict, guild_id: int) -> dict:
@@ -2962,6 +3070,7 @@ class SudokuBot(commands.Bot):
         await match_store.connect()
         kind = type(match_store).__name__
         print(f"Challenge match store: {kind}")
+        await restore_leaderboard_from_mongo(self)
 
         # Global sync can take minutes; guild sync is instant for that server.
         if DISCORD_GUILD_ID:

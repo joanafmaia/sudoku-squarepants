@@ -64,12 +64,23 @@ class MatchStore:
     async def count_daily_wins(self, guild_id: int, day: str) -> int:
         raise NotImplementedError
 
+    async def save_leaderboard(self, data: dict) -> None:
+        """Persist sponges / stats / daily board so Render redeploys don't wipe them."""
+        return None
+
+    async def load_leaderboard(self) -> dict | None:
+        return None
+
+    async def list_daily_completions(self) -> list[dict]:
+        return []
+
 
 class MemoryMatchStore(MatchStore):
     def __init__(self) -> None:
         self._docs: dict[str, dict] = {}
         self._daily: dict[str, dict] = {}
         self._active: dict[str, dict] = {}
+        self._leaderboard: dict | None = None
 
     async def connect(self) -> None:
         return None
@@ -155,6 +166,15 @@ class MemoryMatchStore(MatchStore):
             if doc.get("guild_id") == guild_id and doc.get("date") == day
         )
 
+    async def save_leaderboard(self, data: dict) -> None:
+        self._leaderboard = _clone(data)
+
+    async def load_leaderboard(self) -> dict | None:
+        return _clone(self._leaderboard) if self._leaderboard is not None else None
+
+    async def list_daily_completions(self) -> list[dict]:
+        return [_clone(d) for d in self._daily.values()]
+
 
 class MongoMatchStore(MatchStore):
     def __init__(self, uri: str, db_name: str = "sudoku") -> None:
@@ -164,6 +184,7 @@ class MongoMatchStore(MatchStore):
         self._col = None
         self._daily = None
         self._active = None
+        self._leaderboard = None
 
     async def connect(self) -> None:
         from motor.motor_asyncio import AsyncIOMotorClient
@@ -173,6 +194,7 @@ class MongoMatchStore(MatchStore):
         self._col = db["challenge_matches"]
         self._daily = db["daily_completions"]
         self._active = db["active_games"]
+        self._leaderboard = db["leaderboard"]
         await self._col.create_index("status")
         await self._daily.create_index([("guild_id", 1), ("date", 1)])
         await self._active.create_index("updated_at")
@@ -258,6 +280,29 @@ class MongoMatchStore(MatchStore):
 
     async def count_daily_wins(self, guild_id: int, day: str) -> int:
         return await self._daily.count_documents({"guild_id": guild_id, "date": day})
+
+    async def save_leaderboard(self, data: dict) -> None:
+        if self._leaderboard is None:
+            await self.connect()
+        await self._leaderboard.replace_one(
+            {"_id": "main"},
+            {"_id": "main", "data": _clone(data), "updated_at": time.time()},
+            upsert=True,
+        )
+
+    async def load_leaderboard(self) -> dict | None:
+        if self._leaderboard is None:
+            await self.connect()
+        doc = await self._leaderboard.find_one({"_id": "main"})
+        if not doc or not isinstance(doc.get("data"), dict):
+            return None
+        return _clone(doc["data"])
+
+    async def list_daily_completions(self) -> list[dict]:
+        if self._daily is None:
+            await self.connect()
+        cursor = self._daily.find({})
+        return await cursor.to_list(length=5000)
 
 
 def create_match_store() -> MatchStore:
