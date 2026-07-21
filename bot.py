@@ -4412,17 +4412,14 @@ async def quit_cmd(interaction: discord.Interaction):
 
 @bot.tree.command(
     name="leaderboard",
-    description="Bikini Bottom rankings — XP, daily today, whales, and more",
+    description="Bikini Bottom rankings — XP, daily, times, shop whales",
 )
 @app_commands.describe(board="Which leaderboard to show")
 @app_commands.choices(
     board=[
         app_commands.Choice(name="XP (career)", value="xp"),
-        app_commands.Choice(name="Sponges (pocket)", value="coins"),
-        app_commands.Choice(name="Best time", value="time"),
         app_commands.Choice(name="Today's daily", value="daily_today"),
-        app_commands.Choice(name="Daily wins (all-time)", value="daily"),
-        app_commands.Choice(name="Challenge wins", value="challenge"),
+        app_commands.Choice(name="Best time", value="time"),
         app_commands.Choice(name="Shop whales", value="whales"),
     ]
 )
@@ -4488,24 +4485,7 @@ async def leaderboard_cmd(
 
     players = [(uid, user_stats(gstats, int(uid))) for uid, _ in iter_players(gstats)]
 
-    if mode == "xp":
-        ranked = sorted(players, key=lambda item: item[1].get("xp", 0), reverse=True)[:10]
-        title = f"{XP} Career XP"
-        blurb = "Who's climbing the ladder? (Shop spend doesn't hurt XP.)"
-        fmt = lambda s: (
-            f"**{format_xp(s.get('xp', 0))}** · "
-            f"{SPONGE} **{int(s.get('coins', 0))}**"
-        )
-        nonempty = lambda s: s.get("xp", 0) > 0 or s.get("wins", 0) > 0
-        empty_msg = f"{BUBBLE} Nobody on this board yet — go earn some XP with `/play`!"
-    elif mode == "coins":
-        ranked = sorted(players, key=lambda item: item[1].get("coins", 0), reverse=True)[:10]
-        title = f"{SPONGE} Richest pockets"
-        blurb = "Spendable sponges left after shopping."
-        fmt = lambda s: f"**{format_sponges(s.get('coins', 0))}** · {s.get('wins', 0)}W/{s.get('losses', 0)}L"
-        nonempty = lambda s: s.get("coins", 0) > 0 or s.get("wins", 0) > 0
-        empty_msg = f"{BUBBLE} Nobody on this board yet — go earn some sponges with `/play`!"
-    elif mode == "time":
+    if mode == "time":
         ranked = sorted(
             ((uid, s) for uid, s in players if s.get("best_time") is not None),
             key=lambda item: item[1]["best_time"],
@@ -4515,13 +4495,6 @@ async def leaderboard_cmd(
         fmt = lambda s: f"**{format_time(s['best_time'])}**"
         nonempty = lambda s: True
         empty_msg = f"{BUBBLE} No best times yet — clear a board with `/play`!"
-    elif mode == "daily":
-        ranked = sorted(players, key=lambda item: item[1].get("daily_wins", 0), reverse=True)[:10]
-        title = f"{PINEAPPLE} Daily legends"
-        blurb = "Pineapple puzzles conquered (all-time)."
-        fmt = lambda s: f"**{s.get('daily_wins', 0)}** clears"
-        nonempty = lambda s: s.get("daily_wins", 0) > 0
-        empty_msg = f"{BUBBLE} No daily legends yet — try `/daily`!"
     elif mode == "whales":
         ranked = sorted(
             players,
@@ -4539,12 +4512,17 @@ async def leaderboard_cmd(
             f"{BUBBLE} Nobody's emptied their pockets yet — the Krusty Shop is waiting."
         )
     else:
-        ranked = sorted(players, key=lambda item: item[1].get("challenge_wins", 0), reverse=True)[:10]
-        title = f"{JELLY} Challenge champs"
-        blurb = "Jellyfish race winners."
-        fmt = lambda s: f"**{s.get('challenge_wins', 0)}** wins"
-        nonempty = lambda s: s.get("challenge_wins", 0) > 0
-        empty_msg = f"{BUBBLE} No challenge champs yet — start a `/challenge`!"
+        # Default: career XP (+ pocket on the same line)
+        ranked = sorted(players, key=lambda item: item[1].get("xp", 0), reverse=True)[:10]
+        title = f"{XP} Career XP"
+        blurb = "Who's climbing the ladder? (Shop spend doesn't hurt XP.)"
+        fmt = lambda s: (
+            f"**{format_xp(s.get('xp', 0))}** · "
+            f"{SPONGE} **{int(s.get('coins', 0))}**"
+        )
+        nonempty = lambda s: s.get("xp", 0) > 0 or s.get("wins", 0) > 0
+        empty_msg = f"{BUBBLE} Nobody on this board yet — go earn some XP with `/play`!"
+        mode = "xp"
 
     ranked = [(uid, s) for uid, s in ranked if nonempty(s)]
     if not ranked:

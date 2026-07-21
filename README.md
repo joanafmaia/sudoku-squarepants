@@ -10,7 +10,7 @@ Interactive 9×9 Sudoku for Discord — solo, daily, and multiplayer speedrun ch
 - Bikini Bottom UI — bubbly Fredoka digits, lagoon board, emoji border pins
 - **XP** ⭐ career score (leaderboard) + **sponges** 🧽 spendable shop currency
 - **`/shop`** — Krusty Shop catalog: Titles (header flair) & Pins (border cosmetics)
-- **`/leaderboard`** — XP, pocket, times, today's daily, all-time daily, challenge, shop whales
+- **`/leaderboard`** — XP, today's daily, best time, shop whales
 - Optional MongoDB for challenges / daily claims / session restore / leaderboard
 - HTTP `/health` endpoint for free hosting keep-alive (Render + UptimeRobot)
 
