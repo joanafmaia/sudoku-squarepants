@@ -93,8 +93,23 @@ BOARD_HEADER_H = 40
 BOARD_CARD_PAD = 28
 BOARD_CARD_RADIUS = 22
 BOARD_INNER_PAD = 14
+BOARD_REWARD_H = 64
 
 COLS = "ABCDEFGHI"
+
+# SpongeBob SquarePants economy (stored as "coins" in data)
+SPONGE = "🧽"
+BUBBLE = "🫧"
+STAR = "⭐"
+PINEAPPLE = "🍍"
+
+
+def format_sponges(amount: int, *, signed: bool = False) -> str:
+    """Display currency as sponge emojis."""
+    n = int(amount)
+    if signed:
+        return f"+{n} {SPONGE}" if n >= 0 else f"{n} {SPONGE}"
+    return f"{n} {SPONGE}"
 
 SHOP_TITLES = {
     "rookie": {"label": "Rookie", "cost": 50},
@@ -220,7 +235,10 @@ async def load_persisted_game(key: tuple) -> dict | None:
             return None
         game = raw
         game["board"] = normalize_board(game.get("board") or [])
+        game["solution"] = normalize_solution(game.get("solution"))
         game["participants"] = set(game.get("participants") or [game.get("owner_id")])
+        game.pop("finishing", None)
+        game.pop("_digit_lock", None)
         games[key] = game
         return game
     return None
@@ -230,10 +248,12 @@ def deepcopy_game(game: dict) -> dict:
     """JSON-safe clone of a live game dict."""
     out = {}
     for k, v in game.items():
-        if k == "participants":
+        if k in ("participants",):
             out[k] = list(v) if v else []
+        elif k in ("_digit_lock", "finishing", "rewarded"):
+            continue  # ephemeral UI locks — don't persist
         elif k in ("board", "solution"):
-            out[k] = copy_grid(v)
+            out[k] = copy_grid(v) if k == "board" else normalize_solution(v)
         elif k == "given":
             out[k] = [row[:] for row in v]
         else:
@@ -452,8 +472,15 @@ def find_conflicts(board: list[list[dict]]) -> set[tuple[int, int]]:
     return bad
 
 
+def normalize_solution(solution: list | None) -> list[list[int]]:
+    """Ensure solution is a 9×9 int grid (Mongo/JSON can coerce types)."""
+    if not solution:
+        return []
+    return [[int(cell) for cell in row] for row in solution]
+
+
 def is_complete(board: list[list[dict]], solution: list[list[int]]) -> bool:
-    return values_grid(board) == solution
+    return values_grid(board) == normalize_solution(solution)
 
 
 def filled_count(board: list[list[dict]]) -> int:
@@ -548,8 +575,13 @@ def render_board(
     conflicts: set[tuple[int, int]] | None = None,
     highlight_box: int | None = None,
     difficulty: str | None = None,
+    reward_sponges: int | None = None,
 ) -> BytesIO:
-    """Light Paper board — high-contrast grid + vivid blue selection."""
+    """Light Paper board — high-contrast grid + vivid blue selection.
+
+    When ``reward_sponges`` is set, a congratulations strip is drawn under the grid
+    (same image — no extra Discord message).
+    """
     _ = solution
     conflicts = conflicts or set()
     canvas = BOARD_CANVAS
@@ -557,8 +589,9 @@ def render_board(
     pad = BOARD_CARD_PAD
     radius = BOARD_CARD_RADIUS
     inner = BOARD_INNER_PAD
+    reward_h = BOARD_REWARD_H if reward_sponges is not None else 0
 
-    img = Image.new("RGB", (canvas, canvas), RGB_BG)
+    img = Image.new("RGB", (canvas, canvas + reward_h), RGB_BG)
     draw = ImageDraw.Draw(img)
 
     tier_name = difficulty_label(difficulty)
@@ -693,10 +726,55 @@ def render_board(
                         font=pencil_font,
                     )
 
+    if reward_sponges is not None:
+        _draw_reward_banner(draw, canvas=canvas, reward_h=reward_h, sponges=int(reward_sponges))
+
     out = BytesIO()
     img.save(out, format="PNG", compress_level=1)
     out.seek(0)
     return out
+
+
+def _draw_reward_banner(
+    draw: ImageDraw.ImageDraw,
+    *,
+    canvas: int,
+    reward_h: int,
+    sponges: int,
+) -> None:
+    """Footer under the board: ✓ Congratulations, you gained N [sponge chip]."""
+    y0 = canvas
+    draw.rectangle((0, y0, canvas, canvas + reward_h), fill="#FFFFFF")
+    draw.line(
+        (BOARD_CARD_PAD, y0 + 1, canvas - BOARD_CARD_PAD, y0 + 1),
+        fill=RGB_CARD_BORDER,
+        width=2,
+    )
+
+    font = board_font(22, bold=True)
+    line = f"✓  Congratulations, you gained  {sponges}"
+    bb = draw.textbbox((0, 0), line, font=font)
+    tw, th = bb[2] - bb[0], bb[3] - bb[1]
+    chip = 24
+    x = (canvas - tw - chip - 12) / 2
+    y = y0 + (reward_h - th) / 2 - 1
+    draw.text((x, y), line, fill=RGB_HEADER, font=font)
+    draw.text((x, y), "✓", fill="#16A34A", font=font)
+
+    chip_x = x + tw + 10
+    chip_y = y0 + (reward_h - chip) / 2
+    draw.rounded_rectangle(
+        (chip_x, chip_y, chip_x + chip, chip_y + chip),
+        radius=6,
+        fill="#F5D76E",
+        outline="#C4A035",
+        width=2,
+    )
+    for dx, dy in ((6, 7), (14, 10), (9, 16)):
+        draw.ellipse(
+            (chip_x + dx, chip_y + dy, chip_x + dx + 4, chip_y + dy + 4),
+            fill="#E8C84A",
+        )
 
 
 def board_to_file(image: BytesIO) -> discord.File:
@@ -758,7 +836,7 @@ def new_game_state(
         "mode": mode,
         "board": normalize_board(board),
         "given": [row[:] for row in given],
-        "solution": copy_grid(solution),
+        "solution": normalize_solution(solution),
         "difficulty": tier_name,
         "ui_stage": STAGE_BOX,
         "box_id": 0,
@@ -891,7 +969,7 @@ def build_daily_achievement_embed(
     embed.add_field(name="Time", value=format_time(elapsed), inline=True)
     embed.add_field(name="Difficulty", value=difficulty_label(difficulty), inline=True)
     embed.add_field(name="Rank", value=str(medal), inline=True)
-    embed.add_field(name="Reward", value=f"+{coins}", inline=True)
+    embed.add_field(name="Reward", value=format_sponges(coins, signed=True), inline=True)
     embed.add_field(name="Multiplier", value=f"×{multiplier:.2f}", inline=True)
     embed.add_field(name="Share", value=f"```\n{share_text}\n```", inline=False)
     return embed
@@ -930,8 +1008,8 @@ def finish_win(
 
     if not award and is_daily:
         return paper_embed(
-            "Daily",
-            description="Today's reward was already claimed — no duplicate coins.",
+            f"{PINEAPPLE} Daily",
+            description="Today's reward was already claimed — no duplicate sponges.",
         )
 
     stats["wins"] += 1
@@ -974,18 +1052,19 @@ def finish_win(
                 break
 
     if challenge_winner:
-        title = "Challenge won"
+        title = f"{SPONGE} Challenge won!"
     elif is_daily:
-        title = "Daily cleared"
+        title = f"{PINEAPPLE} Daily cleared!"
     else:
-        title = "Puzzle solved"
+        title = f"{SPONGE} Puzzle solved!"
 
-    embed = paper_embed(f"✏️ {title}")
+    embed = paper_embed(title)
+    embed.description = f"{BUBBLE} Nice work — Bikini Bottom is proud of you!"
     embed.add_field(name="Time", value=format_time(elapsed), inline=True)
     embed.add_field(name="Difficulty", value=difficulty_label(game.get("difficulty")), inline=True)
-    embed.add_field(name="Reward", value=f"+{coins}", inline=True)
-    embed.add_field(name="Streak", value=str(stats["streak"]), inline=True)
-    embed.add_field(name="Balance", value=str(stats["coins"]), inline=True)
+    embed.add_field(name="Reward", value=format_sponges(coins, signed=True), inline=True)
+    embed.add_field(name=f"Streak {STAR}", value=str(stats["streak"]), inline=True)
+    embed.add_field(name="Balance", value=format_sponges(stats["coins"]), inline=True)
     if rank is not None:
         embed.add_field(name="Rank", value=f"#{rank}", inline=True)
     else:
@@ -1263,7 +1342,7 @@ async def settle_challenge_match(
         if p.get("forfeit"):
             ranked_lines.append(f"✗ {mention(p['user_id'])} — quit")
     if any(p["user_id"] != winner_id for _, p in entries):
-        ranked_lines.append(f"Non-winners: +{CHALLENGE_LOSER_COINS} consolation coins each")
+        ranked_lines.append(f"Non-winners: {format_sponges(CHALLENGE_LOSER_COINS, signed=True)} consolation each")
     ranked_lines.append(
         f"Difficulty: **{difficulty_label(match.get('difficulty'))}** · winner ×{CHALLENGE_WIN_MULT:g}"
     )
@@ -2179,6 +2258,32 @@ class SudokuView(discord.ui.View):
                 pass
             return
 
+        if game.get("finishing"):
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        f"{SPONGE} Already solved — rewards are posting!",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.followup.send(
+                        f"{SPONGE} Already solved — rewards are posting!",
+                        ephemeral=True,
+                    )
+            except discord.HTTPException:
+                pass
+            return
+
+        # Serialize digit clicks: a Discord retry / double-tap used to toggle-erase
+        # the last number before the board image refreshed (looked like it "didn't stick").
+        if game.get("_digit_lock"):
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.defer()
+            except discord.HTTPException:
+                pass
+            return
+
         r, c = selected_cell(game)
 
         if game["given"][r][c]:
@@ -2204,56 +2309,140 @@ class SudokuView(discord.ui.View):
             await sync_challenge_board(game)
             return
 
-        # Pen mode: place/erase then return to cell picker (Stage 2)
-        current = cell_value(game["board"], r, c)
-        if current == digit:
-            set_cell_value(game["board"], r, c, 0)
-            game["board"][r][c]["pencil_marks"] = []
+        # Pen mode: lock first, then defer — stops Discord retries / double-taps from
+        # toggle-erasing the digit before the board image refreshes.
+        game["_digit_lock"] = True
+        try:
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.defer()
+            except discord.HTTPException:
+                pass
+
+            current = cell_value(game["board"], r, c)
+            if current == digit:
+                # Re-tap while board is already solved → celebrate, don't erase
+                if is_complete(game["board"], game["solution"]) and not find_conflicts(game["board"]):
+                    game["finishing"] = True
+                    await self._celebrate_win(interaction, game)
+                    return
+                set_cell_value(game["board"], r, c, 0)
+                game["board"][r][c]["pencil_marks"] = []
+                game["ui_stage"] = STAGE_CELL
+                await self.refresh(interaction)
+                await sync_challenge_board(game)
+                return
+
+            set_cell_value(game["board"], r, c, digit)
+
+            if is_complete(game["board"], game["solution"]) and not find_conflicts(game["board"]):
+                game["finishing"] = True  # before any await — blocks concurrent erase
+                await sync_challenge_board(game)
+                await self._celebrate_win(interaction, game)
+                return
+
+            await sync_challenge_board(game)
+
+            # Full board but wrong / conflicts — still update the image and nudge the player
+            if filled_count(game["board"]) >= 81:
+                game["ui_stage"] = STAGE_CELL
+                await self.refresh(interaction)
+                try:
+                    await interaction.followup.send(
+                        f"{BUBBLE} Board is full but not solved — fix any red cells or wrong digits.",
+                        ephemeral=True,
+                    )
+                except discord.HTTPException:
+                    pass
+                return
+
             game["ui_stage"] = STAGE_CELL
             await self.refresh(interaction)
-            await sync_challenge_board(game)
-            return
+        finally:
+            g = games.get(self.game_key)
+            if g is not None and not g.get("finishing"):
+                g["_digit_lock"] = False
 
-        set_cell_value(game["board"], r, c, digit)
+    async def _celebrate_win(self, interaction: discord.Interaction, game: dict) -> None:
+        """Award sponges and replace the live board with the completed panel + rewards."""
+        game["finishing"] = True
+        guild_id = None
+        if interaction.guild is not None:
+            guild_id = interaction.guild.id
+        elif game.get("guild_id") is not None:
+            guild_id = int(game["guild_id"])
 
-        if is_complete(game["board"], game["solution"]) and not find_conflicts(game["board"]):
-            if not interaction.response.is_done():
-                await interaction.response.defer()
-            await sync_challenge_board(game)
+        try:
             if game.get("mode") == "challenge":
                 await handle_challenge_completion(self.bot, interaction, game, self)
                 return
-            if interaction.guild is None:
+
+            if guild_id is None:
+                await interaction.followup.send(
+                    "Couldn't award rewards (missing server). Board is complete — use `/quit` if stuck.",
+                    ephemeral=True,
+                )
+                game["finishing"] = False
+                await self.refresh(interaction)
                 return
-            key = self.game_key
+
+            if game.get("rewarded"):
+                return
+
             embed = await finish_win_and_announce(
                 self.bot,
-                interaction.guild.id,
+                guild_id,
                 interaction.user,
                 game,
             )
+            game["rewarded"] = True
+            coins = int(getattr(embed, "_sudoku_coins", 0) or 0)
             image = render_board(
                 game["board"],
                 game["given"],
                 solution=game["solution"],
                 conflicts=set(),
                 difficulty=game.get("difficulty"),
+                reward_sponges=coins,
             )
             file = board_to_file(image)
+            key = self.game_key
             await remove_game(key)
             self.stop()
-            await interaction.edit_original_response(
-                content=" ",
-                embed=None,
-                view=None,
-                attachments=[file],
-            )
-            await interaction.followup.send(embed=embed)
-            return
 
-        game["ui_stage"] = STAGE_CELL
-        await self.refresh(interaction)
-        await sync_challenge_board(game)
+            reward_line = f"{SPONGE} **Puzzle solved!** · {format_sponges(coins, signed=True)}"
+            try:
+                await interaction.edit_original_response(
+                    content=reward_line,
+                    embed=embed,
+                    view=None,
+                    attachments=[file],
+                )
+            except discord.HTTPException:
+                await interaction.followup.send(
+                    content=reward_line,
+                    embed=embed,
+                    file=file,
+                )
+        except Exception:
+            import traceback
+
+            traceback.print_exc()
+            # Keep the correct digit on the board and recover the panel
+            if self.game_key in games:
+                game["finishing"] = False
+                try:
+                    await self.refresh(interaction)
+                except Exception:
+                    pass
+            try:
+                await interaction.followup.send(
+                    f"{BUBBLE} You finished the puzzle, but rewards failed to post. "
+                    f"Try `/stats` — if sponges didn't update, ping an admin.",
+                    ephemeral=True,
+                )
+            except discord.HTTPException:
+                pass
 
     async def on_forfeit(self, interaction: discord.Interaction) -> None:
         game = games.get(self.game_key)
@@ -2291,7 +2480,7 @@ class ShopSelect(discord.ui.Select):
         self.bot = bot
         options = [
             discord.SelectOption(
-                label=f"{meta['label']} — {meta['cost']} coins",
+                label=f"{meta['label']} — {meta['cost']} {SPONGE}",
                 value=f"title:{tid}",
                 description="Cosmetic title",
             )
@@ -2321,7 +2510,7 @@ class ShopSelect(discord.ui.Select):
             return
         if stats["coins"] < meta["cost"]:
             await interaction.response.send_message(
-                f"Need **{meta['cost']}** coins (you have {stats['coins']}).",
+                f"Need **{format_sponges(meta['cost'])}** (you have {format_sponges(stats['coins'])}).",
                 ephemeral=True,
             )
             return
@@ -2330,7 +2519,8 @@ class ShopSelect(discord.ui.Select):
         stats["title"] = tid
         save_data(self.bot.data)
         await interaction.response.send_message(
-            f"Bought **{meta['label']}** (−{meta['cost']}). Balance: **{stats['coins']}**.",
+            f"Bought **{meta['label']}** (−{meta['cost']} {SPONGE}). "
+            f"Balance: **{format_sponges(stats['coins'])}**.",
             ephemeral=True,
         )
 
@@ -2492,7 +2682,7 @@ async def help_cmd(interaction: discord.Interaction):
         f"{meta['label']} ×{meta['multiplier']:.2f}"
         for meta in DIFFICULTY_TIERS.values()
     )
-    embed = paper_embed("✏️ Sudoku")
+    embed = paper_embed(f"{SPONGE} Sudoku · Bikini Bottom")
     embed.add_field(
         name="Play",
         value=(
@@ -2514,9 +2704,11 @@ async def help_cmd(interaction: discord.Interaction):
     embed.add_field(
         name="Rewards",
         value=(
-            f"Solve **+{BASE_WIN_REWARD}** · Daily **+{DAILY_BONUS}** · "
-            f"Streak **+{STREAK_BONUS_PER}**/lvl · "
-            f"Challenge win **×{CHALLENGE_WIN_MULT:g}** · loss **+{CHALLENGE_LOSER_COINS}**\n"
+            f"Solve **{format_sponges(BASE_WIN_REWARD, signed=True)}** · "
+            f"Daily **{format_sponges(DAILY_BONUS, signed=True)}** · "
+            f"Streak **{format_sponges(STREAK_BONUS_PER, signed=True)}**/lvl · "
+            f"Challenge win **×{CHALLENGE_WIN_MULT:g}** · "
+            f"loss **{format_sponges(CHALLENGE_LOSER_COINS, signed=True)}**\n"
             f"{tiers}"
         ),
         inline=False,
@@ -2840,8 +3032,8 @@ async def shop_cmd(interaction: discord.Interaction):
     save_data(bot.data)
     owned = ", ".join(SHOP_TITLES[t]["label"] for t in stats["owned_titles"] if t in SHOP_TITLES) or "None"
     equipped = SHOP_TITLES[stats["title"]]["label"] if stats.get("title") in SHOP_TITLES else "None"
-    embed = paper_embed("✏️ Shop")
-    embed.add_field(name="Balance", value=str(stats["coins"]), inline=True)
+    embed = paper_embed(f"{SPONGE} Shop")
+    embed.add_field(name="Balance", value=format_sponges(stats["coins"]), inline=True)
     embed.add_field(name="Title", value=equipped, inline=True)
     embed.add_field(name="Owned", value=owned, inline=False)
     await interaction.response.send_message(embed=embed, view=ShopView(bot), ephemeral=True)
@@ -2880,11 +3072,11 @@ async def quit_cmd(interaction: discord.Interaction):
     await interaction.response.send_message("No game to quit.", ephemeral=True)
 
 
-@bot.tree.command(name="leaderboard", description="Server leaderboards (coins, times, daily, challenge)")
+@bot.tree.command(name="leaderboard", description="Server leaderboards (sponges, times, daily, challenge)")
 @app_commands.describe(board="Which leaderboard to show")
 @app_commands.choices(
     board=[
-        app_commands.Choice(name="Coins", value="coins"),
+        app_commands.Choice(name="Sponges", value="coins"),
         app_commands.Choice(name="Best time", value="time"),
         app_commands.Choice(name="Daily wins", value="daily"),
         app_commands.Choice(name="Challenge wins", value="challenge"),
@@ -2903,8 +3095,8 @@ async def leaderboard_cmd(
 
     if mode == "coins":
         ranked = sorted(players, key=lambda item: item[1].get("coins", 0), reverse=True)[:10]
-        title = "Coins"
-        fmt = lambda s: f"{s.get('coins', 0)} · {s.get('wins', 0)}W/{s.get('losses', 0)}L"
+        title = f"{SPONGE} Sponges"
+        fmt = lambda s: f"{format_sponges(s.get('coins', 0))} · {s.get('wins', 0)}W/{s.get('losses', 0)}L"
         nonempty = lambda s: s.get("coins", 0) > 0 or s.get("wins", 0) > 0
     elif mode == "time":
         ranked = sorted(
@@ -2954,7 +3146,7 @@ async def stats_cmd(interaction: discord.Interaction, member: discord.Member | N
     best = format_time(s["best_time"]) if s.get("best_time") is not None else "—"
     title = SHOP_TITLES[s["title"]]["label"] if s.get("title") in SHOP_TITLES else "None"
     embed = paper_embed(f"Stats · {display_name(s)}")
-    embed.add_field(name="Coins", value=str(s["coins"]), inline=True)
+    embed.add_field(name="Sponges", value=format_sponges(s["coins"]), inline=True)
     embed.add_field(name="Title", value=title, inline=True)
     embed.add_field(name="Wins", value=str(s["wins"]), inline=True)
     embed.add_field(name="Losses", value=str(s["losses"]), inline=True)

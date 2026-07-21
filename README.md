@@ -8,7 +8,7 @@ Interactive 9×9 Sudoku for Discord — solo, daily, and multiplayer speedrun ch
 - **`/daily`** — same difficulty each day, unique puzzle per player (anti-copy; weekday schedule)
 - **`/challenge`** — private speedrun (invite players or open Join lobby, 2–5 players)
 - Paper & Pencil UI (board image + button stages)
-- Coins, shop (titles), leaderboards
+- Sponges 🧽 economy, shop (titles), leaderboards
 - Optional MongoDB for challenges / daily claims / session restore
 - HTTP `/health` endpoint for free hosting keep-alive (Render + UptimeRobot)
 
