@@ -3836,10 +3836,18 @@ class SudokuBot(commands.Bot):
         if DISCORD_GUILD_ID:
             guild = discord.Object(id=DISCORD_GUILD_ID)
             self.tree.copy_global_to(guild=guild)
-            guild_synced = await self.tree.sync(guild=guild)
-            print(f"Synced {len(guild_synced)} slash command(s) to guild {DISCORD_GUILD_ID}.")
-        synced = await self.tree.sync()
-        print(f"Synced {len(synced)} global slash command(s).")
+            try:
+                guild_synced = await self.tree.sync(guild=guild)
+                print(f"Synced {len(guild_synced)} slash command(s) to guild {DISCORD_GUILD_ID}.")
+            except app_commands.CommandSyncFailure as exc:
+                print(f"Guild command sync failed: {exc}")
+                raise
+        try:
+            synced = await self.tree.sync()
+            print(f"Synced {len(synced)} global slash command(s).")
+        except app_commands.CommandSyncFailure as exc:
+            print(f"Global command sync failed: {exc}")
+            raise
 
 
 bot = SudokuBot()
@@ -4013,27 +4021,17 @@ async def on_ready():
     description="Preview board pins/cosmetics (dev sample — not a real game)",
 )
 @app_commands.describe(
-    title="Sample title (default: Goofy Goober)",
-    pin="Extra border pin (default: Coral)",
-)
-@app_commands.choices(
-    title=[
-        app_commands.Choice(name=meta["pin"], value=tid)
-        for tid, meta in SHOP_TITLES.items()
-    ],
-    pin=[
-        app_commands.Choice(name=meta.get("pin", meta["label"]), value=tid)
-        for tid, meta in SHOP_PINS.items()
-    ],
+    title="Sample title id (default: Goofy Goober) — type to search",
+    pin="Extra border pin id (default: Coral) — type to search",
 )
 async def testboard_cmd(
     interaction: discord.Interaction,
-    title: app_commands.Choice[str] | None = None,
-    pin: app_commands.Choice[str] | None = None,
+    title: str | None = None,
+    pin: str | None = None,
 ):
     """Ephemeral preview so you can check cosmetic pins without starting a game."""
-    title_id = title.value if title else "sudoku_pro"
-    pin_id = pin.value if pin else "coral"
+    title_id = title if title in SHOP_TITLES else "sudoku_pro"
+    pin_id = pin if pin in SHOP_PINS else "coral"
     # Fake a small collection of owned cosmetics so the border fills with emoji pins
     sample_pins = [
         SHOP_TITLES[title_id]["emoji"],
@@ -4075,6 +4073,40 @@ async def testboard_cmd(
         file=board_to_file(image),
         ephemeral=True,
     )
+
+
+def _catalog_autocomplete(
+    current: str, catalog: dict[str, dict]
+) -> list[app_commands.Choice[str]]:
+    """Discord allows at most 25 autocomplete / choice results."""
+    cur = (current or "").lower().strip()
+    out: list[app_commands.Choice[str]] = []
+    for tid, meta in catalog.items():
+        label = str(meta.get("label") or meta.get("pin") or tid)
+        pin = str(meta.get("pin") or tid)
+        hay = f"{tid} {label} {pin}".lower()
+        if cur and cur not in hay:
+            continue
+        out.append(app_commands.Choice(name=label[:100], value=tid))
+        if len(out) >= 25:
+            break
+    return out
+
+
+@testboard_cmd.autocomplete("title")
+async def testboard_title_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    _ = interaction
+    return _catalog_autocomplete(current, SHOP_TITLES)
+
+
+@testboard_cmd.autocomplete("pin")
+async def testboard_pin_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    _ = interaction
+    return _catalog_autocomplete(current, SHOP_PINS)
 
 
 @bot.tree.command(name="help", description="I'm ready! How to play Bikini Bottom Sudoku")
