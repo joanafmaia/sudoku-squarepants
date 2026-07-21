@@ -167,151 +167,43 @@ SHOP_TITLES = {
     "neptune": {"label": "👑 King Neptune", "cost": 1500, "pin": "Neptune", "emoji": "👑"},
 }
 
-# Cosmetic board color packs (applied to the PNG grid)
-SHOP_THEMES = {
+# Extra border pin cosmetics (emoji only — never changes board colors)
+SHOP_PINS = {
     "jellyfish": {
-        "label": "Jellyfish Fields",
+        "label": "🪼 Jellyfish Fields",
         "pin": "Jellyfish",
         "emoji": "🪼",
         "cost": 175,
-        "palette": {
-            "header_bar": "#DDD6FE",
-            "header_text": "#5B21B6",
-            "card": "#FAF5FF",
-            "card_border": "#A78BFA",
-            "empty": "#FEFCFF",
-            "given_cell": "#EDE9FE",
-            "select": "#F0ABFC",
-            "box_hl": "#C4B5FD",
-            "conflict": "#FDA4AF",
-            "line": "#C4B5FD",
-            "thick": "#6D28D9",
-            "text": "#7C3AED",
-            "text_given": "#4C1D95",
-            "text_conflict": "#BE123C",
-            "pencil": "#7C3AED",
-            "outline": "#E879F9",
-        },
     },
     "krusty": {
-        "label": "Krusty Krab",
+        "label": "🦀 Krusty Krab",
         "pin": "Krusty",
         "emoji": "🦀",
         "cost": 250,
-        "palette": {
-            "header_bar": "#FECACA",
-            "header_text": "#9F1239",
-            "card": "#FFF7ED",
-            "card_border": "#EA580C",
-            "empty": "#FFFBEB",
-            "given_cell": "#FED7AA",
-            "select": "#FDE047",
-            "box_hl": "#FDBA74",
-            "conflict": "#FB7185",
-            "line": "#FDBA74",
-            "thick": "#C2410C",
-            "text": "#B45309",
-            "text_given": "#7C2D12",
-            "text_conflict": "#BE123C",
-            "pencil": "#9A3412",
-            "outline": "#F59E0B",
-        },
     },
     "goober": {
-        "label": "Goofy Goober Ice",
+        "label": "🍦 Goofy Goober Ice",
         "pin": "Goober Ice",
         "emoji": "🍦",
         "cost": 320,
-        "palette": {
-            "header_bar": "#FBCFE8",
-            "header_text": "#9D174D",
-            "card": "#FDF2F8",
-            "card_border": "#EC4899",
-            "empty": "#FFF1F2",
-            "given_cell": "#FCE7F3",
-            "select": "#A5F3FC",
-            "box_hl": "#F9A8D4",
-            "conflict": "#FDA4AF",
-            "line": "#F9A8D4",
-            "thick": "#BE185D",
-            "text": "#DB2777",
-            "text_given": "#9D174D",
-            "text_conflict": "#BE123C",
-            "pencil": "#9D174D",
-            "outline": "#22D3EE",
-        },
     },
     "sandy": {
-        "label": "Sandy's Dome",
+        "label": "🐿️ Sandy's Dome",
         "pin": "Sandy",
         "emoji": "🐿️",
         "cost": 400,
-        "palette": {
-            "header_bar": "#FED7AA",
-            "header_text": "#9A3412",
-            "card": "#FFFBEB",
-            "card_border": "#D97706",
-            "empty": "#FFFBEB",
-            "given_cell": "#FEF3C7",
-            "select": "#FCD34D",
-            "box_hl": "#FDE68A",
-            "conflict": "#FCA5A5",
-            "line": "#D6D3D1",
-            "thick": "#92400E",
-            "text": "#B45309",
-            "text_given": "#78350F",
-            "text_conflict": "#B91C1C",
-            "pencil": "#78716C",
-            "outline": "#EA580C",
-        },
     },
     "rock_bottom": {
-        "label": "Rock Bottom",
+        "label": "🌑 Rock Bottom",
         "pin": "Rock Bottom",
         "emoji": "🌑",
         "cost": 550,
-        "palette": {
-            "header_bar": "#334155",
-            "header_text": "#E2E8F0",
-            "card": "#1E293B",
-            "card_border": "#64748B",
-            "empty": "#0F172A",
-            "given_cell": "#334155",
-            "select": "#0EA5E9",
-            "box_hl": "#475569",
-            "conflict": "#F43F5E",
-            "line": "#64748B",
-            "thick": "#94A3B8",
-            "text": "#7DD3FC",
-            "text_given": "#CBD5E1",
-            "text_conflict": "#FB7185",
-            "pencil": "#94A3B8",
-            "outline": "#38BDF8",
-        },
     },
     "chum": {
-        "label": "Chum Bucket",
+        "label": "🪣 Chum Bucket",
         "pin": "Chum",
         "emoji": "🪣",
         "cost": 700,
-        "palette": {
-            "header_bar": "#BBF7D0",
-            "header_text": "#14532D",
-            "card": "#ECFDF5",
-            "card_border": "#16A34A",
-            "empty": "#F0FDF4",
-            "given_cell": "#DCFCE7",
-            "select": "#A3E635",
-            "box_hl": "#86EFAC",
-            "conflict": "#FDA4AF",
-            "line": "#86EFAC",
-            "thick": "#15803D",
-            "text": "#15803D",
-            "text_given": "#14532D",
-            "text_conflict": "#BE123C",
-            "pencil": "#4D7C0F",
-            "outline": "#65A30D",
-        },
     },
 }
 
@@ -470,8 +362,14 @@ def user_stats(gstats: dict, user_id: int) -> dict:
     s.setdefault("name", "Unknown")
     s.setdefault("title", None)
     s.setdefault("owned_titles", [])
-    s.setdefault("board_theme", None)
+    # Pins used to be sold as "themes"; keep owned_themes as the storage key
     s.setdefault("owned_themes", [])
+    s.setdefault("owned_pins", s.get("owned_themes") or [])
+    # Merge legacy owned_themes into owned_pins once
+    if s.get("owned_themes"):
+        merged = list(dict.fromkeys([*(s.get("owned_pins") or []), *s["owned_themes"]]))
+        s["owned_pins"] = merged
+        s["owned_themes"] = merged
     s.setdefault("hints", 0)
     s.setdefault("daily_wins", 0)
     s.setdefault("challenge_wins", 0)
@@ -613,20 +511,6 @@ def display_name(stats: dict) -> str:
     return name
 
 
-def palette_for_theme(theme_id: str | None) -> dict[str, str]:
-    meta = SHOP_THEMES.get(theme_id or "")
-    if not meta:
-        return DEFAULT_BOARD_PALETTE
-    return {**DEFAULT_BOARD_PALETTE, **meta["palette"]}
-
-
-def equipped_theme_id(stats: dict) -> str | None:
-    tid = stats.get("board_theme")
-    if tid and tid in SHOP_THEMES:
-        return tid
-    return None
-
-
 def equipped_title_id(stats: dict) -> str | None:
     tid = stats.get("title")
     if tid and tid in SHOP_TITLES:
@@ -634,8 +518,14 @@ def equipped_title_id(stats: dict) -> str | None:
     return None
 
 
+def owned_pin_ids(stats: dict) -> list[str]:
+    """Pin catalog IDs the player owns (legacy key: owned_themes)."""
+    ids = list(stats.get("owned_pins") or stats.get("owned_themes") or [])
+    return [tid for tid in ids if tid in SHOP_PINS]
+
+
 def owned_pin_emojis(stats: dict) -> list[str]:
-    """Emojis from purchased titles + themes — scattered as border pins."""
+    """Emojis from purchased titles + pins — scattered as border pins."""
     pins: list[str] = []
     seen: set[str] = set()
     for tid in stats.get("owned_titles") or []:
@@ -644,19 +534,13 @@ def owned_pin_emojis(stats: dict) -> list[str]:
         if emoji and emoji not in seen:
             pins.append(emoji)
             seen.add(emoji)
-    for tid in stats.get("owned_themes") or []:
-        meta = SHOP_THEMES.get(tid)
+    for tid in owned_pin_ids(stats):
+        meta = SHOP_PINS.get(tid)
         emoji = (meta or {}).get("emoji")
         if emoji and emoji not in seen:
             pins.append(emoji)
             seen.add(emoji)
     return pins
-
-
-def sync_theme_to_active_games(user_id: int, guild_id: int, theme_id: str | None) -> None:
-    for game in games.values():
-        if game.get("owner_id") == user_id and game.get("guild_id") == guild_id:
-            game["board_theme"] = theme_id
 
 
 def sync_title_to_active_games(user_id: int, guild_id: int, title_id: str | None) -> None:
@@ -1198,7 +1082,8 @@ def render_board(
 ) -> BytesIO:
     """Bikini Bottom board — large grid with random owned-emoji pins on the margins."""
     _ = solution
-    pal = palette_for_theme(theme_id)
+    _ = theme_id  # color packs removed; always Lagoon Classic palette
+    pal = DEFAULT_BOARD_PALETTE
     conflicts = conflicts or set()
     canvas = BOARD_CANVAS
     header_h = BOARD_HEADER_H
@@ -1454,7 +1339,6 @@ def new_game_state(
     match_id: str | None = None,
     player_slot: str | None = None,
     started_at: float | None = None,
-    board_theme: str | None = None,
     owner_name: str | None = None,
     owner_title: str | None = None,
     pin_emojis: list[str] | None = None,
@@ -1485,7 +1369,6 @@ def new_game_state(
         "hints_used": 0,
         "daily_date": daily_date,
         "message_id": None,
-        "board_theme": board_theme,
         "pin_emojis": list(pin_emojis or []),
         "pin_seed": int(pin_seed if pin_seed is not None else random.randrange(1 << 30)),
     }
@@ -1571,7 +1454,6 @@ def board_file_for(game: dict, *, status: str | None = None) -> tuple[str, disco
         conflicts=conflicts,
         highlight_box=highlight_box,
         difficulty=game.get("difficulty"),
-        theme_id=game.get("board_theme"),
         title_id=game.get("owner_title"),
         pin_emojis=game.get("pin_emojis"),
         pin_seed=game.get("pin_seed"),
@@ -2028,7 +1910,6 @@ async def handle_challenge_completion(
         solution=game["solution"],
         conflicts=set(),
         difficulty=game.get("difficulty"),
-        theme_id=game.get("board_theme"),
         title_id=game.get("owner_title"),
         pin_emojis=game.get("pin_emojis"),
         pin_seed=game.get("pin_seed"),
@@ -2149,7 +2030,6 @@ async def launch_challenge_match(
             player_slot=slot,
             difficulty=difficulty,
             started_at=start_time,
-            board_theme=equipped_theme_id(pstats),
             pin_emojis=owned_pin_emojis(pstats),
         )
         await dest.send(
@@ -3104,7 +2984,6 @@ class SudokuView(discord.ui.View):
                     solution=game.get("solution"),
                     conflicts=set(),
                     difficulty=game.get("difficulty"),
-                    theme_id=game.get("board_theme"),
                     title_id=game.get("owner_title"),
                     pin_emojis=game.get("pin_emojis"),
                     pin_seed=game.get("pin_seed"),
@@ -3189,44 +3068,30 @@ def shop_catalog(kind: str) -> list[dict]:
             }
             for tid, meta in SHOP_TITLES.items()
         ]
-    items = [
+    return [
         {
-            "kind": "theme",
-            "id": "",
-            "label": "Lagoon Classic",
-            "emoji": "🌊",
-            "cost": 0,
-            "pin": "Lagoon",
+            "kind": "pin",
+            "id": tid,
+            "label": meta["label"],
+            "emoji": meta.get("emoji", WAVE),
+            "cost": int(meta["cost"]),
+            "pin": meta.get("pin") or cosmetic_pin_text(meta),
         }
+        for tid, meta in SHOP_PINS.items()
     ]
-    for tid, meta in SHOP_THEMES.items():
-        items.append(
-            {
-                "kind": "theme",
-                "id": tid,
-                "label": meta["label"],
-                "emoji": meta.get("emoji", WAVE),
-                "cost": int(meta["cost"]),
-                "pin": meta.get("pin") or cosmetic_pin_text(meta),
-            }
-        )
-    return items
 
 
 def shop_item_owned(stats: dict, item: dict) -> bool:
     if item["kind"] == "title":
         return item["id"] in (stats.get("owned_titles") or [])
-    if not item["id"]:
-        return True  # Lagoon Classic is always "owned"
-    return item["id"] in (stats.get("owned_themes") or [])
+    return item["id"] in owned_pin_ids(stats)
 
 
 def shop_item_equipped(stats: dict, item: dict) -> bool:
     if item["kind"] == "title":
         return stats.get("title") == item["id"]
-    if not item["id"]:
-        return not stats.get("board_theme")
-    return stats.get("board_theme") == item["id"]
+    # Pins have no equip slot — all owned pins show on the border
+    return shop_item_owned(stats, item)
 
 
 def shop_item_embed(
@@ -3239,7 +3104,9 @@ def shop_item_embed(
 ) -> discord.Embed:
     owned = shop_item_owned(stats, item)
     equipped = shop_item_equipped(stats, item)
-    if equipped:
+    if item["kind"] == "pin":
+        status = "Owned" if owned else "Locked"
+    elif equipped:
         status = "Equipped"
     elif owned:
         status = "Owned"
@@ -3248,7 +3115,8 @@ def shop_item_embed(
 
     cost = int(item["cost"])
     price = "FREE" if cost <= 0 else format_sponges(cost)
-    embed = paper_embed(f"{SPONGE} Krusty Shop · {kind.title()}")
+    tab = "Titles" if kind == "titles" else "Pins"
+    embed = paper_embed(f"{SPONGE} Krusty Shop · {tab}")
     embed.description = (
         f"{item['emoji']} **{item['label']}**\n"
         f"*Browse with Prev/Next — Buy or Equip below.*\n"
@@ -3277,68 +3145,58 @@ def shop_item_embed(
         )
     else:
         embed.add_field(
-            name="Look",
-            value="Board color pack — press **Preview** to peek.",
+            name="Board pin",
+            value=(
+                f"Adds {item['emoji']} to your border collection. "
+                "Does **not** change board colors — press **Preview** to peek."
+            ),
             inline=False,
         )
-        if item["id"]:
-            embed.add_field(
-                name="Board pin",
-                value=f"Adds {item['emoji']} to your border collection when owned.",
-                inline=False,
-            )
 
     eq_title = (
         SHOP_TITLES[stats["title"]]["label"]
         if stats.get("title") in SHOP_TITLES
         else "Civilian"
     )
-    eq_theme = (
-        SHOP_THEMES[stats["board_theme"]]["label"]
-        if stats.get("board_theme") in SHOP_THEMES
-        else "🌊 Lagoon Classic"
+    pin_n = len(owned_pin_emojis(stats))
+    embed.add_field(
+        name="Equipped now",
+        value=f"{eq_title} · **{pin_n}** border pin(s)",
+        inline=False,
     )
-    embed.add_field(name="Equipped now", value=f"{eq_title} · {eq_theme}", inline=False)
     return embed
 
 
 def apply_shop_equip(bot: "SudokuBot", guild_id: int, user_id: int, item: dict) -> dict:
-    """Equip an owned item. Returns {ok, message}."""
+    """Equip an owned title. Pins have no equip slot."""
     gstats = guild_stats(bot.data, guild_id)
     stats = user_stats(gstats, user_id)
-    if item["kind"] == "title":
-        tid = item["id"]
-        if tid not in SHOP_TITLES:
-            return {"ok": False, "message": "Unknown title."}
-        if tid not in stats["owned_titles"]:
-            return {"ok": False, "message": "You don't own this title yet — Buy it first."}
-        stats["title"] = tid
-        save_data(bot.data)
-        sync_title_to_active_games(user_id, guild_id, tid)
+    if item["kind"] == "pin":
+        if item["id"] not in owned_pin_ids(stats):
+            return {"ok": False, "message": "You don't own this pin yet — Buy it first."}
         sync_pins_to_active_games(user_id, guild_id, owned_pin_emojis(stats))
         return {
             "ok": True,
-            "message": f"Equipped **{item['label']}**. Active boards pick it up on the next move.",
+            "message": f"**{item['label']}** is already on your border when you play.",
         }
 
     tid = item["id"]
-    if tid and tid not in SHOP_THEMES:
-        return {"ok": False, "message": "Unknown theme."}
-    if tid and tid not in stats["owned_themes"]:
-        return {"ok": False, "message": "You don't own this theme yet — Buy it first."}
-    stats["board_theme"] = tid or None
+    if tid not in SHOP_TITLES:
+        return {"ok": False, "message": "Unknown title."}
+    if tid not in stats["owned_titles"]:
+        return {"ok": False, "message": "You don't own this title yet — Buy it first."}
+    stats["title"] = tid
     save_data(bot.data)
-    sync_theme_to_active_games(user_id, guild_id, tid or None)
+    sync_title_to_active_games(user_id, guild_id, tid)
     sync_pins_to_active_games(user_id, guild_id, owned_pin_emojis(stats))
-    label = item["label"] if tid else "🌊 Lagoon Classic"
     return {
         "ok": True,
-        "message": f"Equipped board theme **{label}**. Next refresh uses it.",
+        "message": f"Equipped **{item['label']}**. Active boards pick it up on the next move.",
     }
 
 
 def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dict) -> dict:
-    """Buy + auto-equip. Returns {ok, bought, message, label, cost}."""
+    """Buy + auto-equip (titles) or add border pin. Returns {ok, bought, message, label, cost}."""
     gstats = guild_stats(bot.data, guild_id)
     stats = user_stats(gstats, user_id)
     cost = int(item["cost"])
@@ -3373,12 +3231,11 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
         }
 
     tid = item["id"]
-    if not tid:
-        return {"ok": False, "bought": False, "message": "Lagoon Classic is free — use Equip."}
-    if tid not in SHOP_THEMES:
-        return {"ok": False, "bought": False, "message": "Unknown theme."}
-    if tid in stats["owned_themes"]:
-        return {"ok": False, "bought": False, "message": "Already owned — use Equip."}
+    if tid not in SHOP_PINS:
+        return {"ok": False, "bought": False, "message": "Unknown pin."}
+    owned = owned_pin_ids(stats)
+    if tid in owned:
+        return {"ok": False, "bought": False, "message": "Already owned — it's on your border."}
     if stats["coins"] < cost:
         return {
             "ok": False,
@@ -3389,31 +3246,26 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
             ),
         }
     stats["coins"] -= cost
-    stats["owned_themes"].append(tid)
-    stats["board_theme"] = tid
+    owned.append(tid)
+    stats["owned_pins"] = owned
+    stats["owned_themes"] = owned  # legacy mirror
     save_data(bot.data)
-    sync_theme_to_active_games(user_id, guild_id, tid)
     sync_pins_to_active_games(user_id, guild_id, owned_pin_emojis(stats))
     return {
         "ok": True,
         "bought": True,
         "label": item["label"],
         "cost": cost,
-        "message": f"Bought **{item['label']}**!",
+        "message": f"Bought pin **{item['label']}**!",
     }
 
 
 def shop_preview_file(stats: dict, item: dict) -> discord.File:
-    """Easy board preview for the current catalog item."""
+    """Easy board preview for the current catalog item (Lagoon colors + pins)."""
     board, given, solution = make_puzzle("easy")
-    theme_id = None
-    title_id = None
-    if item["kind"] == "theme":
-        theme_id = item["id"] or None
-        title_id = equipped_title_id(stats)
-    else:
-        title_id = item["id"]
-        theme_id = equipped_theme_id(stats)
+    title_id = (
+        item["id"] if item["kind"] == "title" else equipped_title_id(stats)
+    )
     pins = list(owned_pin_emojis(stats))
     emoji = item.get("emoji")
     if emoji and emoji not in pins:
@@ -3423,7 +3275,6 @@ def shop_preview_file(stats: dict, item: dict) -> discord.File:
         given,
         solution=solution,
         difficulty="Easy",
-        theme_id=theme_id,
         title_id=title_id,
         pin_emojis=pins,
         pin_seed=21,
@@ -3432,7 +3283,7 @@ def shop_preview_file(stats: dict, item: dict) -> discord.File:
 
 
 class KrustyShopView(discord.ui.View):
-    """Interactive catalog: Titles/Themes tabs, carousel, Buy/Equip/Preview."""
+    """Interactive catalog: Titles/Pins tabs, carousel, Buy/Equip/Preview."""
 
     def __init__(
         self,
@@ -3447,7 +3298,7 @@ class KrustyShopView(discord.ui.View):
         self.bot = bot
         self.owner_id = owner_id
         self.guild_id = guild_id
-        self.kind = kind if kind in ("titles", "themes") else "titles"
+        self.kind = kind if kind in ("titles", "pins") else "titles"
         self.index = max(0, index)
         self._rebuild()
 
@@ -3495,16 +3346,16 @@ class KrustyShopView(discord.ui.View):
             row=0,
             custom_id="shop:titles",
         )
-        themes_btn = discord.ui.Button(
-            label="Themes",
-            style=discord.ButtonStyle.primary if self.kind == "themes" else discord.ButtonStyle.secondary,
+        pins_btn = discord.ui.Button(
+            label="Pins",
+            style=discord.ButtonStyle.primary if self.kind == "pins" else discord.ButtonStyle.secondary,
             row=0,
-            custom_id="shop:themes",
+            custom_id="shop:pins",
         )
         titles_btn.callback = self.on_titles
-        themes_btn.callback = self.on_themes
+        pins_btn.callback = self.on_pins
         self.add_item(titles_btn)
-        self.add_item(themes_btn)
+        self.add_item(pins_btn)
 
         prev_btn = discord.ui.Button(
             label="Prev",
@@ -3524,14 +3375,24 @@ class KrustyShopView(discord.ui.View):
         self.add_item(next_btn)
 
         if owned:
-            action = discord.ui.Button(
-                label="Equip",
-                style=discord.ButtonStyle.success,
-                row=2,
-                custom_id="shop:equip",
-                disabled=shop_item_equipped(stats, item),
-            )
-            action.callback = self.on_equip
+            if item["kind"] == "pin":
+                action = discord.ui.Button(
+                    label="Owned",
+                    style=discord.ButtonStyle.success,
+                    row=2,
+                    custom_id="shop:owned",
+                    disabled=True,
+                )
+            else:
+                action = discord.ui.Button(
+                    label="Equip",
+                    style=discord.ButtonStyle.success,
+                    row=2,
+                    custom_id="shop:equip",
+                    disabled=shop_item_equipped(stats, item),
+                )
+                action.callback = self.on_equip
+            self.add_item(action)
         else:
             action = discord.ui.Button(
                 label=f"Buy ({item['cost']} {SPONGE})" if item["cost"] else "Buy",
@@ -3540,7 +3401,7 @@ class KrustyShopView(discord.ui.View):
                 custom_id="shop:buy",
             )
             action.callback = self.on_buy
-        self.add_item(action)
+            self.add_item(action)
 
         preview = discord.ui.Button(
             label="Preview",
@@ -3569,8 +3430,8 @@ class KrustyShopView(discord.ui.View):
         self.index = 0
         await self._refresh(interaction)
 
-    async def on_themes(self, interaction: discord.Interaction) -> None:
-        self.kind = "themes"
+    async def on_pins(self, interaction: discord.Interaction) -> None:
+        self.kind = "pins"
         self.index = 0
         await self._refresh(interaction)
 
@@ -3689,7 +3550,7 @@ STATUS_ROTATION = [
     discord.Game(name=f"{SPONGE} /play · I'm ready!"),
     discord.Game(name=f"{WAVE} /daily · Pineapple puzzle"),
     discord.Game(name=f"{JELLY} /challenge · Jellyfish race"),
-    discord.Game(name=f"{SPONGE} /shop · titles & board themes"),
+    discord.Game(name=f"{SPONGE} /shop · titles & pins"),
 ]
 _status_i = 0
 
@@ -3805,34 +3666,34 @@ async def on_ready():
     description="Preview board pins/cosmetics (dev sample — not a real game)",
 )
 @app_commands.describe(
-    title="Sample title pin (default: Goofy Goober)",
-    theme="Sample theme pin (default: Jellyfish Fields)",
+    title="Sample title (default: Goofy Goober)",
+    pin="Extra border pin (default: Jellyfish Fields)",
 )
 @app_commands.choices(
     title=[
         app_commands.Choice(name=meta["pin"], value=tid)
         for tid, meta in SHOP_TITLES.items()
     ],
-    theme=[
+    pin=[
         app_commands.Choice(name=meta.get("pin", meta["label"]), value=tid)
-        for tid, meta in SHOP_THEMES.items()
+        for tid, meta in SHOP_PINS.items()
     ],
 )
 async def testboard_cmd(
     interaction: discord.Interaction,
     title: app_commands.Choice[str] | None = None,
-    theme: app_commands.Choice[str] | None = None,
+    pin: app_commands.Choice[str] | None = None,
 ):
     """Ephemeral preview so you can check cosmetic pins without starting a game."""
     title_id = title.value if title else "sudoku_pro"
-    theme_id = theme.value if theme else "jellyfish"
+    pin_id = pin.value if pin else "jellyfish"
     # Fake a small collection of owned cosmetics so the border fills with emoji pins
     sample_pins = [
         SHOP_TITLES[title_id]["emoji"],
-        SHOP_THEMES[theme_id]["emoji"],
+        SHOP_PINS[pin_id]["emoji"],
         SHOP_TITLES["legend"]["emoji"],
         SHOP_TITLES["neptune"]["emoji"],
-        SHOP_THEMES["krusty"]["emoji"],
+        SHOP_PINS["krusty"]["emoji"],
         SHOP_TITLES["dutchman"]["emoji"],
     ]
     # Dedupe while preserving order
@@ -3852,7 +3713,6 @@ async def testboard_cmd(
         given,
         solution=solution,
         difficulty="Easy",
-        theme_id=theme_id,
         title_id=title_id,
         selected=(4, 4),
         highlight_box=4,
@@ -3862,8 +3722,8 @@ async def testboard_cmd(
     await interaction.response.send_message(
         content=(
             f"{BUBBLE} **Pin preview** (not a real game)\n"
-            f"Border pins from owned cosmetics: {' '.join(pin_emojis)}\n"
-            f"Theme colors: **{cosmetic_pin_text(SHOP_THEMES.get(theme_id))}**"
+            f"Border pins: {' '.join(pin_emojis)}\n"
+            f"Board colors stay Lagoon Classic."
         ),
         file=board_to_file(image),
         ephemeral=True,
@@ -3969,7 +3829,6 @@ async def play_cmd(
         channel_id=interaction.channel_id,
         guild_id=guild_id,
         difficulty=diff_key,
-        board_theme=equipped_theme_id(stats),
         pin_emojis=owned_pin_emojis(stats),
     )
     try:
@@ -4202,7 +4061,6 @@ async def daily_cmd(interaction: discord.Interaction):
         guild_id=guild_id,
         daily_date=daily["date"],
         difficulty=diff_key,
-        board_theme=equipped_theme_id(stats),
         pin_emojis=owned_pin_emojis(stats),
     )
     try:
