@@ -96,7 +96,7 @@ BOARD_HEADER_H = 36
 BOARD_CARD_PAD = 0          # full-bleed so the board aligns with the keyboard
 BOARD_CARD_RADIUS = 0
 BOARD_INNER_PAD = 10
-BOARD_REWARD_H = 52
+BOARD_REWARD_H = 58
 
 COLS = "ABCDEFGHI"
 FONTS_DIR = Path(__file__).with_name("fonts")
@@ -832,6 +832,15 @@ def render_board(
     return out
 
 
+WIN_BANNER_LINES = (
+    "I'm ready! You earned",
+    "Order up! You earned",
+    "Aye aye! You earned",
+    "Bikini Bottom pays",
+    "Goofy Goober bonus",
+)
+
+
 def _draw_reward_banner(
     draw: ImageDraw.ImageDraw,
     *,
@@ -839,25 +848,27 @@ def _draw_reward_banner(
     reward_h: int,
     sponges: int,
 ) -> None:
-    """Footer under the solved board — same style as the reference win strip."""
+    """SpongeBob win strip under the solved board."""
     y0 = canvas
     y1 = canvas + reward_h
-    # Dark strip matching the solved-board chrome
-    draw.rectangle((0, y0, canvas, y1), fill="#2A2A2A")
-    draw.line((12, y0, canvas - 12, y0), fill="#1A1A1A", width=2)
+    # Sunny sponge bar
+    draw.rectangle((0, y0, canvas, y1), fill="#FFE566")
+    draw.line((0, y0, canvas, y0), fill="#F59E0B", width=3)
 
-    pad_x = 16
-    # Green check badge
-    badge = 26
+    pad_x = 14
+    # Teal "I'm ready" badge instead of plain check
+    badge = 28
     bx = pad_x
     by = y0 + (reward_h - badge) / 2
     draw.rounded_rectangle(
         (bx, by, bx + badge, by + badge),
-        radius=6,
-        fill="#22C55E",
+        radius=8,
+        fill="#0D9488",
+        outline="#134E4A",
+        width=2,
     )
-    check_font = board_font(18, bold=True)
-    mark = "✓"
+    check_font = board_font(16, bold=True)
+    mark = "OK"
     cb = draw.textbbox((0, 0), mark, font=check_font)
     cw, ch = cb[2] - cb[0], cb[3] - cb[1]
     draw.text(
@@ -867,27 +878,27 @@ def _draw_reward_banner(
         font=check_font,
     )
 
-    font = board_font(18, bold=False)
-    label = "Congratulations, you gained"
+    font = board_font(17, bold=True)
+    label = random.choice(WIN_BANNER_LINES)
     lb = draw.textbbox((0, 0), label, font=font)
     lh = lb[3] - lb[1]
     tx = bx + badge + 10
     ty = y0 + (reward_h - lh) / 2 - 1
-    draw.text((tx, ty), label, fill="#F5F5F5", font=font)
+    draw.text((tx, ty), label, fill="#134E4A", font=font)
     tw = lb[2] - lb[0]
 
-    # Amount + yellow sponge cube
-    amount = str(int(sponges))
+    amount = f"+{int(sponges)}"
     num_font = board_font(18, bold=True)
     nb = draw.textbbox((0, 0), amount, font=num_font)
     nw, nh = nb[2] - nb[0], nb[3] - nb[1]
-    ax = tx + tw + 12
+    ax = tx + tw + 10
     ay = y0 + (reward_h - nh) / 2 - 1
-    draw.text((ax, ay), amount, fill="#FFFFFF", font=num_font)
+    draw.text((ax, ay), amount, fill="#B45309", font=num_font)
 
-    chip = 22
+    chip = 24
     cx = ax + nw + 8
     cy = y0 + (reward_h - chip) / 2
+    # Yellow sponge square
     draw.rounded_rectangle(
         (cx, cy, cx + chip, cy + chip),
         radius=5,
@@ -895,9 +906,9 @@ def _draw_reward_banner(
         outline="#C4A035",
         width=2,
     )
-    for dx, dy in ((5, 6), (13, 9), (8, 15)):
+    for dx, dy in ((5, 6), (14, 8), (9, 15), (16, 16)):
         draw.ellipse(
-            (cx + dx, cy + dy, cx + dx + 4, cy + dy + 4),
+            (cx + dx, cy + dy, cx + dx + 3.5, cy + dy + 3.5),
             fill="#E8C84A",
         )
 
