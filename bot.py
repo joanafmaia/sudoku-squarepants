@@ -115,9 +115,10 @@ DEFAULT_BOARD_PALETTE = {
 # Fixed Discord attachment canvas — larger = bigger chat preview (full-bleed with keypad)
 BOARD_CANVAS = 800
 BOARD_HEADER_H = 42
+BOARD_FOOTER_H = 28
 BOARD_CARD_PAD = 0          # full-bleed so the board aligns with the keyboard
 BOARD_CARD_RADIUS = 0
-BOARD_INNER_PAD = 12
+BOARD_INNER_PAD = 16
 
 COLS = "ABCDEFGHI"
 FONTS_DIR = Path(__file__).with_name("fonts")
@@ -148,25 +149,26 @@ WIN_TAUNTS = (
 )
 
 SHOP_TITLES = {
-    "rookie": {"label": "🪼 Jellyfisher", "cost": 50},
-    "patrick": {"label": "⭐ Starfish Genius", "cost": 100},
-    "solver": {"label": "🍔 Fry Cook", "cost": 150},
-    "larry": {"label": "💪 Larry Lobster", "cost": 220},
-    "barnacle": {"label": "🦸 Barnacle Boy", "cost": 280},
-    "row_master": {"label": "🚗 Boatmobile Ace", "cost": 300},
-    "puff": {"label": "⛵ Boating School Grad", "cost": 350},
-    "dutchman": {"label": "👻 Flying Dutchman", "cost": 450},
-    "sudoku_pro": {"label": "🍦 Goofy Goober", "cost": 500},
-    "plankton": {"label": "🦠 Plankton Plotter", "cost": 650},
-    "mermaid": {"label": "🧜 Mermaid Man", "cost": 800},
-    "legend": {"label": "🍍 Pineapple Legend", "cost": 1000},
-    "neptune": {"label": "👑 King Neptune", "cost": 1500},
+    "rookie": {"label": "🪼 Jellyfisher", "cost": 50, "pin": "Jellyfisher"},
+    "patrick": {"label": "⭐ Starfish Genius", "cost": 100, "pin": "Starfish"},
+    "solver": {"label": "🍔 Fry Cook", "cost": 150, "pin": "Fry Cook"},
+    "larry": {"label": "💪 Larry Lobster", "cost": 220, "pin": "Larry"},
+    "barnacle": {"label": "🦸 Barnacle Boy", "cost": 280, "pin": "Barnacle"},
+    "row_master": {"label": "🚗 Boatmobile Ace", "cost": 300, "pin": "Boatmobile"},
+    "puff": {"label": "⛵ Boating School Grad", "cost": 350, "pin": "Boating Grad"},
+    "dutchman": {"label": "👻 Flying Dutchman", "cost": 450, "pin": "Dutchman"},
+    "sudoku_pro": {"label": "🍦 Goofy Goober", "cost": 500, "pin": "Goober"},
+    "plankton": {"label": "🦠 Plankton Plotter", "cost": 650, "pin": "Plankton"},
+    "mermaid": {"label": "🧜 Mermaid Man", "cost": 800, "pin": "Mermaid Man"},
+    "legend": {"label": "🍍 Pineapple Legend", "cost": 1000, "pin": "Legend"},
+    "neptune": {"label": "👑 King Neptune", "cost": 1500, "pin": "Neptune"},
 }
 
 # Cosmetic board color packs (applied to the PNG grid)
 SHOP_THEMES = {
     "jellyfish": {
         "label": "Jellyfish Fields",
+        "pin": "Jellyfish",
         "cost": 175,
         "palette": {
             "header_bar": "#DDD6FE",
@@ -189,6 +191,7 @@ SHOP_THEMES = {
     },
     "krusty": {
         "label": "Krusty Krab",
+        "pin": "Krusty",
         "cost": 250,
         "palette": {
             "header_bar": "#FECACA",
@@ -211,6 +214,7 @@ SHOP_THEMES = {
     },
     "goober": {
         "label": "Goofy Goober Ice",
+        "pin": "Goober Ice",
         "cost": 320,
         "palette": {
             "header_bar": "#FBCFE8",
@@ -233,6 +237,7 @@ SHOP_THEMES = {
     },
     "sandy": {
         "label": "Sandy's Dome",
+        "pin": "Sandy",
         "cost": 400,
         "palette": {
             "header_bar": "#FED7AA",
@@ -255,6 +260,7 @@ SHOP_THEMES = {
     },
     "rock_bottom": {
         "label": "Rock Bottom",
+        "pin": "Rock Bottom",
         "cost": 550,
         "palette": {
             "header_bar": "#334155",
@@ -277,6 +283,7 @@ SHOP_THEMES = {
     },
     "chum": {
         "label": "Chum Bucket",
+        "pin": "Chum",
         "cost": 700,
         "palette": {
             "header_bar": "#BBF7D0",
@@ -611,10 +618,38 @@ def equipped_theme_id(stats: dict) -> str | None:
     return None
 
 
+def equipped_title_id(stats: dict) -> str | None:
+    tid = stats.get("title")
+    if tid and tid in SHOP_TITLES:
+        return tid
+    return None
+
+
 def sync_theme_to_active_games(user_id: int, guild_id: int, theme_id: str | None) -> None:
     for game in games.values():
         if game.get("owner_id") == user_id and game.get("guild_id") == guild_id:
             game["board_theme"] = theme_id
+
+
+def sync_title_to_active_games(user_id: int, guild_id: int, title_id: str | None) -> None:
+    for game in games.values():
+        if game.get("owner_id") == user_id and game.get("guild_id") == guild_id:
+            game["owner_title"] = title_id
+
+
+def cosmetic_pin_text(meta: dict | None, *, fallback: str = "") -> str:
+    """Short ASCII-friendly badge text for PNG pins (no emoji)."""
+    if not meta:
+        return fallback
+    pin = (meta.get("pin") or "").strip()
+    if pin:
+        return pin[:18]
+    label = str(meta.get("label") or fallback)
+    # Drop leading non-ASCII / symbol runs (emoji prefixes)
+    cleaned = label.lstrip()
+    while cleaned and ord(cleaned[0]) > 127:
+        cleaned = cleaned[1:].lstrip()
+    return (cleaned or fallback)[:18]
 
 
 def utc_today() -> str:
@@ -669,6 +704,27 @@ def set_cell_value(board: list[list[dict]], r: int, c: int, value: int) -> None:
     board[r][c]["value"] = int(value)
     if value:
         board[r][c]["pencil_marks"] = []
+
+
+def clear_pencil_digit_peers(board: list[list[dict]], r: int, c: int, digit: int) -> None:
+    """Remove ``digit`` from notes in the same row, column, and 3×3 box."""
+    digit = int(digit)
+    if digit < 1 or digit > 9:
+        return
+    br, bc = (r // 3) * 3, (c // 3) * 3
+    peers: set[tuple[int, int]] = set()
+    for i in range(9):
+        peers.add((r, i))
+        peers.add((i, c))
+    for i in range(3):
+        for j in range(3):
+            peers.add((br + i, bc + j))
+    peers.discard((r, c))
+    for pr, pc in peers:
+        marks = list(board[pr][pc].get("pencil_marks") or [])
+        if digit in marks:
+            marks.remove(digit)
+            board[pr][pc]["pencil_marks"] = marks
 
 
 def toggle_pencil(board: list[list[dict]], r: int, c: int, digit: int) -> list[int]:
@@ -951,6 +1007,153 @@ def board_font(size: int = 22, *, bold: bool = False) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
+def _draw_pin_badge(
+    draw: ImageDraw.ImageDraw,
+    *,
+    text: str,
+    x: int,
+    y: int,
+    max_w: int,
+    height: int,
+    pal: dict[str, str],
+    align: str = "left",
+) -> None:
+    """Small rounded pin badge with short text."""
+    if not text:
+        return
+    font = board_font(13, bold=True)
+    label = text
+    while True:
+        bb = draw.textbbox((0, 0), label, font=font)
+        tw, th = bb[2] - bb[0], bb[3] - bb[1]
+        if tw + 16 <= max_w or len(label) <= 3:
+            break
+        label = label[:-1]
+    pad_x = 8
+    bw = min(max_w, tw + pad_x * 2)
+    bh = height
+    if align == "right":
+        bx = x - bw
+    elif align == "center":
+        bx = x - bw // 2
+    else:
+        bx = x
+    by = y
+    draw.rounded_rectangle(
+        (bx, by, bx + bw, by + bh),
+        radius=8,
+        fill=pal["select"],
+        outline=pal["outline"],
+        width=2,
+    )
+    # Rivet dot on the left of the badge
+    rivet = 6
+    rx = bx + 5
+    ry = by + (bh - rivet) / 2
+    draw.ellipse((rx, ry, rx + rivet, ry + rivet), fill=pal["outline"], outline=pal["thick"], width=1)
+    tx = bx + 14
+    ty = by + (bh - th) / 2 - 1
+    draw.text((tx, ty), label, fill=pal["header_text"], font=font)
+
+
+def _draw_corner_rivets(
+    draw: ImageDraw.ImageDraw,
+    *,
+    canvas: int,
+    header_h: int,
+    footer_h: int,
+    pal: dict[str, str],
+) -> None:
+    rivet = 12
+    inset = 7
+    positions = (
+        (inset, header_h + inset),
+        (canvas - inset - rivet, header_h + inset),
+        (inset, canvas - footer_h - inset - rivet),
+        (canvas - inset - rivet, canvas - footer_h - inset - rivet),
+    )
+    for x, y in positions:
+        draw.ellipse(
+            (x, y, x + rivet, y + rivet),
+            fill=pal["outline"],
+            outline=pal["thick"],
+            width=2,
+        )
+        draw.ellipse(
+            (x + 3, y + 3, x + rivet - 3, y + rivet - 3),
+            fill=pal["select"],
+        )
+
+
+def _draw_board_pins(
+    draw: ImageDraw.ImageDraw,
+    *,
+    canvas: int,
+    header_h: int,
+    footer_h: int,
+    pal: dict[str, str],
+    title_id: str | None,
+    theme_id: str | None,
+) -> None:
+    """Cosmetic pins: corner rivets + title/theme badges on the frame."""
+    _draw_corner_rivets(
+        draw, canvas=canvas, header_h=header_h, footer_h=footer_h, pal=pal
+    )
+
+    title_meta = SHOP_TITLES.get(title_id or "")
+    theme_meta = SHOP_THEMES.get(theme_id or "")
+    title_pin = cosmetic_pin_text(title_meta)
+    theme_pin = cosmetic_pin_text(theme_meta)
+
+    badge_h = 22
+    badge_y = (header_h - badge_h) // 2
+    side_max = max(80, (canvas - 200) // 2)
+    if title_pin:
+        _draw_pin_badge(
+            draw,
+            text=title_pin,
+            x=10,
+            y=badge_y,
+            max_w=side_max,
+            height=badge_h,
+            pal=pal,
+            align="left",
+        )
+    if theme_pin:
+        _draw_pin_badge(
+            draw,
+            text=theme_pin,
+            x=canvas - 10,
+            y=badge_y,
+            max_w=side_max,
+            height=badge_h,
+            pal=pal,
+            align="right",
+        )
+
+    if footer_h > 0 and title_pin:
+        # Footer nameplate
+        draw.rectangle(
+            (0, canvas - footer_h, canvas, canvas),
+            fill=pal["header_bar"],
+        )
+        draw.line(
+            (0, canvas - footer_h, canvas, canvas - footer_h),
+            fill=pal["card_border"],
+            width=2,
+        )
+        plate = cosmetic_pin_text(title_meta) or title_pin
+        font = board_font(14, bold=True)
+        bb = draw.textbbox((0, 0), plate, font=font)
+        tw, th = bb[2] - bb[0], bb[3] - bb[1]
+        draw.text(
+            ((canvas - tw) / 2, canvas - footer_h + (footer_h - th) / 2 - 1),
+            plate,
+            fill=pal["header_text"],
+            font=font,
+        )
+
+
 def render_board(
     board: list[list[dict]],
     given: list[list[bool]],
@@ -961,17 +1164,20 @@ def render_board(
     highlight_box: int | None = None,
     difficulty: str | None = None,
     theme_id: str | None = None,
+    title_id: str | None = None,
 ) -> BytesIO:
-    """Bikini Bottom board — bubbly digits, lagoon colors, full-bleed panel.
+    """Bikini Bottom board — bubbly digits, lagoon colors, cosmetic frame pins.
 
-    The grid fills the image edge-to-edge so it lines up with Discord's button row
-    (same message width).
+    The grid stays large so it lines up with Discord's button row; pins live in
+    the header / footer / corner rivets.
     """
     _ = solution
     pal = palette_for_theme(theme_id)
     conflicts = conflicts or set()
     canvas = BOARD_CANVAS
     header_h = BOARD_HEADER_H
+    has_title = bool(title_id and title_id in SHOP_TITLES)
+    footer_h = BOARD_FOOTER_H if has_title else 0
     pad = BOARD_CARD_PAD
     radius = BOARD_CARD_RADIUS
     inner = BOARD_INNER_PAD
@@ -994,8 +1200,8 @@ def render_board(
         font=header_font,
     )
 
-    # Board card = full remaining area (no side gutters)
-    card_bottom = canvas - pad
+    # Board card = area between header and optional footer
+    card_bottom = canvas - pad - footer_h
     card = (pad, header_h, canvas - pad, card_bottom)
     if radius > 0:
         draw.rounded_rectangle(
@@ -1122,6 +1328,16 @@ def render_board(
                         font=pencil_font,
                     )
 
+    _draw_board_pins(
+        draw,
+        canvas=canvas,
+        header_h=header_h,
+        footer_h=footer_h,
+        pal=pal,
+        title_id=title_id,
+        theme_id=theme_id,
+    )
+
     out = BytesIO()
     img.save(out, format="PNG", compress_level=1)
     out.seek(0)
@@ -1197,6 +1413,7 @@ def new_game_state(
     started_at: float | None = None,
     board_theme: str | None = None,
     owner_name: str | None = None,
+    owner_title: str | None = None,
 ) -> dict:
     # Persist the human-readable tier name (e.g. "Expertttt")
     tier_name = difficulty_label(difficulty)
@@ -1213,6 +1430,7 @@ def new_game_state(
         "pencil_mode": False,
         "owner_id": owner_id,
         "owner_name": owner_name or "Unknown",
+        "owner_title": owner_title,
         "channel_id": channel_id,
         "guild_id": guild_id,
         "match_id": match_id,
@@ -1307,6 +1525,7 @@ def board_file_for(game: dict, *, status: str | None = None) -> tuple[str, disco
         highlight_box=highlight_box,
         difficulty=game.get("difficulty"),
         theme_id=game.get("board_theme"),
+        title_id=game.get("owner_title"),
     )
     return " ", board_to_file(image)
 
@@ -1761,6 +1980,7 @@ async def handle_challenge_completion(
         conflicts=set(),
         difficulty=game.get("difficulty"),
         theme_id=game.get("board_theme"),
+        title_id=game.get("owner_title"),
     )
     remaining = sum(
         1
@@ -1871,6 +2091,7 @@ async def launch_challenge_match(
             solution=solution,
             owner_id=member.id,
             owner_name=member.display_name,
+            owner_title=equipped_title_id(pstats),
             channel_id=getattr(dest, "id", interaction.channel.id),
             guild_id=interaction.guild.id,
             match_id=match_id,
@@ -2739,6 +2960,7 @@ class SudokuView(discord.ui.View):
                 return
 
             set_cell_value(game["board"], r, c, digit)
+            clear_pencil_digit_peers(game["board"], r, c, digit)
             conflicts = find_conflicts(game["board"])
             full = filled_count(game["board"]) >= 81
 
@@ -2831,6 +3053,7 @@ class SudokuView(discord.ui.View):
                     conflicts=set(),
                     difficulty=game.get("difficulty"),
                     theme_id=game.get("board_theme"),
+                    title_id=game.get("owner_title"),
                 )
             )
             caption = win_reward_caption(coins) if coins > 0 else f"{BUBBLE} **Board complete!**"
@@ -2950,6 +3173,7 @@ async def _shop_buy_or_equip(
     gstats = guild_stats(bot.data, interaction.guild.id)
     stats = user_stats(gstats, interaction.user.id)
     stats["name"] = interaction.user.display_name
+    who = interaction.user.mention
 
     if choice.startswith("title:"):
         tid = choice.split(":", 1)[1]
@@ -2960,8 +3184,10 @@ async def _shop_buy_or_equip(
         if tid in stats["owned_titles"]:
             stats["title"] = tid
             save_data(bot.data)
+            sync_title_to_active_games(interaction.user.id, interaction.guild.id, tid)
             await interaction.response.send_message(
-                f"Equipped **{meta['label']}**.", ephemeral=True
+                f"Equipped **{meta['label']}**. Active boards pick up the pin on the next move.",
+                ephemeral=True,
             )
             return
         if stats["coins"] < meta["cost"]:
@@ -2974,10 +3200,11 @@ async def _shop_buy_or_equip(
         stats["owned_titles"].append(tid)
         stats["title"] = tid
         save_data(bot.data)
+        sync_title_to_active_games(interaction.user.id, interaction.guild.id, tid)
+        # Public flex — shop UI stays private, the haul is channel-visible
         await interaction.response.send_message(
-            f"Bought **{meta['label']}** (−{meta['cost']} {SPONGE}). "
-            f"Balance: **{format_sponges(stats['coins'])}**.",
-            ephemeral=True,
+            f"{SPONGE} {who} bought the title **{meta['label']}** "
+            f"(−{meta['cost']} {SPONGE}) · pocket now **{format_sponges(stats['coins'])}**!",
         )
         return
 
@@ -3016,10 +3243,8 @@ async def _shop_buy_or_equip(
         save_data(bot.data)
         sync_theme_to_active_games(interaction.user.id, interaction.guild.id, tid)
         await interaction.response.send_message(
-            f"Bought **{meta['label']}** (−{meta['cost']} {SPONGE}). "
-            f"Balance: **{format_sponges(stats['coins'])}**. "
-            f"Active boards pick it up on the next move.",
-            ephemeral=True,
+            f"{SPONGE} {who} bought the board theme **{meta['label']}** "
+            f"(−{meta['cost']} {SPONGE}) · pocket now **{format_sponges(stats['coins'])}**!",
         )
         return
 
@@ -3199,6 +3424,59 @@ async def on_ready():
     await restore_persisted_sessions(bot)
 
 
+@bot.tree.command(
+    name="testboard",
+    description="Preview board pins/cosmetics (dev sample — not a real game)",
+)
+@app_commands.describe(
+    title="Sample title pin (default: Goofy Goober)",
+    theme="Sample theme pin (default: Jellyfish Fields)",
+)
+@app_commands.choices(
+    title=[
+        app_commands.Choice(name=meta["pin"], value=tid)
+        for tid, meta in SHOP_TITLES.items()
+    ],
+    theme=[
+        app_commands.Choice(name=meta.get("pin", meta["label"]), value=tid)
+        for tid, meta in SHOP_THEMES.items()
+    ],
+)
+async def testboard_cmd(
+    interaction: discord.Interaction,
+    title: app_commands.Choice[str] | None = None,
+    theme: app_commands.Choice[str] | None = None,
+):
+    """Ephemeral preview so you can check cosmetic pins without starting a game."""
+    title_id = title.value if title else "sudoku_pro"
+    theme_id = theme.value if theme else "jellyfish"
+    board, given, solution = make_puzzle("easy")
+    # Sprinkle a few pencil marks so notes are visible in the preview
+    for r, c, marks in ((0, 1, [2, 5]), (4, 4, [1, 3, 7]), (8, 7, [4, 9])):
+        if not given[r][c] and cell_value(board, r, c) == 0:
+            board[r][c]["pencil_marks"] = marks
+    image = render_board(
+        board,
+        given,
+        solution=solution,
+        difficulty="Easy",
+        theme_id=theme_id,
+        title_id=title_id,
+        selected=(4, 4),
+        highlight_box=4,
+    )
+    title_pin = cosmetic_pin_text(SHOP_TITLES.get(title_id))
+    theme_pin = cosmetic_pin_text(SHOP_THEMES.get(theme_id))
+    await interaction.response.send_message(
+        content=(
+            f"{BUBBLE} **Pin preview** (not a real game)\n"
+            f"Title pin: **{title_pin}** · Theme pin: **{theme_pin}**"
+        ),
+        file=board_to_file(image),
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="help", description="I'm ready! How to play Bikini Bottom Sudoku")
 async def help_cmd(interaction: discord.Interaction):
     tiers = " · ".join(
@@ -3294,6 +3572,7 @@ async def play_cmd(
         solution=solution,
         owner_id=user_id,
         owner_name=interaction.user.display_name,
+        owner_title=equipped_title_id(stats),
         channel_id=interaction.channel_id,
         guild_id=guild_id,
         difficulty=diff_key,
@@ -3524,6 +3803,7 @@ async def daily_cmd(interaction: discord.Interaction):
         solution=solution,
         owner_id=user_id,
         owner_name=interaction.user.display_name,
+        owner_title=equipped_title_id(stats),
         channel_id=interaction.channel_id,
         guild_id=guild_id,
         daily_date=daily["date"],
