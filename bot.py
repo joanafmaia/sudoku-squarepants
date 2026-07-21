@@ -2037,7 +2037,7 @@ class SudokuView(discord.ui.View):
     def _add_fixed_nav(self, game: dict, stage: str) -> None:
         """
         Row 3 — nav strip:
-          Back | Notes | Erase | I QUITTT
+          Back | Notes | I QUITTT
         """
         back = discord.ui.Button(
             label="Back",
@@ -2059,16 +2059,6 @@ class SudokuView(discord.ui.View):
         )
         pencil.callback = self.on_toggle_pencil
         self.add_item(pencil)
-
-        erase = discord.ui.Button(
-            label="Erase",
-            style=discord.ButtonStyle.danger,
-            row=3,
-            disabled=(stage != STAGE_NUMBER),
-            custom_id=self._cid("nav:erase"),
-        )
-        erase.callback = self.on_erase
-        self.add_item(erase)
 
         quit_btn = discord.ui.Button(
             label="I QUITTT",
@@ -2289,48 +2279,6 @@ class SudokuView(discord.ui.View):
         game["pencil_mode"] = not game.get("pencil_mode", False)
         await self.refresh(interaction)
 
-    async def on_erase(self, interaction: discord.Interaction) -> None:
-        """Clear the selected cell in one tap (no need to re-tap the same digit)."""
-        game = games.get(self.game_key)
-        if not game:
-            try:
-                await interaction.response.send_message("This game has ended.", ephemeral=True)
-            except discord.HTTPException:
-                pass
-            return
-        if game.get("finishing") or game.get("_digit_lock"):
-            try:
-                if not interaction.response.is_done():
-                    await interaction.response.defer()
-            except discord.HTTPException:
-                pass
-            return
-
-        r, c = selected_cell(game)
-        if game["given"][r][c]:
-            await self.refresh(interaction)
-            return
-
-        game["_digit_lock"] = True
-        try:
-            try:
-                if not interaction.response.is_done():
-                    await interaction.response.defer()
-            except discord.HTTPException:
-                pass
-            set_cell_value(game["board"], r, c, 0)
-            game["board"][r][c]["pencil_marks"] = []
-            game["pencil_mode"] = False
-            # Stay on the number pad so the player can type a new digit right away
-            game["ui_stage"] = STAGE_NUMBER
-            game["_digit_lock"] = False
-            await self.refresh(interaction)
-            await sync_challenge_board(game)
-        finally:
-            g = games.get(self.game_key)
-            if g is not None and not g.get("finishing"):
-                g["_digit_lock"] = False
-
     async def on_digit(self, interaction: discord.Interaction, digit: int) -> None:
         game = games.get(self.game_key)
         if not game:
@@ -2379,7 +2327,7 @@ class SudokuView(discord.ui.View):
                 await self.refresh(interaction)
                 try:
                     await interaction.followup.send(
-                        f"**{cell_label(r, c)}** has a number — press **Erase** first, then Notes.",
+                        f"**{cell_label(r, c)}** has a number — tap that digit again to erase, then use Notes.",
                         ephemeral=True,
                     )
                 except discord.HTTPException:
@@ -2392,7 +2340,7 @@ class SudokuView(discord.ui.View):
             return
 
         # Pen mode: lock briefly around the mutation, then release before slow PNG refresh
-        # so an immediate Erase / re-tap is not swallowed.
+        # so an immediate re-tap (erase) is not swallowed.
         game["_digit_lock"] = True
         try:
             try:
@@ -2403,13 +2351,14 @@ class SudokuView(discord.ui.View):
 
             current = cell_value(game["board"], r, c)
             if current == digit:
-                # Re-tap same digit = erase (also use the Erase button)
+                # Re-tap same digit = erase
                 if is_complete(game["board"], game["solution"]) and not find_conflicts(game["board"]):
                     game["finishing"] = True
                     await self._celebrate_win(interaction, game)
                     return
                 set_cell_value(game["board"], r, c, 0)
                 game["board"][r][c]["pencil_marks"] = []
+                # Stay on the number pad so you can type a new digit right away
                 game["ui_stage"] = STAGE_NUMBER
                 game["_digit_lock"] = False
                 await self.refresh(interaction)
@@ -2427,7 +2376,7 @@ class SudokuView(discord.ui.View):
 
             await sync_challenge_board(game)
 
-            # Conflict or still editing — keep the number pad open so Erase is one tap away
+            # Conflict (red) or board full — keep the number pad open so re-tap erases in one click
             if (r, c) in conflicts or filled_count(game["board"]) >= 81:
                 game["ui_stage"] = STAGE_NUMBER
                 game["_digit_lock"] = False
@@ -2828,7 +2777,7 @@ async def help_cmd(interaction: discord.Interaction):
     )
     embed.add_field(name="Step 1", value="Arrow pad → pick a 3×3 box", inline=True)
     embed.add_field(name="Step 2", value="Choose a cell", inline=True)
-    embed.add_field(name="Step 3", value="Enter 1–9 · **Erase** clears · Notes = doodles", inline=True)
+    embed.add_field(name="Step 3", value="Enter 1–9 (tap again to erase) · Notes = doodles", inline=True)
     embed.add_field(
         name="Rules",
         value="Red cells = row / column / box clash. **Notes** for doodle marks. "
