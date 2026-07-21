@@ -64,44 +64,48 @@ DAILY_WEEKDAY_DIFFICULTY = {
     6: "expertttt",   # Sunday
 }
 
-# Discord embed palette — Paper & Pencil (no blue / rainbow themes)
-COLOR_PAPER = discord.Color.from_str("#F4F1EA")
-COLOR_PAPER_WHITE = discord.Color.from_str("#FEFEFE")
-COLOR_DANGER = discord.Color.from_str("#B91C1C")  # forfeit / hard errors only
+# Discord embed palette — Bikini Bottom (yellow / ocean / coral)
+COLOR_PAPER = discord.Color.from_str("#FFE566")       # sponge yellow
+COLOR_PAPER_WHITE = discord.Color.from_str("#FFF8DC")  # soft sand
+COLOR_DANGER = discord.Color.from_str("#E11D48")      # jelly-red (forfeit / hard errors)
+COLOR_OCEAN = discord.Color.from_str("#2DD4BF")       # lagoon teal
 
-# Light Paper theme — high-contrast standalone board (not embed-sized)
-RGB_BG = "#F5F4F0"                # light cream canvas
-RGB_CARD = "#FFFFFF"              # white paper panel
-RGB_CARD_BORDER = "#C8C5BE"       # soft paper rim
-RGB_EMPTY = "#FFFFFF"             # empty cells
-RGB_GIVEN_CELL = "#F8F7F4"        # subtle wash for locked clues
-RGB_SELECT = "#B8D9F8"            # selected cell (light blue)
-RGB_BOX_HL = "#D6EBFA"            # selected 3×3 wash (light blue)
-RGB_CONFLICT = "#FECACA"          # soft red conflict wash
-RGB_LINE = "#A0A0A0"              # clean dark-gray cell lines
-RGB_THICK = "#202020"             # sharp charcoal 3×3 borders
-RGB_TEXT = "#1D4ED8"              # player ink — deep blue
-RGB_TEXT_GIVEN = "#111111"        # locked clues — sharp black
-RGB_TEXT_CONFLICT = "#B91C1C"
-RGB_PENCIL = "#2A2A2A"            # graphite pencil marks — high contrast on paper
-RGB_HEADER = "#44403C"
-RGB_OUTLINE = "#007BFF"           # vibrant blue selection ring
+# Board theme — sunny Bikini Bottom grid
+RGB_BG = "#7DD3FC"                # bright lagoon sky
+RGB_CARD = "#FFFBEB"              # sandy paper panel
+RGB_CARD_BORDER = "#F59E0B"       # pineapple gold rim
+RGB_EMPTY = "#FFFEF5"             # empty cells
+RGB_GIVEN_CELL = "#FEF3C7"        # soft sand wash for locked clues
+RGB_SELECT = "#FDE047"            # selected cell — sponge yellow
+RGB_BOX_HL = "#A5F3FC"            # selected 3×3 wash — bubble blue
+RGB_CONFLICT = "#FDA4AF"          # soft coral conflict wash
+RGB_LINE = "#94A3B8"              # soft sea-gray cell lines
+RGB_THICK = "#0F766E"             # deep lagoon 3×3 borders
+RGB_TEXT = "#1D4ED8"              # player ink — ocean blue
+RGB_TEXT_GIVEN = "#134E4A"        # locked clues — deep teal
+RGB_TEXT_CONFLICT = "#BE123C"
+RGB_PENCIL = "#64748B"            # soft graphite notes
+RGB_HEADER = "#0F766E"            # lagoon header
+RGB_OUTLINE = "#F59E0B"           # gold selection ring
 
 # Fixed Discord attachment canvas — larger = fuller chat preview
 BOARD_CANVAS = 720
-BOARD_HEADER_H = 40
+BOARD_HEADER_H = 44
 BOARD_CARD_PAD = 28
-BOARD_CARD_RADIUS = 22
+BOARD_CARD_RADIUS = 26
 BOARD_INNER_PAD = 14
 BOARD_REWARD_H = 64
 
 COLS = "ABCDEFGHI"
+FONTS_DIR = Path(__file__).with_name("fonts")
 
 # SpongeBob SquarePants economy (stored as "coins" in data)
 SPONGE = "🧽"
 BUBBLE = "🫧"
 STAR = "⭐"
 PINEAPPLE = "🍍"
+JELLY = "🪼"
+WAVE = "🌊"
 
 
 def format_sponges(amount: int, *, signed: bool = False) -> str:
@@ -111,12 +115,21 @@ def format_sponges(amount: int, *, signed: bool = False) -> str:
         return f"+{n} {SPONGE}" if n >= 0 else f"{n} {SPONGE}"
     return f"{n} {SPONGE}"
 
+
+WIN_TAUNTS = (
+    f"{BUBBLE} I'm ready! I'm ready! Bikini Bottom is proud of you!",
+    f"{SPONGE} Order up! Fresh sponges coming your way!",
+    f"{WAVE} You did it! Even Squidward clapped (quietly).",
+    f"{PINEAPPLE} Home sweet pineapple — puzzle crushed!",
+    f"{JELLY} Jellyfishing? Nah — Sudoku fishing. Catch!",
+)
+
 SHOP_TITLES = {
-    "rookie": {"label": "Rookie", "cost": 50},
-    "solver": {"label": "Solver", "cost": 150},
-    "row_master": {"label": "Row Master", "cost": 300},
-    "sudoku_pro": {"label": "Sudoku Pro", "cost": 500},
-    "legend": {"label": "Legend", "cost": 1000},
+    "rookie": {"label": "Jellyfisher", "cost": 50},
+    "solver": {"label": "Fry Cook", "cost": 150},
+    "row_master": {"label": "Boatmobile Ace", "cost": 300},
+    "sudoku_pro": {"label": "Goofy Goober", "cost": 500},
+    "legend": {"label": "Pineapple Legend", "cost": 1000},
 }
 
 intents = discord.Intents.default()
@@ -545,14 +558,41 @@ def parse_cell(raw: str) -> tuple[int, int] | None:
 
 
 def board_font(size: int = 22, *, bold: bool = False) -> ImageFont.ImageFont:
-    """Clean sans-serif — Segoe UI / DejaVu / Arial."""
+    """Bubbly Fredoka (SpongeBob vibe) from ./fonts, with system fallbacks.
+
+    Note: KG Traditional Fractions is a *fraction-symbols* font (½, ⅓…) — it does not
+    draw normal Sudoku digits 1–9, so we ship Fredoka (OFL) instead.
+    """
+    weight = 700 if bold else 500
+    bundled = FONTS_DIR / "Fredoka-Variable.ttf"
+    if bundled.exists():
+        try:
+            font = ImageFont.truetype(str(bundled), size)
+            try:
+                # axes: Weight 300–700, Width 75–125
+                font.set_variation_by_axes([weight, 100])
+            except Exception:
+                pass
+            return font
+        except OSError:
+            pass
+
+    # Optional drop-in: any *.ttf placed in ./fonts (except OFL.txt)
+    for path in sorted(FONTS_DIR.glob("*.ttf")) if FONTS_DIR.is_dir() else []:
+        if path.name.startswith("Fredoka"):
+            continue
+        try:
+            return ImageFont.truetype(str(path), size)
+        except OSError:
+            continue
+
     if bold:
         candidates = (
+            Path("C:/Windows/Fonts/seguiemj.ttf"),
             Path("C:/Windows/Fonts/segoeuib.ttf"),
             Path("C:/Windows/Fonts/arialbd.ttf"),
             Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
             Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
-            Path("C:/Windows/Fonts/arial.ttf"),
         )
     else:
         candidates = (
@@ -578,7 +618,7 @@ def render_board(
     difficulty: str | None = None,
     reward_sponges: int | None = None,
 ) -> BytesIO:
-    """Light Paper board — high-contrast grid + vivid blue selection.
+    """Bikini Bottom board — bubbly digits, lagoon colors, sunny panel.
 
     When ``reward_sponges`` is set, a congratulations strip is drawn under the grid
     (same image — no extra Discord message).
@@ -595,19 +635,27 @@ def render_board(
     img = Image.new("RGB", (canvas, canvas + reward_h), RGB_BG)
     draw = ImageDraw.Draw(img)
 
-    tier_name = difficulty_label(difficulty)
-    header_font = board_font(17, bold=False)
-    hb = draw.textbbox((0, 0), tier_name, font=header_font)
+    # Soft wave bands in the lagoon background
+    for i, y in enumerate(range(8, canvas + reward_h, 28)):
+        shade = "#67E8F9" if i % 2 == 0 else "#7DD3FC"
+        draw.line((0, y, canvas, y + 4), fill=shade, width=3)
+
+    tier_name = f"{SPONGE}  {difficulty_label(difficulty)}  {WAVE}"
+    # Header uses Latin-safe label (emoji may missing in some fonts) — keep ASCII + sponge via separate draw if needed
+    header_label = f"~ {difficulty_label(difficulty)} ~"
+    header_font = board_font(20, bold=True)
+    hb = draw.textbbox((0, 0), header_label, font=header_font)
     htw, hth = hb[2] - hb[0], hb[3] - hb[1]
     draw.text(
         ((canvas - htw) / 2, (header_h - hth) / 2),
-        tier_name,
+        header_label,
         fill=RGB_HEADER,
         font=header_font,
     )
+    _ = tier_name
 
     card = (pad, header_h, canvas - pad, canvas - pad)
-    draw.rounded_rectangle(card, radius=radius, fill=RGB_CARD, outline=RGB_CARD_BORDER, width=2)
+    draw.rounded_rectangle(card, radius=radius, fill=RGB_CARD, outline=RGB_CARD_BORDER, width=4)
 
     grid_left = pad + inner
     grid_top = header_h + inner
@@ -743,24 +791,24 @@ def _draw_reward_banner(
     reward_h: int,
     sponges: int,
 ) -> None:
-    """Footer under the board: ✓ Congratulations, you gained N [sponge chip]."""
+    """Footer under the board: Aye aye! +N sponges."""
     y0 = canvas
-    draw.rectangle((0, y0, canvas, canvas + reward_h), fill="#FFFFFF")
-    draw.line(
-        (BOARD_CARD_PAD, y0 + 1, canvas - BOARD_CARD_PAD, y0 + 1),
-        fill=RGB_CARD_BORDER,
-        width=2,
+    draw.rounded_rectangle(
+        (BOARD_CARD_PAD // 2, y0 + 4, canvas - BOARD_CARD_PAD // 2, canvas + reward_h - 4),
+        radius=14,
+        fill="#FFE566",
+        outline="#F59E0B",
+        width=3,
     )
 
     font = board_font(22, bold=True)
-    line = f"✓  Congratulations, you gained  {sponges}"
+    line = f"Aye aye!  +{sponges}  sponges"
     bb = draw.textbbox((0, 0), line, font=font)
     tw, th = bb[2] - bb[0], bb[3] - bb[1]
     chip = 24
     x = (canvas - tw - chip - 12) / 2
     y = y0 + (reward_h - th) / 2 - 1
-    draw.text((x, y), line, fill=RGB_HEADER, font=font)
-    draw.text((x, y), "✓", fill="#16A34A", font=font)
+    draw.text((x, y), line, fill="#0F766E", font=font)
 
     chip_x = x + tw + 10
     chip_y = y0 + (reward_h - chip) / 2
@@ -869,7 +917,7 @@ def find_challenge_game_for_user(user_id: int) -> tuple | None:
 
 
 def paper_embed(title: str, *, description: str | None = None) -> discord.Embed:
-    """Standard Paper & Pencil embed shell."""
+    """Bikini Bottom embed shell — sunny yellow."""
     embed = discord.Embed(title=title, color=COLOR_PAPER)
     if description:
         embed.description = description
@@ -1021,19 +1069,19 @@ def finish_win(
                 break
 
     if challenge_winner:
-        title = f"{SPONGE} Challenge won!"
+        title = f"{SPONGE} Challenge won — I'm ready!"
     elif is_daily:
-        title = f"{PINEAPPLE} Daily cleared!"
+        title = f"{PINEAPPLE} Daily cleared — aye aye!"
     else:
-        title = f"{SPONGE} Puzzle solved!"
+        title = f"{SPONGE} Puzzle solved — yay!"
 
     embed = paper_embed(title)
-    embed.description = f"{BUBBLE} Nice work — Bikini Bottom is proud of you!"
+    embed.description = random.choice(WIN_TAUNTS)
     embed.add_field(name="Time", value=format_time(elapsed), inline=True)
     embed.add_field(name="Difficulty", value=difficulty_label(game.get("difficulty")), inline=True)
-    embed.add_field(name="Reward", value=format_sponges(coins, signed=True), inline=True)
+    embed.add_field(name=f"Reward {SPONGE}", value=format_sponges(coins, signed=True), inline=True)
     embed.add_field(name=f"Streak {STAR}", value=str(stats["streak"]), inline=True)
-    embed.add_field(name="Balance", value=format_sponges(stats["coins"]), inline=True)
+    embed.add_field(name=f"Pocket {SPONGE}", value=format_sponges(stats["coins"]), inline=True)
     if rank is not None:
         embed.add_field(name="Rank", value=f"#{rank}", inline=True)
     else:
@@ -1099,10 +1147,10 @@ def finish_forfeit(data: dict, guild_id: int, user: discord.abc.User, game: dict
             "name": stats["name"],
         }
     save_data(data)
-    note = " Daily attempt locked for today." if game["mode"] == "daily" else ""
+    note = " Daily attempt locked for today — see you at the Krusty Krab!" if game["mode"] == "daily" else ""
     return paper_embed(
-        "I QUITTT",
-        description=f"Streak reset.{note}",
+        f"{WAVE} I QUITTT",
+        description=f"Streak wiped.{note}",
     )
 
 
@@ -1982,7 +2030,7 @@ class SudokuView(discord.ui.View):
         target = self._cid("nav:pencil")
         for child in self.children:
             if getattr(child, "custom_id", None) == target:
-                child.label = "Pencil✓" if pencil_on else "Pencil"  # type: ignore[attr-defined]
+                child.label = "Notes✓" if pencil_on else "Notes"  # type: ignore[attr-defined]
                 child.style = discord.ButtonStyle.success if pencil_on else discord.ButtonStyle.secondary  # type: ignore[attr-defined]
                 break
 
@@ -2003,7 +2051,7 @@ class SudokuView(discord.ui.View):
 
         pencil_on = game.get("pencil_mode", False)
         pencil = discord.ui.Button(
-            label="Pencil✓" if pencil_on else "Pencil",
+            label="Notes✓" if pencil_on else "Notes",
             style=discord.ButtonStyle.success if pencil_on else discord.ButtonStyle.secondary,
             row=3,
             disabled=(stage != STAGE_NUMBER),
@@ -2383,7 +2431,7 @@ class SudokuView(discord.ui.View):
                     await remove_game(key)
                     self.stop()
                     await interaction.edit_original_response(
-                        content=f"{SPONGE} **Puzzle solved!**",
+                        content=f"{SPONGE} **Aye aye — puzzle solved!**",
                         embed=None,
                         view=None,
                         attachments=[file],
@@ -2429,7 +2477,7 @@ class SudokuView(discord.ui.View):
                     pass
                 return
 
-            reward_line = f"{SPONGE} **Puzzle solved!** · {format_sponges(coins, signed=True)}"
+            reward_line = f"{SPONGE} **I'm ready!** Solved · {format_sponges(coins, signed=True)}"
             try:
                 await interaction.edit_original_response(
                     content=reward_line,
@@ -2595,10 +2643,10 @@ class SudokuBot(commands.Bot):
 bot = SudokuBot()
 
 STATUS_ROTATION = [
-    discord.Game(name="/play · Sudoku 9×9"),
-    discord.Game(name="/challenge · Speedrun"),
-    discord.Game(name="/daily · Daily puzzle"),
-    discord.Game(name="/shop · Titles"),
+    discord.Game(name=f"{SPONGE} /play · I'm ready!"),
+    discord.Game(name=f"{WAVE} /daily · Pineapple puzzle"),
+    discord.Game(name=f"{JELLY} /challenge · Jellyfish race"),
+    discord.Game(name=f"{SPONGE} /shop · Goofy Goober titles"),
 ]
 _status_i = 0
 
@@ -2700,19 +2748,23 @@ async def on_ready():
     await restore_persisted_sessions(bot)
 
 
-@bot.tree.command(name="help", description="How to play real Sudoku 9×9")
+@bot.tree.command(name="help", description="I'm ready! How to play Bikini Bottom Sudoku")
 async def help_cmd(interaction: discord.Interaction):
     tiers = " · ".join(
         f"{meta['label']} ×{meta['multiplier']:.2f}"
         for meta in DIFFICULTY_TIERS.values()
     )
     embed = paper_embed(f"{SPONGE} Sudoku · Bikini Bottom")
+    embed.description = (
+        f"{WAVE} Ahoy! Fill 1–9 in every row, column, and box. "
+        f"Earn **sponges** {SPONGE} — no duplicate numbers, only vibes."
+    )
     embed.add_field(
-        name="Play",
+        name=f"{BUBBLE} Play",
         value=(
-            "`/play` — solo puzzle\n"
-            "`/daily` — same difficulty each day, **unique** board per player\n"
-            "`/challenge` — invite or open lobby (private boards)"
+            "`/play` — solo puzzle (I'm ready!)\n"
+            "`/daily` — one pineapple puzzle a day\n"
+            "`/challenge` — race your pals in a private board"
         ),
         inline=False,
     )
@@ -2721,12 +2773,12 @@ async def help_cmd(interaction: discord.Interaction):
     embed.add_field(name="Step 3", value="Enter 1–9 (tap again to erase)", inline=True)
     embed.add_field(
         name="Rules",
-        value="Red cells = row / column / box conflict. Pencil Mode for notes. "
-        "**I QUITTT** (or `/quit`) leaves the board.",
+        value="Red cells = row / column / box clash. **Notes** for doodle marks. "
+        "**I QUITTT** (or `/quit`) bails out.",
         inline=False,
     )
     embed.add_field(
-        name="Rewards",
+        name=f"Rewards {SPONGE}",
         value=(
             f"Solve **{format_sponges(BASE_WIN_REWARD, signed=True)}** · "
             f"Daily **{format_sponges(DAILY_BONUS, signed=True)}** · "
@@ -2860,8 +2912,8 @@ async def challenge_cmd(
         )
         await interaction.response.send_message(
             view._roster_text(
-                f"🏁 {interaction.user.mention} opened a **{tier}** speedrun lobby. "
-                f"Press **Join**, then challenger presses **Start**."
+                f"🏁 {interaction.user.mention} opened a **{tier}** jellyfishing race! "
+                f"Press **Join**, then challenger presses **Start**. I'm ready!"
             ),
             view=view,
         )
@@ -3079,8 +3131,9 @@ async def shop_cmd(interaction: discord.Interaction):
     save_data(bot.data)
     owned = ", ".join(SHOP_TITLES[t]["label"] for t in stats["owned_titles"] if t in SHOP_TITLES) or "None"
     equipped = SHOP_TITLES[stats["title"]]["label"] if stats.get("title") in SHOP_TITLES else "None"
-    embed = paper_embed(f"{SPONGE} Shop")
-    embed.add_field(name="Balance", value=format_sponges(stats["coins"]), inline=True)
+    embed = paper_embed(f"{SPONGE} Krusty Shop")
+    embed.description = f"{BUBBLE} Spend sponges on goofy titles. Fancy!"
+    embed.add_field(name=f"Pocket {SPONGE}", value=format_sponges(stats["coins"]), inline=True)
     embed.add_field(name="Title", value=equipped, inline=True)
     embed.add_field(name="Owned", value=owned, inline=False)
     await interaction.response.send_message(embed=embed, view=ShopView(bot), ephemeral=True)
