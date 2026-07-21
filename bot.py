@@ -178,23 +178,41 @@ SHOP_TITLES = {
 
 # Extra border pin cosmetics (unique emojis — never overlap title pins, never change colors)
 SHOP_PINS = {
-    "jellyfish": {
+    "coral": {
         "label": "🪸 Coral Pin",
         "pin": "Coral",
         "emoji": "🪸",
-        "cost": 175,
+        "cost": 120,
     },
-    "krusty": {
+    "crab": {
         "label": "🦀 Crab Pin",
         "pin": "Crab",
         "emoji": "🦀",
-        "cost": 250,
+        "cost": 175,
     },
-    "goober": {
+    "bubble": {
         "label": "🫧 Bubble Pin",
         "pin": "Bubble",
         "emoji": "🫧",
-        "cost": 320,
+        "cost": 220,
+    },
+    "wave": {
+        "label": "🌊 Wave Pin",
+        "pin": "Wave",
+        "emoji": "🌊",
+        "cost": 260,
+    },
+    "shell": {
+        "label": "🐚 Shell Pin",
+        "pin": "Shell",
+        "emoji": "🐚",
+        "cost": 300,
+    },
+    "squid": {
+        "label": "🦑 Squid Pin",
+        "pin": "Squid",
+        "emoji": "🦑",
+        "cost": 350,
     },
     "sandy": {
         "label": "🐿️ Dome Pin",
@@ -202,18 +220,51 @@ SHOP_PINS = {
         "emoji": "🐿️",
         "cost": 400,
     },
-    "rock_bottom": {
+    "pearl": {
+        "label": "💎 Pearl Pin",
+        "pin": "Pearl",
+        "emoji": "💎",
+        "cost": 450,
+    },
+    "anchor": {
         "label": "⚓ Anchor Pin",
         "pin": "Anchor",
         "emoji": "⚓",
-        "cost": 550,
+        "cost": 520,
     },
-    "chum": {
+    "shark": {
+        "label": "🦈 Shark Pin",
+        "pin": "Shark",
+        "emoji": "🦈",
+        "cost": 600,
+    },
+    "bucket": {
         "label": "🪣 Bucket Pin",
         "pin": "Bucket",
         "emoji": "🪣",
         "cost": 700,
     },
+    "sponge": {
+        "label": "🧽 Sponge Pin",
+        "pin": "Sponge",
+        "emoji": "🧽",
+        "cost": 850,
+    },
+    "whirl": {
+        "label": "🌀 Whirlpool Pin",
+        "pin": "Whirlpool",
+        "emoji": "🌀",
+        "cost": 1000,
+    },
+}
+
+# Legacy shop pin ids → current ids (owned_themes / owned_pins from older builds)
+SHOP_PIN_ALIASES = {
+    "jellyfish": "coral",
+    "krusty": "crab",
+    "goober": "bubble",
+    "rock_bottom": "anchor",
+    "chum": "bucket",
 }
 
 intents = discord.Intents.default()
@@ -468,6 +519,11 @@ def user_stats(gstats: dict, user_id: int) -> dict:
         merged = list(dict.fromkeys([*(s.get("owned_pins") or []), *s["owned_themes"]]))
         s["owned_pins"] = merged
         s["owned_themes"] = merged
+    # Normalize legacy pin ids (jellyfish→coral, etc.)
+    normalized = owned_pin_ids(s)
+    if normalized != list(s.get("owned_pins") or []):
+        s["owned_pins"] = normalized
+        s["owned_themes"] = normalized
     seed_sponges_spent(s)
     s.setdefault("hints", 0)
     s.setdefault("daily_wins", 0)
@@ -617,10 +673,27 @@ def equipped_title_id(stats: dict) -> str | None:
     return None
 
 
+def resolve_pin_id(tid: str) -> str | None:
+    """Map legacy pin/theme ids onto the current SHOP_PINS catalog."""
+    if tid in SHOP_PINS:
+        return tid
+    mapped = SHOP_PIN_ALIASES.get(tid)
+    if mapped and mapped in SHOP_PINS:
+        return mapped
+    return None
+
+
 def owned_pin_ids(stats: dict) -> list[str]:
     """Pin catalog IDs the player owns (legacy key: owned_themes)."""
-    ids = list(stats.get("owned_pins") or stats.get("owned_themes") or [])
-    return [tid for tid in ids if tid in SHOP_PINS]
+    raw = list(stats.get("owned_pins") or stats.get("owned_themes") or [])
+    out: list[str] = []
+    seen: set[str] = set()
+    for tid in raw:
+        resolved = resolve_pin_id(str(tid))
+        if resolved and resolved not in seen:
+            out.append(resolved)
+            seen.add(resolved)
+    return out
 
 
 def owned_pin_emojis(stats: dict) -> list[str]:
@@ -3929,14 +4002,14 @@ async def testboard_cmd(
 ):
     """Ephemeral preview so you can check cosmetic pins without starting a game."""
     title_id = title.value if title else "sudoku_pro"
-    pin_id = pin.value if pin else "jellyfish"
+    pin_id = pin.value if pin else "coral"
     # Fake a small collection of owned cosmetics so the border fills with emoji pins
     sample_pins = [
         SHOP_TITLES[title_id]["emoji"],
         SHOP_PINS[pin_id]["emoji"],
         SHOP_TITLES["legend"]["emoji"],
         SHOP_TITLES["neptune"]["emoji"],
-        SHOP_PINS["krusty"]["emoji"],
+        SHOP_PINS["crab"]["emoji"],
         SHOP_TITLES["dutchman"]["emoji"],
     ]
     # Dedupe while preserving order
