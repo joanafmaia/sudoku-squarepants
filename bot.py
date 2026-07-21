@@ -2045,7 +2045,7 @@ class SudokuView(discord.ui.View):
         target = self._cid("nav:pencil")
         for child in self.children:
             if getattr(child, "custom_id", None) == target:
-                child.label = "Notes✓" if pencil_on else "Notes"  # type: ignore[attr-defined]
+                child.label = "  Notes✓  " if pencil_on else "  Notes  "  # type: ignore[attr-defined]
                 child.style = discord.ButtonStyle.success if pencil_on else discord.ButtonStyle.secondary  # type: ignore[attr-defined]
                 break
 
