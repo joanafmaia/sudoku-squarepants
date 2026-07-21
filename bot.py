@@ -290,7 +290,7 @@ async def restore_leaderboard_from_mongo(bot: "SudokuBot") -> None:
             except OSError as exc:
                 print(f"write xp-migrated leaderboard failed: {exc}")
             await match_store.save_leaderboard(bot.data)
-            print(f"Migrated career XP for {touched} player(s) → Mongo.")
+            print(f"Migrated career XP / shop spend for {touched} player(s) → Mongo.")
     except Exception as exc:  # noqa: BLE001
         print(f"xp migration failed: {exc}")
 
@@ -363,6 +363,31 @@ async def restore_leaderboard_from_mongo(bot: "SudokuBot") -> None:
         save_data(bot.data)
 
 
+def catalog_spend_total(stats: dict) -> int:
+    """Sum of shop prices for currently owned titles + pins (legacy purchase estimate)."""
+    total = 0
+    for tid in stats.get("owned_titles") or []:
+        meta = SHOP_TITLES.get(tid)
+        if meta:
+            total += int(meta.get("cost") or 0)
+    for tid in owned_pin_ids(stats):
+        meta = SHOP_PINS.get(tid)
+        if meta:
+            total += int(meta.get("cost") or 0)
+    return total
+
+
+def seed_sponges_spent(stats: dict) -> bool:
+    """Backfill sponges_spent from owned cosmetics (pre-counter purchases)."""
+    stats.setdefault("sponges_spent", 0)
+    if stats.get("_spent_migrated") == 1:
+        return False
+    approx = catalog_spend_total(stats)
+    stats["sponges_spent"] = max(int(stats.get("sponges_spent") or 0), approx)
+    stats["_spent_migrated"] = 1
+    return True
+
+
 def seed_career_xp(stats: dict) -> bool:
     """Backfill career XP from recorded wins (shop spend never reduces XP).
 
@@ -394,7 +419,19 @@ def migrate_leaderboard_xp(data: dict) -> int:
         for user_key, stats in list(gstats.items()):
             if not isinstance(stats, dict) or user_key.startswith("_") or not str(user_key).isdigit():
                 continue
-            if seed_career_xp(stats):
+            changed = seed_career_xp(stats)
+            # Ensure pin ownership keys exist before spend backfill
+            stats.setdefault("owned_themes", [])
+            stats.setdefault("owned_pins", stats.get("owned_themes") or [])
+            if stats.get("owned_themes"):
+                merged = list(
+                    dict.fromkeys([*(stats.get("owned_pins") or []), *stats["owned_themes"]])
+                )
+                stats["owned_pins"] = merged
+                stats["owned_themes"] = merged
+            if seed_sponges_spent(stats):
+                changed = True
+            if changed:
                 touched += 1
     return touched
 
@@ -412,6 +449,7 @@ def user_stats(gstats: dict, user_id: int) -> dict:
         gstats[key] = {}
     s = gstats[key]
     s.setdefault("coins", 0)
+    s.setdefault("sponges_spent", 0)
     seed_career_xp(s)
     s.setdefault("wins", 0)
     s.setdefault("losses", 0)
@@ -430,6 +468,7 @@ def user_stats(gstats: dict, user_id: int) -> dict:
         merged = list(dict.fromkeys([*(s.get("owned_pins") or []), *s["owned_themes"]]))
         s["owned_pins"] = merged
         s["owned_themes"] = merged
+    seed_sponges_spent(s)
     s.setdefault("hints", 0)
     s.setdefault("daily_wins", 0)
     s.setdefault("challenge_wins", 0)
@@ -3349,6 +3388,7 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
                 ),
             }
         stats["coins"] -= cost
+        stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
         stats["owned_titles"].append(tid)
         stats["title"] = tid
         save_data(bot.data)
@@ -3378,6 +3418,7 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
             ),
         }
     stats["coins"] -= cost
+    stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
     owned.append(tid)
     stats["owned_pins"] = owned
     stats["owned_themes"] = owned  # legacy mirror
@@ -3432,6 +3473,7 @@ class KrustyShopView(discord.ui.View):
         self.guild_id = guild_id
         self.kind = kind if kind in ("titles", "pins") else "titles"
         self.index = max(0, index)
+        self.message: discord.Message | None = None
         self._rebuild()
 
     def catalog(self) -> list[dict]:
@@ -3535,14 +3577,16 @@ class KrustyShopView(discord.ui.View):
             action.callback = self.on_buy
             self.add_item(action)
 
-        preview = discord.ui.Button(
-            label="Preview",
-            style=discord.ButtonStyle.secondary,
-            row=2,
-            custom_id="shop:preview",
-        )
-        preview.callback = self.on_preview
-        self.add_item(preview)
+        # Preview is for Pins (board border look); Titles already show header flair in the embed
+        if self.kind == "pins":
+            preview = discord.ui.Button(
+                label="Preview",
+                style=discord.ButtonStyle.secondary,
+                row=2,
+                custom_id="shop:preview",
+            )
+            preview.callback = self.on_preview
+            self.add_item(preview)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
@@ -3610,6 +3654,12 @@ class KrustyShopView(discord.ui.View):
             await interaction.followup.send(result["message"], ephemeral=True)
 
     async def on_preview(self, interaction: discord.Interaction) -> None:
+        if self.kind != "pins":
+            await interaction.response.send_message(
+                "Preview is for Pins — switch tabs.",
+                ephemeral=True,
+            )
+            return
         stats = self._stats()
         item = self.current_item()
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -3625,6 +3675,18 @@ class KrustyShopView(discord.ui.View):
             file=file,
             ephemeral=True,
         )
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True  # type: ignore[attr-defined]
+        if self.message is None:
+            return
+        try:
+            embed = self.build_embed()
+            embed.set_footer(text=f"{SPONGE} Shop closed — run /shop again")
+            await self.message.edit(embed=embed, view=self)
+        except discord.HTTPException:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -3960,7 +4022,7 @@ async def help_cmd(interaction: discord.Interaction):
     )
     embed.add_field(
         name=f"{PINEAPPLE} More",
-        value="`/shop` · `/stats` · `/leaderboard` · `/dailyboard` · `/quit`",
+        value="`/shop` · `/stats` · `/leaderboard` · `/quit`",
         inline=False,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -4220,7 +4282,8 @@ async def daily_cmd(interaction: discord.Interaction):
             await reply_ephemeral(
                 interaction,
                 f"You've already **{detail}** today's daily ({daily['date']}). "
-                f"Only **one** daily attempt per day — play more with `/play`, or check `/dailyboard`.",
+                f"Only **one** daily attempt per day — play more with `/play`, or check "
+                f"`/leaderboard` → Today's daily.",
             )
             return
 
@@ -4267,55 +4330,6 @@ async def daily_cmd(interaction: discord.Interaction):
             )
 
 
-@bot.tree.command(name="dailyboard", description="Today's pineapple daily rankings")
-async def dailyboard_cmd(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("Server only.", ephemeral=True)
-        return
-
-    daily = get_guild_daily(bot.data, interaction.guild.id)
-    results = daily.get("results") or {}
-    if not results:
-        await interaction.response.send_message(
-            f"{PINEAPPLE} Nobody's cleared today's pineapple yet — be the first with `/daily`!",
-            ephemeral=True,
-        )
-        return
-
-    winners = [(uid, r) for uid, r in results.items() if r.get("won")]
-    winners.sort(key=lambda item: item[1].get("time", 10**9))
-    lines = []
-    medals = ["🥇", "🥈", "🥉"]
-    for i, (uid, r) in enumerate(winners[:10]):
-        prefix = medals[i] if i < 3 else f"`{i + 1}.`"
-        gstats = guild_stats(bot.data, interaction.guild.id)
-        stats = user_stats(gstats, int(uid))
-        name = display_name(stats) if stats.get("name") != "Unknown" else r.get("name", uid)
-        sponge_bit = ""
-        if r.get("coins"):
-            sponge_bit = f" · {format_sponges(int(r['coins']), signed=True)}"
-        lines.append(
-            f"{prefix} **{name}** — {format_time(r.get('time', 0))}{sponge_bit}"
-        )
-
-    failed = sum(
-        1
-        for r in results.values()
-        if not r.get("won") and not r.get("in_progress")
-    )
-    embed = paper_embed(f"{PINEAPPLE} Daily #{daily_puzzle_number(daily['date'])}")
-    embed.description = f"{WAVE} Fastest clearers of today's pineapple puzzle."
-    embed.add_field(name="Date", value=f"`{daily['date']}`", inline=True)
-    embed.add_field(name=f"Cleared {STAR}", value=str(len(winners)), inline=True)
-    embed.add_field(name="Other attempts", value=str(failed), inline=True)
-    embed.add_field(
-        name="Standings",
-        value="\n".join(lines) if lines else "No solves yet — the grill is cold.",
-        inline=False,
-    )
-    await interaction.response.send_message(embed=embed)
-
-
 @bot.tree.command(name="shop", description="Spend sponges at the Krusty Shop")
 async def shop_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -4337,6 +4351,7 @@ async def shop_cmd(interaction: discord.Interaction):
         view=view,
         ephemeral=True,
     )
+    view.message = await interaction.original_response()
 
 
 @bot.tree.command(name="quit", description="Leave your active Sudoku game or challenge")
@@ -4395,15 +4410,20 @@ async def quit_cmd(interaction: discord.Interaction):
     await interaction.response.send_message("No game to quit.", ephemeral=True)
 
 
-@bot.tree.command(name="leaderboard", description="Bikini Bottom rankings — XP, times, daily, challenge")
+@bot.tree.command(
+    name="leaderboard",
+    description="Bikini Bottom rankings — XP, daily today, whales, and more",
+)
 @app_commands.describe(board="Which leaderboard to show")
 @app_commands.choices(
     board=[
         app_commands.Choice(name="XP (career)", value="xp"),
         app_commands.Choice(name="Sponges (pocket)", value="coins"),
         app_commands.Choice(name="Best time", value="time"),
-        app_commands.Choice(name="Daily wins", value="daily"),
+        app_commands.Choice(name="Today's daily", value="daily_today"),
+        app_commands.Choice(name="Daily wins (all-time)", value="daily"),
         app_commands.Choice(name="Challenge wins", value="challenge"),
+        app_commands.Choice(name="Shop whales", value="whales"),
     ]
 )
 async def leaderboard_cmd(
@@ -4414,21 +4434,77 @@ async def leaderboard_cmd(
         await interaction.response.send_message("Server only.", ephemeral=True)
         return
     mode = board.value if board else "xp"
-    gstats = guild_stats(bot.data, interaction.guild.id)
+    guild_id = interaction.guild.id
+    gstats = guild_stats(bot.data, guild_id)
+
+    # Today's daily standings (time-based, not career)
+    if mode == "daily_today":
+        daily = get_guild_daily(bot.data, guild_id)
+        results = daily.get("results") or {}
+        if not results:
+            await interaction.response.send_message(
+                f"{PINEAPPLE} Nobody's cleared today's pineapple yet — be the first with `/daily`!",
+                ephemeral=True,
+            )
+            return
+        winners = [(uid, r) for uid, r in results.items() if r.get("won")]
+        winners.sort(key=lambda item: item[1].get("time", 10**9))
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        for i, (uid, r) in enumerate(winners[:10]):
+            prefix = medals[i] if i < 3 else f"`{i + 1}.`"
+            stats = user_stats(gstats, int(uid))
+            name = (
+                display_name(stats)
+                if stats.get("name") != "Unknown"
+                else r.get("name", uid)
+            )
+            sponge_bit = ""
+            if r.get("coins"):
+                sponge_bit = f" · {format_sponges(int(r['coins']), signed=True)}"
+            lines.append(
+                f"{prefix} **{name}** — {format_time(r.get('time', 0))}{sponge_bit}"
+            )
+        failed = sum(
+            1
+            for r in results.values()
+            if not r.get("won") and not r.get("in_progress")
+        )
+        embed = paper_embed(f"{PINEAPPLE} Daily #{daily_puzzle_number(daily['date'])}")
+        embed.description = (
+            f"{WAVE} Fastest clearers of today's pineapple puzzle.\n"
+            f"*{interaction.guild.name}*"
+        )
+        embed.add_field(name="Date", value=f"`{daily['date']}`", inline=True)
+        embed.add_field(name=f"Cleared {STAR}", value=str(len(winners)), inline=True)
+        embed.add_field(name="Other attempts", value=str(failed), inline=True)
+        embed.add_field(
+            name="Standings",
+            value="\n".join(lines) if lines else "No solves yet — the grill is cold.",
+            inline=False,
+        )
+        await interaction.response.send_message(embed=embed, silent=True)
+        return
+
     players = [(uid, user_stats(gstats, int(uid))) for uid, _ in iter_players(gstats)]
 
     if mode == "xp":
         ranked = sorted(players, key=lambda item: item[1].get("xp", 0), reverse=True)[:10]
         title = f"{XP} Career XP"
-        blurb = "Who's climbing the ladder? (Shop spend doesn't hurt you here.)"
-        fmt = lambda s: f"**{format_xp(s.get('xp', 0))}** · {s.get('wins', 0)}W"
+        blurb = "Who's climbing the ladder? (Shop spend doesn't hurt XP.)"
+        fmt = lambda s: (
+            f"**{format_xp(s.get('xp', 0))}** · "
+            f"{SPONGE} **{int(s.get('coins', 0))}**"
+        )
         nonempty = lambda s: s.get("xp", 0) > 0 or s.get("wins", 0) > 0
+        empty_msg = f"{BUBBLE} Nobody on this board yet — go earn some XP with `/play`!"
     elif mode == "coins":
         ranked = sorted(players, key=lambda item: item[1].get("coins", 0), reverse=True)[:10]
         title = f"{SPONGE} Richest pockets"
         blurb = "Spendable sponges left after shopping."
         fmt = lambda s: f"**{format_sponges(s.get('coins', 0))}** · {s.get('wins', 0)}W/{s.get('losses', 0)}L"
         nonempty = lambda s: s.get("coins", 0) > 0 or s.get("wins", 0) > 0
+        empty_msg = f"{BUBBLE} Nobody on this board yet — go earn some sponges with `/play`!"
     elif mode == "time":
         ranked = sorted(
             ((uid, s) for uid, s in players if s.get("best_time") is not None),
@@ -4438,25 +4514,41 @@ async def leaderboard_cmd(
         blurb = "Boatmobile speedrun energy."
         fmt = lambda s: f"**{format_time(s['best_time'])}**"
         nonempty = lambda s: True
+        empty_msg = f"{BUBBLE} No best times yet — clear a board with `/play`!"
     elif mode == "daily":
         ranked = sorted(players, key=lambda item: item[1].get("daily_wins", 0), reverse=True)[:10]
         title = f"{PINEAPPLE} Daily legends"
-        blurb = "Pineapple puzzles conquered."
+        blurb = "Pineapple puzzles conquered (all-time)."
         fmt = lambda s: f"**{s.get('daily_wins', 0)}** clears"
         nonempty = lambda s: s.get("daily_wins", 0) > 0
+        empty_msg = f"{BUBBLE} No daily legends yet — try `/daily`!"
+    elif mode == "whales":
+        ranked = sorted(
+            players,
+            key=lambda item: int(item[1].get("sponges_spent") or 0),
+            reverse=True,
+        )[:10]
+        title = f"{SPONGE} Krusty Shop whales"
+        blurb = "Who emptied their pockets at the Krusty Shop? *Squidward is judging you.*"
+        fmt = lambda s: (
+            f"spent **{int(s.get('sponges_spent') or 0)}** {SPONGE} · "
+            f"pocket **{int(s.get('coins') or 0)}**"
+        )
+        nonempty = lambda s: int(s.get("sponges_spent") or 0) > 0
+        empty_msg = (
+            f"{BUBBLE} Nobody's emptied their pockets yet — the Krusty Shop is waiting."
+        )
     else:
         ranked = sorted(players, key=lambda item: item[1].get("challenge_wins", 0), reverse=True)[:10]
         title = f"{JELLY} Challenge champs"
         blurb = "Jellyfish race winners."
         fmt = lambda s: f"**{s.get('challenge_wins', 0)}** wins"
         nonempty = lambda s: s.get("challenge_wins", 0) > 0
+        empty_msg = f"{BUBBLE} No challenge champs yet — start a `/challenge`!"
 
     ranked = [(uid, s) for uid, s in ranked if nonempty(s)]
     if not ranked:
-        await interaction.response.send_message(
-            f"{BUBBLE} Nobody on this board yet — go earn some XP with `/play`!",
-            ephemeral=True,
-        )
+        await interaction.response.send_message(empty_msg, ephemeral=True)
         return
 
     medals = ["🥇", "🥈", "🥉"]
@@ -4466,7 +4558,8 @@ async def leaderboard_cmd(
         lines.append(f"{prefix} **{display_name(s)}** — {fmt(s)}")
     embed = paper_embed(f"{title}")
     embed.description = f"{blurb}\n*{interaction.guild.name}*"
-    embed.add_field(name="Top 10", value="\n".join(lines), inline=False)
+    field_name = "Top spenders" if mode == "whales" else "Top 10"
+    embed.add_field(name=field_name, value="\n".join(lines), inline=False)
     await interaction.response.send_message(embed=embed, silent=True)
 
 
@@ -4502,6 +4595,11 @@ async def stats_cmd(interaction: discord.Interaction, member: discord.Member | N
 
     embed.add_field(name=f"Career XP {XP}", value=f"**{format_xp(s.get('xp', 0))}**", inline=True)
     embed.add_field(name=f"Pocket {SPONGE}", value=f"**{format_sponges(s['coins'])}**", inline=True)
+    embed.add_field(
+        name=f"Spent {SPONGE}",
+        value=f"**{format_sponges(s.get('sponges_spent', 0))}**",
+        inline=True,
+    )
     embed.add_field(name=f"Streak {STAR}", value=f"**{streak}** (best {best_streak})", inline=True)
     embed.add_field(name="Win rate", value=f"**{win_rate}**", inline=True)
     embed.add_field(name="Wins", value=f"**{wins}**", inline=True)

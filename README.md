@@ -7,9 +7,11 @@ Interactive 9×9 Sudoku for Discord — solo, daily, and multiplayer speedrun ch
 - **`/play`** — solo puzzle with difficulty tiers
 - **`/daily`** — same difficulty each day, unique puzzle per player (anti-copy; weekday schedule)
 - **`/challenge`** — private speedrun (invite players or open Join lobby, 2–5 players)
-- Bikini Bottom UI — bubbly Fredoka digits, lagoon board, button stages
-- Sponges 🧽 economy, shop (Goofy Goober titles), leaderboards
-- Optional MongoDB for challenges / daily claims / session restore
+- Bikini Bottom UI — bubbly Fredoka digits, lagoon board, emoji border pins
+- **XP** ⭐ career score (leaderboard) + **sponges** 🧽 spendable shop currency
+- **`/shop`** — Krusty Shop catalog: Titles (header flair) & Pins (border cosmetics)
+- **`/leaderboard`** — XP, pocket, times, today's daily, all-time daily, challenge, shop whales
+- Optional MongoDB for challenges / daily claims / session restore / leaderboard
 - HTTP `/health` endpoint for free hosting keep-alive (Render + UptimeRobot)
 
 ## Setup (local)
@@ -70,4 +72,4 @@ Never commit `.env` — it is gitignored.
 
 ## Commands
 
-`/help` · `/play` · `/daily` · `/challenge` · `/shop` · `/quit` · `/leaderboard` · `/stats` · `/dailyboard`
+`/help` · `/play` · `/daily` · `/challenge` · `/shop` · `/quit` · `/leaderboard` · `/stats` · `/testboard`
