@@ -89,13 +89,14 @@ RGB_PENCIL = "#64748B"            # soft graphite notes
 RGB_HEADER = "#0F766E"            # lagoon header
 RGB_OUTLINE = "#F59E0B"           # gold selection ring
 
-# Fixed Discord attachment canvas — larger = fuller chat preview
-BOARD_CANVAS = 720
-BOARD_HEADER_H = 44
-BOARD_CARD_PAD = 28
-BOARD_CARD_RADIUS = 26
-BOARD_INNER_PAD = 14
-BOARD_REWARD_H = 64
+# Fixed Discord attachment canvas — width matches the button row in chat
+# (Discord stretches both the image and action rows to the same message width).
+BOARD_CANVAS = 540
+BOARD_HEADER_H = 36
+BOARD_CARD_PAD = 0          # full-bleed so the board aligns with the keyboard
+BOARD_CARD_RADIUS = 0
+BOARD_INNER_PAD = 10
+BOARD_REWARD_H = 56
 
 COLS = "ABCDEFGHI"
 FONTS_DIR = Path(__file__).with_name("fonts")
@@ -636,10 +637,10 @@ def render_board(
     difficulty: str | None = None,
     reward_sponges: int | None = None,
 ) -> BytesIO:
-    """Bikini Bottom board — bubbly digits, lagoon colors, sunny panel.
+    """Bikini Bottom board — bubbly digits, lagoon colors, full-bleed panel.
 
-    When ``reward_sponges`` is set, a congratulations strip is drawn under the grid
-    (same image — no extra Discord message).
+    The grid fills the image edge-to-edge so it lines up with Discord's button row
+    (same message width). When ``reward_sponges`` is set, a strip is drawn under the grid.
     """
     _ = solution
     conflicts = conflicts or set()
@@ -650,18 +651,15 @@ def render_board(
     inner = BOARD_INNER_PAD
     reward_h = BOARD_REWARD_H if reward_sponges is not None else 0
 
-    img = Image.new("RGB", (canvas, canvas + reward_h), RGB_BG)
+    img = Image.new("RGB", (canvas, canvas + reward_h), RGB_CARD)
     draw = ImageDraw.Draw(img)
 
-    # Soft wave bands in the lagoon background
-    for i, y in enumerate(range(8, canvas + reward_h, 28)):
-        shade = "#67E8F9" if i % 2 == 0 else "#7DD3FC"
-        draw.line((0, y, canvas, y + 4), fill=shade, width=3)
+    # Full-width header bar (same width as the grid / Discord keyboard)
+    draw.rectangle((0, 0, canvas, header_h), fill="#67E8F9")
+    draw.line((0, header_h - 1, canvas, header_h - 1), fill=RGB_CARD_BORDER, width=2)
 
-    tier_name = f"{SPONGE}  {difficulty_label(difficulty)}  {WAVE}"
-    # Header uses Latin-safe label (emoji may missing in some fonts) — keep ASCII + sponge via separate draw if needed
     header_label = f"~ {difficulty_label(difficulty)} ~"
-    header_font = board_font(20, bold=True)
+    header_font = board_font(18, bold=True)
     hb = draw.textbbox((0, 0), header_label, font=header_font)
     htw, hth = hb[2] - hb[0], hb[3] - hb[1]
     draw.text(
@@ -670,15 +668,19 @@ def render_board(
         fill=RGB_HEADER,
         font=header_font,
     )
-    _ = tier_name
 
-    card = (pad, header_h, canvas - pad, canvas - pad)
-    draw.rounded_rectangle(card, radius=radius, fill=RGB_CARD, outline=RGB_CARD_BORDER, width=4)
+    # Board card = full remaining area (no side gutters)
+    card_bottom = canvas - pad
+    card = (pad, header_h, canvas - pad, card_bottom)
+    if radius > 0:
+        draw.rounded_rectangle(card, radius=radius, fill=RGB_CARD, outline=RGB_CARD_BORDER, width=3)
+    else:
+        draw.rectangle(card, fill=RGB_CARD, outline=RGB_CARD_BORDER, width=3)
 
     grid_left = pad + inner
     grid_top = header_h + inner
     grid_right = canvas - pad - inner
-    grid_bottom = canvas - pad - inner
+    grid_bottom = card_bottom - inner
     grid_w = grid_right - grid_left
     grid_h = grid_bottom - grid_top
     cell = min(grid_w, grid_h) // 9
@@ -726,7 +728,7 @@ def render_board(
         draw.line((origin_x, pos_y, origin_x + grid, pos_y), fill=color, width=width_line)
         draw.line((pos_x, origin_y, pos_x, origin_y + grid), fill=color, width=width_line)
 
-    draw.rounded_rectangle(card, radius=radius, outline=RGB_CARD_BORDER, width=2)
+    draw.rectangle(card, outline=RGB_CARD_BORDER, width=3)
 
     # Selection rings (fills already tint cells — no wash overlay over ink)
     if highlight_box is not None and selected is None:
@@ -809,21 +811,16 @@ def _draw_reward_banner(
     reward_h: int,
     sponges: int,
 ) -> None:
-    """Footer under the board: Aye aye! +N sponges."""
+    """Full-width footer under the board: Aye aye! +N sponges."""
     y0 = canvas
-    draw.rounded_rectangle(
-        (BOARD_CARD_PAD // 2, y0 + 4, canvas - BOARD_CARD_PAD // 2, canvas + reward_h - 4),
-        radius=14,
-        fill="#FFE566",
-        outline="#F59E0B",
-        width=3,
-    )
+    draw.rectangle((0, y0, canvas, canvas + reward_h), fill="#FFE566")
+    draw.line((0, y0, canvas, y0), fill="#F59E0B", width=3)
 
-    font = board_font(22, bold=True)
+    font = board_font(20, bold=True)
     line = f"Aye aye!  +{sponges}  sponges"
     bb = draw.textbbox((0, 0), line, font=font)
     tw, th = bb[2] - bb[0], bb[3] - bb[1]
-    chip = 24
+    chip = 22
     x = (canvas - tw - chip - 12) / 2
     y = y0 + (reward_h - th) / 2 - 1
     draw.text((x, y), line, fill="#0F766E", font=font)
@@ -2058,7 +2055,7 @@ class SudokuView(discord.ui.View):
           Back | Notes | Quit
         """
         back = discord.ui.Button(
-            label="Back",
+            label="  Back  ",
             style=discord.ButtonStyle.secondary,
             row=3,
             disabled=(stage == STAGE_BOX),
@@ -2069,7 +2066,7 @@ class SudokuView(discord.ui.View):
 
         pencil_on = game.get("pencil_mode", False)
         pencil = discord.ui.Button(
-            label="Notes✓" if pencil_on else "Notes",
+            label="  Notes✓  " if pencil_on else "  Notes  ",
             style=discord.ButtonStyle.success if pencil_on else discord.ButtonStyle.secondary,
             row=3,
             disabled=(stage != STAGE_NUMBER),
@@ -2079,7 +2076,7 @@ class SudokuView(discord.ui.View):
         self.add_item(pencil)
 
         quit_btn = discord.ui.Button(
-            label="Quit",
+            label="  Quit  ",
             style=discord.ButtonStyle.danger,
             row=3,
             custom_id=self._cid("nav:quit"),
@@ -2100,9 +2097,10 @@ class SudokuView(discord.ui.View):
             await interaction.response.defer()
 
     def _pad_label(self, text: str) -> str:
-        """Keep pad labels one visible glyph so Discord button widths stay stable."""
+        """Pad labels so the 3-column keypad fills the message width more evenly."""
         t = (text or "·").strip()[:1] or "·"
-        return t
+        # Figure spaces keep Discord button columns visually wider / more aligned
+        return f"\u2007\u2007{t}\u2007\u2007"
 
     def _build_stage_box(self, game: dict) -> None:
         for i, label in enumerate(BOX_ARROW_LABELS):
