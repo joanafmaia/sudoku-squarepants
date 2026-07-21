@@ -1175,7 +1175,7 @@ def render_board(
     pin_seed: int | None = None,
 ) -> BytesIO:
     """Bikini Bottom board — large grid with random owned-emoji pins on the margins."""
-    _ = solution, title_id
+    _ = solution
     pal = palette_for_theme(theme_id)
     conflicts = conflicts or set()
     canvas = BOARD_CANVAS
@@ -1191,10 +1191,28 @@ def render_board(
     draw.rectangle((0, 0, canvas, header_h), fill=pal["header_bar"])
     draw.line((0, header_h - 1, canvas, header_h - 1), fill=pal["card_border"], width=2)
 
-    header_label = f"~ {difficulty_label(difficulty)} ~"
+    tier = difficulty_label(difficulty)
+    header_label = f"~ {tier} ~"
+    title_meta = SHOP_TITLES.get(title_id or "")
+    title_pin = cosmetic_pin_text(title_meta) if title_meta else ""
+    if title_pin:
+        header_label = f"~ {tier} ~  you are a {title_pin}"
+
     header_font = board_font(18, bold=True)
     hb = draw.textbbox((0, 0), header_label, font=header_font)
     htw, hth = hb[2] - hb[0], hb[3] - hb[1]
+    # Shrink slightly if the title line is too wide for the header
+    if htw > canvas - 24:
+        header_font = board_font(15, bold=True)
+        hb = draw.textbbox((0, 0), header_label, font=header_font)
+        htw, hth = hb[2] - hb[0], hb[3] - hb[1]
+    if htw > canvas - 16:
+        # Last resort: shorten the title pin
+        while htw > canvas - 16 and len(title_pin) > 4:
+            title_pin = title_pin[:-1]
+            header_label = f"~ {tier} ~  you are a {title_pin}…"
+            hb = draw.textbbox((0, 0), header_label, font=header_font)
+            htw, hth = hb[2] - hb[0], hb[3] - hb[1]
     draw.text(
         ((canvas - htw) / 2, (header_h - hth) / 2),
         header_label,
