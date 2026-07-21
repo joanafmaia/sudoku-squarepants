@@ -4,4 +4,5 @@ __pycache__/
 .env
 .venv/
 venv/
+assets/emoji_pins/
 testboard_preview.png

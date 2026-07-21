@@ -8,11 +8,13 @@ import os
 import random
 import time
 import asyncio
+import urllib.request
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
+from functools import lru_cache
 
 from dotenv import load_dotenv
 
@@ -115,10 +117,11 @@ DEFAULT_BOARD_PALETTE = {
 # Fixed Discord attachment canvas — larger = bigger chat preview (full-bleed with keypad)
 BOARD_CANVAS = 800
 BOARD_HEADER_H = 42
-BOARD_FOOTER_H = 28
 BOARD_CARD_PAD = 0          # full-bleed so the board aligns with the keyboard
 BOARD_CARD_RADIUS = 0
-BOARD_INNER_PAD = 16
+BOARD_INNER_PAD = 14        # margin around grid — room for random emoji pins
+PIN_EMOJI_SIZE = 26
+EMOJI_PIN_DIR = Path(__file__).with_name("assets") / "emoji_pins"
 
 COLS = "ABCDEFGHI"
 FONTS_DIR = Path(__file__).with_name("fonts")
@@ -149,19 +152,19 @@ WIN_TAUNTS = (
 )
 
 SHOP_TITLES = {
-    "rookie": {"label": "🪼 Jellyfisher", "cost": 50, "pin": "Jellyfisher"},
-    "patrick": {"label": "⭐ Starfish Genius", "cost": 100, "pin": "Starfish"},
-    "solver": {"label": "🍔 Fry Cook", "cost": 150, "pin": "Fry Cook"},
-    "larry": {"label": "💪 Larry Lobster", "cost": 220, "pin": "Larry"},
-    "barnacle": {"label": "🦸 Barnacle Boy", "cost": 280, "pin": "Barnacle"},
-    "row_master": {"label": "🚗 Boatmobile Ace", "cost": 300, "pin": "Boatmobile"},
-    "puff": {"label": "⛵ Boating School Grad", "cost": 350, "pin": "Boating Grad"},
-    "dutchman": {"label": "👻 Flying Dutchman", "cost": 450, "pin": "Dutchman"},
-    "sudoku_pro": {"label": "🍦 Goofy Goober", "cost": 500, "pin": "Goober"},
-    "plankton": {"label": "🦠 Plankton Plotter", "cost": 650, "pin": "Plankton"},
-    "mermaid": {"label": "🧜 Mermaid Man", "cost": 800, "pin": "Mermaid Man"},
-    "legend": {"label": "🍍 Pineapple Legend", "cost": 1000, "pin": "Legend"},
-    "neptune": {"label": "👑 King Neptune", "cost": 1500, "pin": "Neptune"},
+    "rookie": {"label": "🪼 Jellyfisher", "cost": 50, "pin": "Jellyfisher", "emoji": "🪼"},
+    "patrick": {"label": "⭐ Starfish Genius", "cost": 100, "pin": "Starfish", "emoji": "⭐"},
+    "solver": {"label": "🍔 Fry Cook", "cost": 150, "pin": "Fry Cook", "emoji": "🍔"},
+    "larry": {"label": "💪 Larry Lobster", "cost": 220, "pin": "Larry", "emoji": "💪"},
+    "barnacle": {"label": "🦸 Barnacle Boy", "cost": 280, "pin": "Barnacle", "emoji": "🦸"},
+    "row_master": {"label": "🚗 Boatmobile Ace", "cost": 300, "pin": "Boatmobile", "emoji": "🚗"},
+    "puff": {"label": "⛵ Boating School Grad", "cost": 350, "pin": "Boating Grad", "emoji": "⛵"},
+    "dutchman": {"label": "👻 Flying Dutchman", "cost": 450, "pin": "Dutchman", "emoji": "👻"},
+    "sudoku_pro": {"label": "🍦 Goofy Goober", "cost": 500, "pin": "Goober", "emoji": "🍦"},
+    "plankton": {"label": "🦠 Plankton Plotter", "cost": 650, "pin": "Plankton", "emoji": "🦠"},
+    "mermaid": {"label": "🧜 Mermaid Man", "cost": 800, "pin": "Mermaid Man", "emoji": "🧜"},
+    "legend": {"label": "🍍 Pineapple Legend", "cost": 1000, "pin": "Legend", "emoji": "🍍"},
+    "neptune": {"label": "👑 King Neptune", "cost": 1500, "pin": "Neptune", "emoji": "👑"},
 }
 
 # Cosmetic board color packs (applied to the PNG grid)
@@ -169,6 +172,7 @@ SHOP_THEMES = {
     "jellyfish": {
         "label": "Jellyfish Fields",
         "pin": "Jellyfish",
+        "emoji": "🪼",
         "cost": 175,
         "palette": {
             "header_bar": "#DDD6FE",
@@ -192,6 +196,7 @@ SHOP_THEMES = {
     "krusty": {
         "label": "Krusty Krab",
         "pin": "Krusty",
+        "emoji": "🦀",
         "cost": 250,
         "palette": {
             "header_bar": "#FECACA",
@@ -215,6 +220,7 @@ SHOP_THEMES = {
     "goober": {
         "label": "Goofy Goober Ice",
         "pin": "Goober Ice",
+        "emoji": "🍦",
         "cost": 320,
         "palette": {
             "header_bar": "#FBCFE8",
@@ -238,6 +244,7 @@ SHOP_THEMES = {
     "sandy": {
         "label": "Sandy's Dome",
         "pin": "Sandy",
+        "emoji": "🐿️",
         "cost": 400,
         "palette": {
             "header_bar": "#FED7AA",
@@ -261,6 +268,7 @@ SHOP_THEMES = {
     "rock_bottom": {
         "label": "Rock Bottom",
         "pin": "Rock Bottom",
+        "emoji": "🌑",
         "cost": 550,
         "palette": {
             "header_bar": "#334155",
@@ -284,6 +292,7 @@ SHOP_THEMES = {
     "chum": {
         "label": "Chum Bucket",
         "pin": "Chum",
+        "emoji": "🪣",
         "cost": 700,
         "palette": {
             "header_bar": "#BBF7D0",
@@ -625,6 +634,25 @@ def equipped_title_id(stats: dict) -> str | None:
     return None
 
 
+def owned_pin_emojis(stats: dict) -> list[str]:
+    """Emojis from purchased titles + themes — scattered as border pins."""
+    pins: list[str] = []
+    seen: set[str] = set()
+    for tid in stats.get("owned_titles") or []:
+        meta = SHOP_TITLES.get(tid)
+        emoji = (meta or {}).get("emoji")
+        if emoji and emoji not in seen:
+            pins.append(emoji)
+            seen.add(emoji)
+    for tid in stats.get("owned_themes") or []:
+        meta = SHOP_THEMES.get(tid)
+        emoji = (meta or {}).get("emoji")
+        if emoji and emoji not in seen:
+            pins.append(emoji)
+            seen.add(emoji)
+    return pins
+
+
 def sync_theme_to_active_games(user_id: int, guild_id: int, theme_id: str | None) -> None:
     for game in games.values():
         if game.get("owner_id") == user_id and game.get("guild_id") == guild_id:
@@ -637,15 +665,20 @@ def sync_title_to_active_games(user_id: int, guild_id: int, title_id: str | None
             game["owner_title"] = title_id
 
 
+def sync_pins_to_active_games(user_id: int, guild_id: int, pin_emojis: list[str]) -> None:
+    for game in games.values():
+        if game.get("owner_id") == user_id and game.get("guild_id") == guild_id:
+            game["pin_emojis"] = list(pin_emojis)
+
+
 def cosmetic_pin_text(meta: dict | None, *, fallback: str = "") -> str:
-    """Short ASCII-friendly badge text for PNG pins (no emoji)."""
+    """Short ASCII-friendly badge text (captions / /testboard)."""
     if not meta:
         return fallback
     pin = (meta.get("pin") or "").strip()
     if pin:
         return pin[:18]
     label = str(meta.get("label") or fallback)
-    # Drop leading non-ASCII / symbol runs (emoji prefixes)
     cleaned = label.lstrip()
     while cleaned and ord(cleaned[0]) > 127:
         cleaned = cleaned[1:].lstrip()
@@ -1007,151 +1040,124 @@ def board_font(size: int = 22, *, bold: bool = False) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
-def _draw_pin_badge(
-    draw: ImageDraw.ImageDraw,
-    *,
-    text: str,
-    x: int,
-    y: int,
-    max_w: int,
-    height: int,
-    pal: dict[str, str],
-    align: str = "left",
-) -> None:
-    """Small rounded pin badge with short text."""
-    if not text:
-        return
-    font = board_font(13, bold=True)
-    label = text
-    while True:
-        bb = draw.textbbox((0, 0), label, font=font)
-        tw, th = bb[2] - bb[0], bb[3] - bb[1]
-        if tw + 16 <= max_w or len(label) <= 3:
-            break
-        label = label[:-1]
-    pad_x = 8
-    bw = min(max_w, tw + pad_x * 2)
-    bh = height
-    if align == "right":
-        bx = x - bw
-    elif align == "center":
-        bx = x - bw // 2
-    else:
-        bx = x
-    by = y
-    draw.rounded_rectangle(
-        (bx, by, bx + bw, by + bh),
-        radius=8,
-        fill=pal["select"],
-        outline=pal["outline"],
-        width=2,
-    )
-    # Rivet dot on the left of the badge
-    rivet = 6
-    rx = bx + 5
-    ry = by + (bh - rivet) / 2
-    draw.ellipse((rx, ry, rx + rivet, ry + rivet), fill=pal["outline"], outline=pal["thick"], width=1)
-    tx = bx + 14
-    ty = by + (bh - th) / 2 - 1
-    draw.text((tx, ty), label, fill=pal["header_text"], font=font)
+def _twemoji_code(emoji: str) -> str:
+    """Twemoji filename codepoints (skip variation selector)."""
+    parts = [f"{ord(ch):x}" for ch in emoji if ord(ch) != 0xFE0F]
+    return "-".join(parts)
 
 
-def _draw_corner_rivets(
-    draw: ImageDraw.ImageDraw,
+@lru_cache(maxsize=64)
+def load_emoji_pin(emoji: str, size: int = PIN_EMOJI_SIZE) -> Image.Image | None:
+    """Load a Twemoji PNG for border pins (cached on disk + memory)."""
+    if not emoji:
+        return None
+    code = _twemoji_code(emoji)
+    if not code:
+        return None
+    try:
+        EMOJI_PIN_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    path = EMOJI_PIN_DIR / f"{code}.png"
+    if not path.exists():
+        url = (
+            "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/"
+            f"assets/72x72/{code}.png"
+        )
+        try:
+            urllib.request.urlretrieve(url, path)
+        except Exception:
+            return None
+    try:
+        im = Image.open(path).convert("RGBA")
+        return im.resize((size, size), Image.Resampling.LANCZOS)
+    except Exception:
+        return None
+
+
+def _border_pin_slots(
     *,
     canvas: int,
     header_h: int,
-    footer_h: int,
-    pal: dict[str, str],
-) -> None:
-    rivet = 12
-    inset = 7
-    positions = (
-        (inset, header_h + inset),
-        (canvas - inset - rivet, header_h + inset),
-        (inset, canvas - footer_h - inset - rivet),
-        (canvas - inset - rivet, canvas - footer_h - inset - rivet),
-    )
-    for x, y in positions:
-        draw.ellipse(
-            (x, y, x + rivet, y + rivet),
-            fill=pal["outline"],
-            outline=pal["thick"],
-            width=2,
-        )
-        draw.ellipse(
-            (x + 3, y + 3, x + rivet - 3, y + rivet - 3),
-            fill=pal["select"],
-        )
+    origin_x: int,
+    origin_y: int,
+    grid: int,
+    pin_size: int,
+) -> list[tuple[int, int]]:
+    """Candidate top-left positions in the cream margin around the grid."""
+    slots: list[tuple[int, int]] = []
+    gap = pin_size + 6
+    # Top margin (under header, above grid)
+    top_y = header_h + max(2, (origin_y - header_h - pin_size) // 2)
+    for x in range(origin_x, origin_x + grid - pin_size + 1, gap):
+        slots.append((x, top_y))
+    # Bottom margin
+    bottom_y = origin_y + grid + max(2, (canvas - (origin_y + grid) - pin_size) // 2)
+    if bottom_y + pin_size <= canvas - 2:
+        for x in range(origin_x, origin_x + grid - pin_size + 1, gap):
+            slots.append((x, bottom_y))
+    # Left margin
+    left_x = max(2, (origin_x - pin_size) // 2)
+    for y in range(origin_y, origin_y + grid - pin_size + 1, gap):
+        slots.append((left_x, y))
+    # Right margin
+    right_x = origin_x + grid + max(2, (canvas - (origin_x + grid) - pin_size) // 2)
+    if right_x + pin_size <= canvas - 2:
+        for y in range(origin_y, origin_y + grid - pin_size + 1, gap):
+            slots.append((right_x, y))
+    return slots
 
 
-def _draw_board_pins(
-    draw: ImageDraw.ImageDraw,
+def paste_owned_emoji_pins(
+    img: Image.Image,
     *,
+    pin_emojis: list[str] | None,
+    pin_seed: int | None,
     canvas: int,
     header_h: int,
-    footer_h: int,
-    pal: dict[str, str],
-    title_id: str | None,
-    theme_id: str | None,
-) -> None:
-    """Cosmetic pins: corner rivets + title/theme badges on the frame."""
-    _draw_corner_rivets(
-        draw, canvas=canvas, header_h=header_h, footer_h=footer_h, pal=pal
+    origin_x: int,
+    origin_y: int,
+    grid: int,
+) -> Image.Image:
+    """Scatter purchased cosmetic emojis randomly (stable seed) on the frame margins."""
+    emojis = [e for e in (pin_emojis or []) if e]
+    if not emojis:
+        return img
+    pin_size = PIN_EMOJI_SIZE
+    slots = _border_pin_slots(
+        canvas=canvas,
+        header_h=header_h,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        grid=grid,
+        pin_size=pin_size,
     )
+    if not slots:
+        return img
 
-    title_meta = SHOP_TITLES.get(title_id or "")
-    theme_meta = SHOP_THEMES.get(theme_id or "")
-    title_pin = cosmetic_pin_text(title_meta)
-    theme_pin = cosmetic_pin_text(theme_meta)
-
-    badge_h = 22
-    badge_y = (header_h - badge_h) // 2
-    side_max = max(80, (canvas - 200) // 2)
-    if title_pin:
-        _draw_pin_badge(
-            draw,
-            text=title_pin,
-            x=10,
-            y=badge_y,
-            max_w=side_max,
-            height=badge_h,
-            pal=pal,
-            align="left",
-        )
-    if theme_pin:
-        _draw_pin_badge(
-            draw,
-            text=theme_pin,
-            x=canvas - 10,
-            y=badge_y,
-            max_w=side_max,
-            height=badge_h,
-            pal=pal,
-            align="right",
-        )
-
-    if footer_h > 0 and title_pin:
-        # Footer nameplate
-        draw.rectangle(
-            (0, canvas - footer_h, canvas, canvas),
-            fill=pal["header_bar"],
-        )
-        draw.line(
-            (0, canvas - footer_h, canvas, canvas - footer_h),
-            fill=pal["card_border"],
+    rng = random.Random(int(pin_seed or 1))
+    rng.shuffle(slots)
+    # Up to one pin per owned emoji, plus a few repeats if they own several
+    count = min(len(slots), max(len(emojis), min(8, len(emojis) * 2)))
+    chosen_slots = slots[:count]
+    base = img.convert("RGBA")
+    for i, (x, y) in enumerate(chosen_slots):
+        emoji = emojis[i % len(emojis)]
+        pin = load_emoji_pin(emoji, pin_size)
+        if pin is None:
+            continue
+        # Soft circular backing so pins read as "stuck" on the border
+        badge = Image.new("RGBA", (pin_size + 6, pin_size + 6), (0, 0, 0, 0))
+        bdraw = ImageDraw.Draw(badge)
+        bdraw.ellipse(
+            (0, 0, pin_size + 5, pin_size + 5),
+            fill=(255, 255, 255, 210),
+            outline=(245, 158, 11, 255),
             width=2,
         )
-        plate = cosmetic_pin_text(title_meta) or title_pin
-        font = board_font(14, bold=True)
-        bb = draw.textbbox((0, 0), plate, font=font)
-        tw, th = bb[2] - bb[0], bb[3] - bb[1]
-        draw.text(
-            ((canvas - tw) / 2, canvas - footer_h + (footer_h - th) / 2 - 1),
-            plate,
-            fill=pal["header_text"],
-            font=font,
-        )
+        badge.alpha_composite(pin, dest=(3, 3))
+        base.alpha_composite(badge, dest=(max(0, x - 3), max(0, y - 3)))
+    return base.convert("RGB")
 
 
 def render_board(
@@ -1165,19 +1171,15 @@ def render_board(
     difficulty: str | None = None,
     theme_id: str | None = None,
     title_id: str | None = None,
+    pin_emojis: list[str] | None = None,
+    pin_seed: int | None = None,
 ) -> BytesIO:
-    """Bikini Bottom board — bubbly digits, lagoon colors, cosmetic frame pins.
-
-    The grid stays large so it lines up with Discord's button row; pins live in
-    the header / footer / corner rivets.
-    """
-    _ = solution
+    """Bikini Bottom board — large grid with random owned-emoji pins on the margins."""
+    _ = solution, title_id
     pal = palette_for_theme(theme_id)
     conflicts = conflicts or set()
     canvas = BOARD_CANVAS
     header_h = BOARD_HEADER_H
-    has_title = bool(title_id and title_id in SHOP_TITLES)
-    footer_h = BOARD_FOOTER_H if has_title else 0
     pad = BOARD_CARD_PAD
     radius = BOARD_CARD_RADIUS
     inner = BOARD_INNER_PAD
@@ -1200,8 +1202,8 @@ def render_board(
         font=header_font,
     )
 
-    # Board card = area between header and optional footer
-    card_bottom = canvas - pad - footer_h
+    # Board card = full remaining area (classic large grid)
+    card_bottom = canvas - pad
     card = (pad, header_h, canvas - pad, card_bottom)
     if radius > 0:
         draw.rounded_rectangle(
@@ -1328,14 +1330,15 @@ def render_board(
                         font=pencil_font,
                     )
 
-    _draw_board_pins(
-        draw,
+    img = paste_owned_emoji_pins(
+        img,
+        pin_emojis=pin_emojis,
+        pin_seed=pin_seed,
         canvas=canvas,
         header_h=header_h,
-        footer_h=footer_h,
-        pal=pal,
-        title_id=title_id,
-        theme_id=theme_id,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        grid=grid,
     )
 
     out = BytesIO()
@@ -1414,6 +1417,8 @@ def new_game_state(
     board_theme: str | None = None,
     owner_name: str | None = None,
     owner_title: str | None = None,
+    pin_emojis: list[str] | None = None,
+    pin_seed: int | None = None,
 ) -> dict:
     # Persist the human-readable tier name (e.g. "Expertttt")
     tier_name = difficulty_label(difficulty)
@@ -1441,6 +1446,8 @@ def new_game_state(
         "daily_date": daily_date,
         "message_id": None,
         "board_theme": board_theme,
+        "pin_emojis": list(pin_emojis or []),
+        "pin_seed": int(pin_seed if pin_seed is not None else random.randrange(1 << 30)),
     }
 
 
@@ -1526,6 +1533,8 @@ def board_file_for(game: dict, *, status: str | None = None) -> tuple[str, disco
         difficulty=game.get("difficulty"),
         theme_id=game.get("board_theme"),
         title_id=game.get("owner_title"),
+        pin_emojis=game.get("pin_emojis"),
+        pin_seed=game.get("pin_seed"),
     )
     return " ", board_to_file(image)
 
@@ -1981,6 +1990,8 @@ async def handle_challenge_completion(
         difficulty=game.get("difficulty"),
         theme_id=game.get("board_theme"),
         title_id=game.get("owner_title"),
+        pin_emojis=game.get("pin_emojis"),
+        pin_seed=game.get("pin_seed"),
     )
     remaining = sum(
         1
@@ -2099,6 +2110,7 @@ async def launch_challenge_match(
             difficulty=difficulty,
             started_at=start_time,
             board_theme=equipped_theme_id(pstats),
+            pin_emojis=owned_pin_emojis(pstats),
         )
         await dest.send(
             f"{member.mention} Speedrun ({len(players)} players) · **{tier}**\n"
@@ -3054,6 +3066,8 @@ class SudokuView(discord.ui.View):
                     difficulty=game.get("difficulty"),
                     theme_id=game.get("board_theme"),
                     title_id=game.get("owner_title"),
+                    pin_emojis=game.get("pin_emojis"),
+                    pin_seed=game.get("pin_seed"),
                 )
             )
             caption = win_reward_caption(coins) if coins > 0 else f"{BUBBLE} **Board complete!**"
@@ -3185,8 +3199,11 @@ async def _shop_buy_or_equip(
             stats["title"] = tid
             save_data(bot.data)
             sync_title_to_active_games(interaction.user.id, interaction.guild.id, tid)
+            sync_pins_to_active_games(
+                interaction.user.id, interaction.guild.id, owned_pin_emojis(stats)
+            )
             await interaction.response.send_message(
-                f"Equipped **{meta['label']}**. Active boards pick up the pin on the next move.",
+                f"Equipped **{meta['label']}**. Active boards pick up pins on the next move.",
                 ephemeral=True,
             )
             return
@@ -3201,6 +3218,9 @@ async def _shop_buy_or_equip(
         stats["title"] = tid
         save_data(bot.data)
         sync_title_to_active_games(interaction.user.id, interaction.guild.id, tid)
+        sync_pins_to_active_games(
+            interaction.user.id, interaction.guild.id, owned_pin_emojis(stats)
+        )
         # Public flex — shop UI stays private, the haul is channel-visible
         await interaction.response.send_message(
             f"{SPONGE} {who} bought the title **{meta['label']}** "
@@ -3214,6 +3234,9 @@ async def _shop_buy_or_equip(
             stats["board_theme"] = None
             save_data(bot.data)
             sync_theme_to_active_games(interaction.user.id, interaction.guild.id, None)
+            sync_pins_to_active_games(
+                interaction.user.id, interaction.guild.id, owned_pin_emojis(stats)
+            )
             await interaction.response.send_message(
                 "Equipped **🌊 Lagoon Classic**.", ephemeral=True
             )
@@ -3226,6 +3249,9 @@ async def _shop_buy_or_equip(
             stats["board_theme"] = tid
             save_data(bot.data)
             sync_theme_to_active_games(interaction.user.id, interaction.guild.id, tid)
+            sync_pins_to_active_games(
+                interaction.user.id, interaction.guild.id, owned_pin_emojis(stats)
+            )
             await interaction.response.send_message(
                 f"Equipped board theme **{meta['label']}**. Next refresh uses it.",
                 ephemeral=True,
@@ -3242,6 +3268,9 @@ async def _shop_buy_or_equip(
         stats["board_theme"] = tid
         save_data(bot.data)
         sync_theme_to_active_games(interaction.user.id, interaction.guild.id, tid)
+        sync_pins_to_active_games(
+            interaction.user.id, interaction.guild.id, owned_pin_emojis(stats)
+        )
         await interaction.response.send_message(
             f"{SPONGE} {who} bought the board theme **{meta['label']}** "
             f"(−{meta['cost']} {SPONGE}) · pocket now **{format_sponges(stats['coins'])}**!",
@@ -3450,6 +3479,22 @@ async def testboard_cmd(
     """Ephemeral preview so you can check cosmetic pins without starting a game."""
     title_id = title.value if title else "sudoku_pro"
     theme_id = theme.value if theme else "jellyfish"
+    # Fake a small collection of owned cosmetics so the border fills with emoji pins
+    sample_pins = [
+        SHOP_TITLES[title_id]["emoji"],
+        SHOP_THEMES[theme_id]["emoji"],
+        SHOP_TITLES["legend"]["emoji"],
+        SHOP_TITLES["neptune"]["emoji"],
+        SHOP_THEMES["krusty"]["emoji"],
+        SHOP_TITLES["dutchman"]["emoji"],
+    ]
+    # Dedupe while preserving order
+    seen: set[str] = set()
+    pin_emojis = []
+    for e in sample_pins:
+        if e not in seen:
+            pin_emojis.append(e)
+            seen.add(e)
     board, given, solution = make_puzzle("easy")
     # Sprinkle a few pencil marks so notes are visible in the preview
     for r, c, marks in ((0, 1, [2, 5]), (4, 4, [1, 3, 7]), (8, 7, [4, 9])):
@@ -3464,13 +3509,14 @@ async def testboard_cmd(
         title_id=title_id,
         selected=(4, 4),
         highlight_box=4,
+        pin_emojis=pin_emojis,
+        pin_seed=42,
     )
-    title_pin = cosmetic_pin_text(SHOP_TITLES.get(title_id))
-    theme_pin = cosmetic_pin_text(SHOP_THEMES.get(theme_id))
     await interaction.response.send_message(
         content=(
             f"{BUBBLE} **Pin preview** (not a real game)\n"
-            f"Title pin: **{title_pin}** · Theme pin: **{theme_pin}**"
+            f"Border pins from owned cosmetics: {' '.join(pin_emojis)}\n"
+            f"Theme colors: **{cosmetic_pin_text(SHOP_THEMES.get(theme_id))}**"
         ),
         file=board_to_file(image),
         ephemeral=True,
@@ -3577,6 +3623,7 @@ async def play_cmd(
         guild_id=guild_id,
         difficulty=diff_key,
         board_theme=equipped_theme_id(stats),
+        pin_emojis=owned_pin_emojis(stats),
     )
     try:
         await start_panel(interaction, sk, games[sk])
@@ -3809,6 +3856,7 @@ async def daily_cmd(interaction: discord.Interaction):
         daily_date=daily["date"],
         difficulty=diff_key,
         board_theme=equipped_theme_id(stats),
+        pin_emojis=owned_pin_emojis(stats),
     )
     try:
         await start_panel(interaction, sk, games[sk], silent=False)
