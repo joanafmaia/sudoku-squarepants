@@ -2039,79 +2039,101 @@ async def launch_challenge_match(
     interaction: discord.Interaction,
     players: list[discord.Member],
     difficulty: str,
-) -> None:
-    assert interaction.guild is not None
-    assert isinstance(interaction.channel, discord.TextChannel)
-    if len(players) < 2:
-        await interaction.followup.send("Need at least 2 players to start.", ephemeral=True)
-        return
+) -> bool:
+    """Start a challenge. Caller must already have deferred the interaction.
 
-    board, given, solution = make_puzzle(difficulty)
-    tier = difficulty_label(difficulty)
-    player_ids = [m.id for m in players]
-    player_names = [m.display_name for m in players]
-    doc = new_match_document(
-        guild_id=interaction.guild.id,
-        channel_id=interaction.channel.id,
-        player_ids=player_ids,
-        board=board,
-        given=given,
-        solution=solution,
-        difficulty=tier,
-        player_names=player_names,
-    )
-    match_id = await match_store.insert_match(doc)
-    match = await match_store.get_match(match_id)
-    assert match is not None
-    start_time = float(match["start_time"])
-    slots = match["player_slots"]
+    Returns True on success. On failure, sends an ephemeral followup when possible.
+    """
+    try:
+        assert interaction.guild is not None
+        assert isinstance(interaction.channel, discord.TextChannel)
+        if len(players) < 2:
+            await interaction.followup.send("Need at least 2 players to start.", ephemeral=True)
+            return False
 
-    names = " · ".join(m.display_name for m in players)
-    destinations: list[tuple[str, discord.Member, discord.abc.Messageable]] = []
-    for slot, member in zip(slots, players):
-        dest = await open_private_match_channel(
-            interaction.channel,
-            member,
-            f"sudoku-{len(players)}p-{member.display_name}"[:90],
-        )
-        thread_id = getattr(dest, "id", None)
-        await match_store.update_player(
-            match_id, slot, {"thread_id": thread_id, "name": member.display_name}
-        )
-        destinations.append((slot, member, dest))
-
-    roster = ", ".join(m.mention for m in players)
-    for slot, member, dest in destinations:
-        key = challenge_game_key(match_id, member.id)
-        player_board = copy_grid(board)
-        pstats = user_stats(guild_stats(bot.data, interaction.guild.id), member.id)
-        games[key] = new_game_state(
-            mode="challenge",
-            board=player_board,
+        board, given, solution = make_puzzle(difficulty)
+        tier = difficulty_label(difficulty)
+        player_ids = [m.id for m in players]
+        player_names = [m.display_name for m in players]
+        doc = new_match_document(
+            guild_id=interaction.guild.id,
+            channel_id=interaction.channel.id,
+            player_ids=player_ids,
+            board=board,
             given=given,
             solution=solution,
-            owner_id=member.id,
-            owner_name=member.display_name,
-            owner_title=equipped_title_id(pstats),
-            channel_id=getattr(dest, "id", interaction.channel.id),
-            guild_id=interaction.guild.id,
-            match_id=match_id,
-            player_slot=slot,
-            difficulty=difficulty,
-            started_at=start_time,
-            pin_emojis=owned_pin_emojis(pstats),
+            difficulty=tier,
+            player_names=player_names,
         )
-        await dest.send(
-            f"{member.mention} Speedrun ({len(players)} players) · **{tier}**\n"
-            f"Field: {names} — go!"
-        )
-        await post_game_panel(dest, key, games[key])
-        await persist_game(key, games[key])
+        match_id = await match_store.insert_match(doc)
+        match = await match_store.get_match(match_id)
+        assert match is not None
+        start_time = float(match["start_time"])
+        slots = match["player_slots"]
 
-    await interaction.followup.send(
-        f"Challenge started ({len(players)}): {roster} · **{tier}**. "
-        "Private boards are open — fastest clean solve wins.",
-    )
+        names = " · ".join(m.display_name for m in players)
+        destinations: list[tuple[str, discord.Member, discord.abc.Messageable]] = []
+        for slot, member in zip(slots, players):
+            dest = await open_private_match_channel(
+                interaction.channel,
+                member,
+                f"sudoku-{len(players)}p-{member.display_name}"[:90],
+            )
+            thread_id = getattr(dest, "id", None)
+            await match_store.update_player(
+                match_id, slot, {"thread_id": thread_id, "name": member.display_name}
+            )
+            destinations.append((slot, member, dest))
+
+        roster = ", ".join(m.mention for m in players)
+        for slot, member, dest in destinations:
+            key = challenge_game_key(match_id, member.id)
+            player_board = copy_grid(board)
+            pstats = user_stats(guild_stats(bot.data, interaction.guild.id), member.id)
+            games[key] = new_game_state(
+                mode="challenge",
+                board=player_board,
+                given=given,
+                solution=solution,
+                owner_id=member.id,
+                owner_name=member.display_name,
+                owner_title=equipped_title_id(pstats),
+                channel_id=getattr(dest, "id", interaction.channel.id),
+                guild_id=interaction.guild.id,
+                match_id=match_id,
+                player_slot=slot,
+                difficulty=difficulty,
+                started_at=start_time,
+                pin_emojis=owned_pin_emojis(pstats),
+            )
+            await dest.send(
+                f"{member.mention} Speedrun ({len(players)} players) · **{tier}**\n"
+                f"Field: {names} — go!"
+            )
+            await post_game_panel(dest, key, games[key])
+            await persist_game(key, games[key])
+
+        await interaction.followup.send(
+            f"Challenge started ({len(players)}): {roster} · **{tier}**. "
+            "Private boards are open — fastest clean solve wins.",
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"launch_challenge_match failed: {exc}")
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    f"Couldn't start the challenge ({exc}). Try again.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    f"Couldn't start the challenge ({exc}). Try again.",
+                    ephemeral=True,
+                )
+        except discord.HTTPException:
+            pass
+        return False
 
 
 def challenge_cooldown_remaining(user_id: int) -> int:
@@ -2214,17 +2236,23 @@ class ChallengeInviteView(discord.ui.View):
                 return
             members.append(m)
 
-        self._disable()
+        # Soft-disable until launch succeeds (don't stop() yet — abort must recover)
+        for child in self.children:
+            child.disabled = True  # type: ignore[attr-defined]
         if self.message:
             await self.message.edit(
                 content=self._status_text("✅ Everyone accepted — starting!"),
                 view=self,
             )
-        await launch_challenge_match(
+        ok = await launch_challenge_match(
             interaction=interaction,
             players=members,
             difficulty=self.difficulty,
         )
+        if not ok:
+            await _abort("Challenge failed to start — lobby reopened.")
+            return
+        self._disable()
 
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.success)
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -2433,18 +2461,34 @@ class OpenChallengeLobbyView(discord.ui.View):
             members.append(m)
 
         self._launching = True
-        self._disable()
+        # Soft-disable until launch succeeds
+        for child in self.children:
+            child.disabled = True  # type: ignore[attr-defined]
         await interaction.response.defer()
         if self.message:
             await self.message.edit(
                 content=self._roster_text("🏁 Starting…"),
                 view=self,
             )
-        await launch_challenge_match(
+        ok = await launch_challenge_match(
             interaction=interaction,
             players=members,
             difficulty=self.difficulty,
         )
+        if not ok:
+            self._launching = False
+            for child in self.children:
+                child.disabled = False  # type: ignore[attr-defined]
+            if self.message:
+                try:
+                    await self.message.edit(
+                        content=self._roster_text("⚠️ Start failed — lobby reopened."),
+                        view=self,
+                    )
+                except discord.HTTPException:
+                    pass
+            return
+        self._disable()
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -2573,9 +2617,11 @@ class ConfirmQuitView(discord.ui.View):
             return
 
         guild = interaction.guild
-        if guild is None:
+        guild_id = guild.id if guild is not None else game.get("guild_id")
+        if guild_id is None:
+            await remove_game(self.game_key)
             return
-        embed = finish_forfeit(self.bot.data, guild.id, interaction.user, game)
+        embed = finish_forfeit(self.bot.data, int(guild_id), interaction.user, game)
         await remove_game(self.game_key)
         await self._edit_board_message(game, embed=embed)
 
@@ -2666,6 +2712,13 @@ class SudokuView(discord.ui.View):
     async def on_nav_back(self, interaction: discord.Interaction) -> None:
         game = games.get(self.game_key)
         if not game:
+            await interaction.response.edit_message(
+                content="This game has ended.",
+                embed=None,
+                view=None,
+                attachments=[],
+            )
+            self.stop()
             return
         stage = game.get("ui_stage", STAGE_BOX)
         if stage == STAGE_CELL:
@@ -3625,6 +3678,25 @@ class SudokuBot(commands.Bot):
 
 bot = SudokuBot()
 
+
+@bot.tree.error
+async def on_app_command_error(
+    interaction: discord.Interaction,
+    error: app_commands.AppCommandError,
+) -> None:
+    """Never leave a slash command hanging on an uncaught exception."""
+    root = error.original if isinstance(error, app_commands.CommandInvokeError) else error
+    print(f"app command error: {root}")
+    msg = "Something went wrong — try again in a moment."
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except discord.HTTPException:
+        pass
+
+
 STATUS_ROTATION = [
     discord.Game(name=f"{SPONGE} /play · I'm ready!"),
     discord.Game(name=f"{WAVE} /daily · Pineapple puzzle"),
@@ -3646,6 +3718,14 @@ async def _wait_ready():
     await bot.wait_until_ready()
 
 
+async def reply_ephemeral(interaction: discord.Interaction, content: str) -> None:
+    """Send an ephemeral reply whether or not the interaction was already deferred."""
+    if interaction.response.is_done():
+        await interaction.followup.send(content, ephemeral=True)
+    else:
+        await interaction.response.send_message(content, ephemeral=True)
+
+
 async def start_panel(
     interaction: discord.Interaction,
     key: tuple[int, int],
@@ -3656,10 +3736,16 @@ async def start_panel(
     view = SudokuView(key, bot)
     content, file = board_file_for(game)
     # /play stays silent; /daily can notify the channel
-    await interaction.response.send_message(
-        content=content, view=view, file=file, silent=silent
-    )
-    view.message = await interaction.original_response()
+    if interaction.response.is_done():
+        msg = await interaction.followup.send(
+            content=content, view=view, file=file, silent=silent
+        )
+        view.message = msg
+    else:
+        await interaction.response.send_message(
+            content=content, view=view, file=file, silent=silent
+        )
+        view.message = await interaction.original_response()
     game["message_id"] = view.message.id
     await persist_game(key, game)
 
@@ -3684,7 +3770,23 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
         game["participants"] = set(game.get("participants") or [game.get("owner_id")])
         game.pop("finishing", None)
         game.pop("_digit_lock", None)
-        game.pop("rewarded", None)
+        # Solved boards: keep rewarded so restart doesn't double-pay
+        if is_solved(game.get("board") or [], game.get("solution")):
+            game["rewarded"] = True
+        else:
+            game.pop("rewarded", None)
+
+        # Rehydrate cosmetics from current inventory (themes→pins era safe)
+        try:
+            owner_id = int(game.get("owner_id"))
+            guild_id = int(game.get("guild_id"))
+            pstats = user_stats(guild_stats(bot.data, guild_id), owner_id)
+            game["pin_emojis"] = owned_pin_emojis(pstats)
+            if not game.get("owner_title"):
+                game["owner_title"] = equipped_title_id(pstats)
+        except (TypeError, ValueError):
+            game.setdefault("pin_emojis", [])
+
         games[key] = game
 
         channel = bot.get_channel(game.get("channel_id"))
@@ -3886,9 +3988,10 @@ async def play_cmd(
     if sk in games:
         existing = games[sk]
         if is_solved(existing.get("board") or [], existing.get("solution")):
-            coins = await close_solved_session(bot, sk, existing, interaction.user, guild_id)
+            # Defer before slow award so the interaction doesn't expire
+            await interaction.response.defer()
+            await close_solved_session(bot, sk, existing, interaction.user, guild_id)
             # Fall through and start a fresh game
-            _ = coins
         else:
             await interaction.response.send_message(
                 f"You already have a **{existing['mode']}** game. Use **Quit** or `/quit`.",
@@ -4082,6 +4185,7 @@ async def daily_cmd(interaction: discord.Interaction):
     if sk in games:
         existing = games[sk]
         if is_solved(existing.get("board") or [], existing.get("solution")):
+            await interaction.response.defer()
             await close_solved_session(bot, sk, existing, interaction.user, guild_id)
             # Fall through — allow a new daily only if today's slot is free
         else:
@@ -4097,10 +4201,10 @@ async def daily_cmd(interaction: discord.Interaction):
         if r.get("in_progress"):
             restored = await load_persisted_game(sk)
             if restored and restored.get("mode") == "daily":
-                await interaction.response.send_message(
+                await reply_ephemeral(
+                    interaction,
                     "You already started today's daily — continue on your board message "
                     "(use **Refresh** if the buttons timed out).",
-                    ephemeral=True,
                 )
                 return
             # Orphan lock (restart without recoverable session) — unlock and continue
@@ -4113,10 +4217,10 @@ async def daily_cmd(interaction: discord.Interaction):
                 detail = "used (quit)"
             else:
                 detail = "already used"
-            await interaction.response.send_message(
+            await reply_ephemeral(
+                interaction,
                 f"You've already **{detail}** today's daily ({daily['date']}). "
                 f"Only **one** daily attempt per day — play more with `/play`, or check `/dailyboard`.",
-                ephemeral=True,
             )
             return
 
