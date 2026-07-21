@@ -1149,7 +1149,7 @@ def finish_forfeit(data: dict, guild_id: int, user: discord.abc.User, game: dict
     save_data(data)
     note = " Daily attempt locked for today — see you at the Krusty Krab!" if game["mode"] == "daily" else ""
     return paper_embed(
-        f"{WAVE} I QUITTT",
+        f"{WAVE} Quit",
         description=f"Streak wiped.{note}",
     )
 
@@ -1437,7 +1437,7 @@ async def handle_challenge_forfeit(
     )
 
     embed = paper_embed(
-        "I QUITTT",
+        "Quit",
         description="You're out. Remaining players keep racing.",
     )
     await interaction.response.edit_message(embed=embed, view=None, attachments=[])
@@ -1943,7 +1943,7 @@ class ConfirmQuitView(discord.ui.View):
         except discord.HTTPException:
             pass
 
-    @discord.ui.button(label="I QUITTT", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Quit", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         game = games.get(self.game_key)
         if not game:
@@ -1970,7 +1970,7 @@ class ConfirmQuitView(discord.ui.View):
             )
             await remove_game(self.game_key)
             embed = paper_embed(
-                "I QUITTT",
+                "Quit",
                 description="You're out. Remaining players keep racing.",
             )
             await self._edit_board_message(game, embed=embed)
@@ -2037,7 +2037,7 @@ class SudokuView(discord.ui.View):
     def _add_fixed_nav(self, game: dict, stage: str) -> None:
         """
         Row 3 — nav strip:
-          Back | Notes | I QUITTT
+          Back | Notes | Quit
         """
         back = discord.ui.Button(
             label="Back",
@@ -2061,7 +2061,7 @@ class SudokuView(discord.ui.View):
         self.add_item(pencil)
 
         quit_btn = discord.ui.Button(
-            label="I QUITTT",
+            label="Quit",
             style=discord.ButtonStyle.danger,
             row=3,
             custom_id=self._cid("nav:quit"),
@@ -2781,7 +2781,7 @@ async def help_cmd(interaction: discord.Interaction):
     embed.add_field(
         name="Rules",
         value="Red cells = row / column / box clash. **Notes** for doodle marks. "
-        "**I QUITTT** (or `/quit`) bails out.",
+        "**Quit** (or `/quit`) leaves the board.",
         inline=False,
     )
     embed.add_field(
@@ -2825,7 +2825,7 @@ async def play_cmd(
     sk = solo_key(guild_id, user_id)
     if sk in games:
         await interaction.response.send_message(
-            f"You already have a **{games[sk]['mode']}** game. Use **I QUITTT** or `/quit`.",
+            f"You already have a **{games[sk]['mode']}** game. Use **Quit** or `/quit`.",
             ephemeral=True,
         )
         return
@@ -3010,7 +3010,7 @@ async def daily_cmd(interaction: discord.Interaction):
     sk = solo_key(guild_id, user_id)
     if sk in games:
         await interaction.response.send_message(
-            f"Finish your **{games[sk]['mode']}** game first (**I QUITTT** / `/quit`).",
+            f"Finish your **{games[sk]['mode']}** game first (**Quit** / `/quit`).",
             ephemeral=True,
         )
         return
@@ -3146,7 +3146,7 @@ async def shop_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=ShopView(bot), ephemeral=True)
 
 
-@bot.tree.command(name="quit", description="I QUITTT — leave your active Sudoku game or challenge")
+@bot.tree.command(name="quit", description="Leave your active Sudoku game or challenge")
 async def quit_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message("Server only.", ephemeral=True)
