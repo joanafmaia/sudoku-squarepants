@@ -167,41 +167,41 @@ SHOP_TITLES = {
     "neptune": {"label": "👑 King Neptune", "cost": 1500, "pin": "Neptune", "emoji": "👑"},
 }
 
-# Extra border pin cosmetics (emoji only — never changes board colors)
+# Extra border pin cosmetics (unique emojis — never overlap title pins, never change colors)
 SHOP_PINS = {
     "jellyfish": {
-        "label": "🪼 Jellyfish Fields",
-        "pin": "Jellyfish",
-        "emoji": "🪼",
+        "label": "🪸 Coral Pin",
+        "pin": "Coral",
+        "emoji": "🪸",
         "cost": 175,
     },
     "krusty": {
-        "label": "🦀 Krusty Krab",
-        "pin": "Krusty",
+        "label": "🦀 Crab Pin",
+        "pin": "Crab",
         "emoji": "🦀",
         "cost": 250,
     },
     "goober": {
-        "label": "🍦 Goofy Goober Ice",
-        "pin": "Goober Ice",
-        "emoji": "🍦",
+        "label": "🫧 Bubble Pin",
+        "pin": "Bubble",
+        "emoji": "🫧",
         "cost": 320,
     },
     "sandy": {
-        "label": "🐿️ Sandy's Dome",
-        "pin": "Sandy",
+        "label": "🐿️ Dome Pin",
+        "pin": "Dome",
         "emoji": "🐿️",
         "cost": 400,
     },
     "rock_bottom": {
-        "label": "🌑 Rock Bottom",
-        "pin": "Rock Bottom",
-        "emoji": "🌑",
+        "label": "⚓ Anchor Pin",
+        "pin": "Anchor",
+        "emoji": "⚓",
         "cost": 550,
     },
     "chum": {
-        "label": "🪣 Chum Bucket",
-        "pin": "Chum",
+        "label": "🪣 Bucket Pin",
+        "pin": "Bucket",
         "emoji": "🪣",
         "cost": 700,
     },
@@ -985,13 +985,9 @@ def _border_pin_slots(
     grid: int,
     pin_size: int,
 ) -> list[tuple[int, int]]:
-    """Candidate top-left positions in the cream margin around the grid."""
+    """Candidate top-left positions in the cream margin around the grid (no top — conflicts with header)."""
     slots: list[tuple[int, int]] = []
     gap = pin_size + 6
-    # Top margin (under header, above grid)
-    top_y = header_h + max(2, (origin_y - header_h - pin_size) // 2)
-    for x in range(origin_x, origin_x + grid - pin_size + 1, gap):
-        slots.append((x, top_y))
     # Bottom margin
     bottom_y = origin_y + grid + max(2, (canvas - (origin_y + grid) - pin_size) // 2)
     if bottom_y + pin_size <= canvas - 2:
@@ -3117,9 +3113,13 @@ def shop_item_embed(
     price = "FREE" if cost <= 0 else format_sponges(cost)
     tab = "Titles" if kind == "titles" else "Pins"
     embed = paper_embed(f"{SPONGE} Krusty Shop · {tab}")
+    if item["kind"] == "pin":
+        hint = "*Browse with Prev/Next — Buy to add this emoji to your border.*"
+    else:
+        hint = "*Browse with Prev/Next — Buy or Equip below.*"
     embed.description = (
         f"{item['emoji']} **{item['label']}**\n"
-        f"*Browse with Prev/Next — Buy or Equip below.*\n"
+        f"{hint}\n"
         f"*No refunds. Squidward is watching.*"
     )
     embed.add_field(name="Price", value=f"**{price}**", inline=True)
@@ -3139,16 +3139,16 @@ def shop_item_embed(
             inline=False,
         )
         embed.add_field(
-            name="Board pin",
-            value=f"Adds {item['emoji']} to your border collection when owned.",
+            name="Bonus",
+            value=f"Also unlocks border pin {item['emoji']} when owned.",
             inline=False,
         )
     else:
         embed.add_field(
-            name="Board pin",
+            name="What you get",
             value=(
-                f"Adds {item['emoji']} to your border collection. "
-                "Does **not** change board colors — press **Preview** to peek."
+                f"Border pin {item['emoji']} on your boards. "
+                "No color change — press **Preview** to peek."
             ),
             inline=False,
         )
@@ -3160,8 +3160,8 @@ def shop_item_embed(
     )
     pin_n = len(owned_pin_emojis(stats))
     embed.add_field(
-        name="Equipped now",
-        value=f"{eq_title} · **{pin_n}** border pin(s)",
+        name="Your look",
+        value=f"Title: {eq_title} · Border pins: **{pin_n}**",
         inline=False,
     )
     return embed
@@ -3667,7 +3667,7 @@ async def on_ready():
 )
 @app_commands.describe(
     title="Sample title (default: Goofy Goober)",
-    pin="Extra border pin (default: Jellyfish Fields)",
+    pin="Extra border pin (default: Coral)",
 )
 @app_commands.choices(
     title=[
