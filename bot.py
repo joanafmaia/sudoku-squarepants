@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from functools import lru_cache
 
 from dotenv import load_dotenv
 
@@ -160,102 +159,53 @@ WIN_TAUNTS = (
     f"{JELLY} Jellyfishing? Nah — Sudoku fishing. Catch!",
 )
 
+# Titles = header flair only (emoji in the name). One free starter; rest stepped prices.
 SHOP_TITLES = {
-    "rookie": {"label": "🪼 Jellyfisher", "cost": 50, "pin": "Jellyfisher", "emoji": "🪼"},
-    "patrick": {"label": "⭐ Starfish Genius", "cost": 100, "pin": "Starfish", "emoji": "⭐"},
-    "solver": {"label": "🍔 Fry Cook", "cost": 150, "pin": "Fry Cook", "emoji": "🍔"},
-    "larry": {"label": "💪 Larry Lobster", "cost": 220, "pin": "Larry", "emoji": "💪"},
-    "barnacle": {"label": "🦸 Barnacle Boy", "cost": 280, "pin": "Barnacle", "emoji": "🦸"},
-    "row_master": {"label": "🚗 Boatmobile Ace", "cost": 300, "pin": "Boatmobile", "emoji": "🚗"},
-    "puff": {"label": "⛵ Boating School Grad", "cost": 350, "pin": "Boating Grad", "emoji": "⛵"},
-    "dutchman": {"label": "👻 Flying Dutchman", "cost": 450, "pin": "Dutchman", "emoji": "👻"},
-    "sudoku_pro": {"label": "🍦 Goofy Goober", "cost": 500, "pin": "Goober", "emoji": "🍦"},
-    "plankton": {"label": "🦠 Plankton Plotter", "cost": 650, "pin": "Plankton", "emoji": "🦠"},
-    "mermaid": {"label": "🧜 Mermaid Man", "cost": 800, "pin": "Mermaid Man", "emoji": "🧜"},
-    "legend": {"label": "🍍 Pineapple Legend", "cost": 1000, "pin": "Legend", "emoji": "🍍"},
-    "neptune": {"label": "👑 King Neptune", "cost": 1500, "pin": "Neptune", "emoji": "👑"},
+    "rookie": {"label": "🪼 Jellyfisher", "cost": 0, "pin": "Jellyfisher", "emoji": "🪼"},
+    "patrick": {"label": "⭐ Starfish Genius", "cost": 40, "pin": "Starfish", "emoji": "⭐"},
+    "solver": {"label": "🍔 Fry Cook", "cost": 75, "pin": "Fry Cook", "emoji": "🍔"},
+    "larry": {"label": "💪 Larry Lobster", "cost": 110, "pin": "Larry", "emoji": "💪"},
+    "barnacle": {"label": "🦸 Barnacle Boy", "cost": 150, "pin": "Barnacle", "emoji": "🦸"},
+    "row_master": {"label": "🚗 Boatmobile Ace", "cost": 200, "pin": "Boatmobile", "emoji": "🚗"},
+    "puff": {"label": "⛵ Boating School Grad", "cost": 250, "pin": "Boating Grad", "emoji": "⛵"},
+    "dutchman": {"label": "👻 Flying Dutchman", "cost": 320, "pin": "Dutchman", "emoji": "👻"},
+    "sudoku_pro": {"label": "🍦 Goofy Goober", "cost": 400, "pin": "Goober", "emoji": "🍦"},
+    "plankton": {"label": "🦠 Plankton Plotter", "cost": 500, "pin": "Plankton", "emoji": "🦠"},
+    "mermaid": {"label": "🧜 Mermaid Man", "cost": 650, "pin": "Mermaid Man", "emoji": "🧜"},
+    "legend": {"label": "🍍 Pineapple Legend", "cost": 850, "pin": "Legend", "emoji": "🍍"},
+    "neptune": {"label": "👑 King Neptune", "cost": 1100, "pin": "Neptune", "emoji": "👑"},
 }
 
-# Extra border pin cosmetics (unique emojis — never overlap title pins, never change colors)
+# Pins = border stickers only. Includes former title emojis + extras. One free; cheaper variety.
 SHOP_PINS = {
-    "coral": {
-        "label": "🪸 Coral Pin",
-        "pin": "Coral",
-        "emoji": "🪸",
-        "cost": 120,
-    },
-    "crab": {
-        "label": "🦀 Crab Pin",
-        "pin": "Crab",
-        "emoji": "🦀",
-        "cost": 175,
-    },
-    "bubble": {
-        "label": "🫧 Bubble Pin",
-        "pin": "Bubble",
-        "emoji": "🫧",
-        "cost": 220,
-    },
-    "wave": {
-        "label": "🌊 Wave Pin",
-        "pin": "Wave",
-        "emoji": "🌊",
-        "cost": 260,
-    },
-    "shell": {
-        "label": "🐚 Shell Pin",
-        "pin": "Shell",
-        "emoji": "🐚",
-        "cost": 300,
-    },
-    "squid": {
-        "label": "🦑 Squid Pin",
-        "pin": "Squid",
-        "emoji": "🦑",
-        "cost": 350,
-    },
-    "sandy": {
-        "label": "🐿️ Dome Pin",
-        "pin": "Dome",
-        "emoji": "🐿️",
-        "cost": 400,
-    },
-    "pearl": {
-        "label": "💎 Pearl Pin",
-        "pin": "Pearl",
-        "emoji": "💎",
-        "cost": 450,
-    },
-    "anchor": {
-        "label": "⚓ Anchor Pin",
-        "pin": "Anchor",
-        "emoji": "⚓",
-        "cost": 520,
-    },
-    "shark": {
-        "label": "🦈 Shark Pin",
-        "pin": "Shark",
-        "emoji": "🦈",
-        "cost": 600,
-    },
-    "bucket": {
-        "label": "🪣 Bucket Pin",
-        "pin": "Bucket",
-        "emoji": "🪣",
-        "cost": 700,
-    },
-    "sponge": {
-        "label": "🧽 Sponge Pin",
-        "pin": "Sponge",
-        "emoji": "🧽",
-        "cost": 850,
-    },
-    "whirl": {
-        "label": "🌀 Whirlpool Pin",
-        "pin": "Whirlpool",
-        "emoji": "🌀",
-        "cost": 1000,
-    },
+    "wave": {"label": "🌊 Wave Pin", "pin": "Wave", "emoji": "🌊", "cost": 0},
+    # Former title emojis → buyable border pins
+    "pin_jelly": {"label": "🪼 Jelly Pin", "pin": "Jelly", "emoji": "🪼", "cost": 25},
+    "pin_star": {"label": "⭐ Star Pin", "pin": "Star", "emoji": "⭐", "cost": 40},
+    "pin_burger": {"label": "🍔 Burger Pin", "pin": "Burger", "emoji": "🍔", "cost": 55},
+    "pin_flex": {"label": "💪 Flex Pin", "pin": "Flex", "emoji": "💪", "cost": 70},
+    "pin_hero": {"label": "🦸 Hero Pin", "pin": "Hero", "emoji": "🦸", "cost": 85},
+    "pin_boat": {"label": "🚗 Boat Pin", "pin": "Boat", "emoji": "🚗", "cost": 100},
+    "pin_sail": {"label": "⛵ Sail Pin", "pin": "Sail", "emoji": "⛵", "cost": 120},
+    "pin_ghost": {"label": "👻 Ghost Pin", "pin": "Ghost", "emoji": "👻", "cost": 140},
+    "pin_goober": {"label": "🍦 Goober Pin", "pin": "Goober", "emoji": "🍦", "cost": 165},
+    "pin_bug": {"label": "🦠 Bug Pin", "pin": "Bug", "emoji": "🦠", "cost": 190},
+    "pin_mermaid": {"label": "🧜 Mermaid Pin", "pin": "Mermaid", "emoji": "🧜", "cost": 220},
+    "pin_pineapple": {"label": "🍍 Pineapple Pin", "pin": "Pineapple", "emoji": "🍍", "cost": 260},
+    "pin_crown": {"label": "👑 Crown Pin", "pin": "Crown", "emoji": "👑", "cost": 300},
+    # Extra unique stickers
+    "coral": {"label": "🪸 Coral Pin", "pin": "Coral", "emoji": "🪸", "cost": 35},
+    "crab": {"label": "🦀 Crab Pin", "pin": "Crab", "emoji": "🦀", "cost": 50},
+    "bubble": {"label": "🫧 Bubble Pin", "pin": "Bubble", "emoji": "🫧", "cost": 65},
+    "shell": {"label": "🐚 Shell Pin", "pin": "Shell", "emoji": "🐚", "cost": 95},
+    "squid": {"label": "🦑 Squid Pin", "pin": "Squid", "emoji": "🦑", "cost": 115},
+    "sandy": {"label": "🐿️ Dome Pin", "pin": "Dome", "emoji": "🐿️", "cost": 145},
+    "pearl": {"label": "💎 Pearl Pin", "pin": "Pearl", "emoji": "💎", "cost": 180},
+    "anchor": {"label": "⚓ Anchor Pin", "pin": "Anchor", "emoji": "⚓", "cost": 210},
+    "shark": {"label": "🦈 Shark Pin", "pin": "Shark", "emoji": "🦈", "cost": 245},
+    "bucket": {"label": "🪣 Bucket Pin", "pin": "Bucket", "emoji": "🪣", "cost": 280},
+    "sponge": {"label": "🧽 Sponge Pin", "pin": "Sponge", "emoji": "🧽", "cost": 320},
+    "whirl": {"label": "🌀 Whirlpool Pin", "pin": "Whirlpool", "emoji": "🌀", "cost": 360},
 }
 
 # Legacy shop pin ids → current ids (owned_themes / owned_pins from older builds)
@@ -524,6 +474,21 @@ def user_stats(gstats: dict, user_id: int) -> dict:
     if normalized != list(s.get("owned_pins") or []):
         s["owned_pins"] = normalized
         s["owned_themes"] = normalized
+    # Auto-claim free shop items (cost 0)
+    for tid, meta in SHOP_TITLES.items():
+        if int(meta.get("cost") or 0) <= 0 and tid not in s["owned_titles"]:
+            s["owned_titles"].append(tid)
+            if not s.get("title"):
+                s["title"] = tid
+    owned = owned_pin_ids(s)
+    free_pins_added = False
+    for pid, meta in SHOP_PINS.items():
+        if int(meta.get("cost") or 0) <= 0 and pid not in owned:
+            owned.append(pid)
+            free_pins_added = True
+    if free_pins_added:
+        s["owned_pins"] = owned
+        s["owned_themes"] = owned
     seed_sponges_spent(s)
     s.setdefault("hints", 0)
     s.setdefault("daily_wins", 0)
@@ -864,10 +829,20 @@ TITLE_HEADER_LINES = {
 }
 
 
-def titled_header_line(tier: str, title_pin: str) -> str:
-    """Difficulty + SpongeBob flair with the equipped title pin."""
+def titled_header_badge(title_pin: str, emoji: str = "") -> str:
+    """Title name with optional leading emoji for header flair."""
+    pin = (title_pin or "").strip()
+    em = (emoji or "").strip()
+    if em and pin:
+        return f"{em} {pin}"
+    return pin or em
+
+
+def titled_header_line(tier: str, title_pin: str, emoji: str = "") -> str:
+    """Difficulty + SpongeBob flair with the equipped title (emoji + name)."""
     template = TITLE_HEADER_LINES.get(tier) or "I'm ready, {title}!"
-    return f"~ {tier} ~  {template.format(title=title_pin)}"
+    badge = titled_header_badge(title_pin, emoji)
+    return f"~ {tier} ~  {template.format(title=badge)}"
 
 
 def make_puzzle(difficulty: float | str = DEFAULT_DIFFICULTY, seed: int | None = None) -> tuple[list[list[dict]], list[list[bool]], list[list[int]]]:
@@ -1113,11 +1088,17 @@ def _twemoji_code(emoji: str) -> str:
     return "-".join(parts)
 
 
-@lru_cache(maxsize=64)
+_EMOJI_PIN_MEMO: dict[tuple[str, int], Image.Image] = {}
+
+
 def load_emoji_pin(emoji: str, size: int = PIN_EMOJI_SIZE) -> Image.Image | None:
-    """Load a Twemoji PNG for border pins (cached on disk + memory)."""
+    """Load an emoji PNG for border/header pins (disk + memory cache; misses not cached)."""
     if not emoji:
         return None
+    key = (emoji, int(size))
+    hit = _EMOJI_PIN_MEMO.get(key)
+    if hit is not None:
+        return hit
     code = _twemoji_code(emoji)
     if not code:
         return None
@@ -1127,18 +1108,33 @@ def load_emoji_pin(emoji: str, size: int = PIN_EMOJI_SIZE) -> Image.Image | None
         return None
     path = EMOJI_PIN_DIR / f"{code}.png"
     if not path.exists():
-        url = (
-            "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/"
-            f"assets/72x72/{code}.png"
+        # Twemoji 14 misses newer glyphs (e.g. 🪼 U+1FABC); fall back to newer packs.
+        urls = (
+            f"https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/{code}.png",
+            f"https://cdn.jsdelivr.net/npm/emoji-datasource-twitter@15.1.2/img/twitter/64/{code}.png",
+            f"https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/png/72/emoji_u{code}.png",
+            f"https://cdn.jsdelivr.net/npm/emoji-datasource-google@15.1.2/img/google/64/{code}.png",
         )
-        try:
-            urllib.request.urlretrieve(url, path)
-        except Exception:
+        fetched = False
+        for url in urls:
+            try:
+                urllib.request.urlretrieve(url, path)
+                fetched = True
+                break
+            except Exception:
+                continue
+        if not fetched:
             return None
     try:
         im = Image.open(path).convert("RGBA")
-        return im.resize((size, size), Image.Resampling.LANCZOS)
+        out = im.resize((size, size), Image.Resampling.LANCZOS)
+        _EMOJI_PIN_MEMO[key] = out
+        return out
     except Exception:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
         return None
 
 
@@ -1261,33 +1257,72 @@ def render_board(
     draw.line((0, header_h - 1, canvas, header_h - 1), fill=pal["card_border"], width=2)
 
     tier = difficulty_label(difficulty)
-    header_label = f"~ {tier} ~"
     title_meta = SHOP_TITLES.get(title_id or "")
     title_pin = cosmetic_pin_text(title_meta) if title_meta else ""
-    if title_pin:
-        header_label = titled_header_line(tier, title_pin)
+    title_emoji = str((title_meta or {}).get("emoji") or "").strip() if title_meta else ""
 
     header_font = board_font(18, bold=True)
-    hb = draw.textbbox((0, 0), header_label, font=header_font)
-    htw, hth = hb[2] - hb[0], hb[3] - hb[1]
-    # Shrink slightly if the title line is too wide for the header
-    if htw > canvas - 24:
-        header_font = board_font(14, bold=True)
+    header_emoji_size = 20
+    header_fill = pal["header_text"]
+
+    if not title_pin:
+        header_label = f"~ {tier} ~"
         hb = draw.textbbox((0, 0), header_label, font=header_font)
         htw, hth = hb[2] - hb[0], hb[3] - hb[1]
-    if htw > canvas - 16 and title_pin:
-        # Last resort: shorten the title pin
-        while htw > canvas - 16 and len(title_pin) > 4:
-            title_pin = title_pin[:-1]
-            header_label = titled_header_line(tier, title_pin + "…")
-            hb = draw.textbbox((0, 0), header_label, font=header_font)
-            htw, hth = hb[2] - hb[0], hb[3] - hb[1]
-    draw.text(
-        ((canvas - htw) / 2, (header_h - hth) / 2),
-        header_label,
-        fill=pal["header_text"],
-        font=header_font,
-    )
+        draw.text(
+            ((canvas - htw) / 2, (header_h - hth) / 2),
+            header_label,
+            fill=header_fill,
+            font=header_font,
+        )
+    else:
+        # Split flair around {title} so we can paste Twemoji beside the name
+        template = TITLE_HEADER_LINES.get(tier) or "I'm ready, {title}!"
+        pre, _, post = template.partition("{title}")
+        left = f"~ {tier} ~  {pre}"
+        pin_draw = title_pin
+
+        def _header_width(font, pin: str) -> tuple[int, int, int, int]:
+            lb = draw.textbbox((0, 0), left, font=font)
+            rb = draw.textbbox((0, 0), pin + post, font=font)
+            lw = lb[2] - lb[0]
+            rw = rb[2] - rb[0]
+            th = max(lb[3] - lb[1], rb[3] - rb[1])
+            em_w = (header_emoji_size + 4) if title_emoji else 0
+            return lw + em_w + rw, lw, rw, th
+
+        total_w, left_w, _right_w, text_h = _header_width(header_font, pin_draw)
+        if total_w > canvas - 24:
+            header_font = board_font(14, bold=True)
+            total_w, left_w, _right_w, text_h = _header_width(header_font, pin_draw)
+        while total_w > canvas - 16 and len(pin_draw) > 4:
+            pin_draw = pin_draw[:-1]
+            trial = pin_draw + "…"
+            total_w, left_w, _right_w, text_h = _header_width(header_font, trial)
+            if total_w <= canvas - 16 or len(pin_draw) <= 4:
+                pin_draw = trial
+                break
+
+        x = (canvas - total_w) / 2
+        y_text = (header_h - text_h) / 2
+        draw.text((x, y_text), left, fill=header_fill, font=header_font)
+        x += left_w
+        if title_emoji:
+            em_img = load_emoji_pin(title_emoji, header_emoji_size)
+            if em_img is not None:
+                ey = int((header_h - header_emoji_size) / 2)
+                img.paste(em_img, (int(x), ey), em_img)
+                x += header_emoji_size + 4
+            else:
+                eb = draw.textbbox((0, 0), title_emoji + " ", font=header_font)
+                draw.text(
+                    (x, y_text),
+                    title_emoji + " ",
+                    fill=header_fill,
+                    font=header_font,
+                )
+                x += eb[2] - eb[0]
+        draw.text((x, y_text), pin_draw + post, fill=header_fill, font=header_font)
 
     # Board card = full remaining area (classic large grid)
     card_bottom = canvas - pad
@@ -3356,7 +3391,7 @@ def shop_item_embed(
     else:
         hint = "*Browse with Prev/Next — Buy or Equip for header flair.*"
     embed.description = (
-        f"{item['emoji']} **{item['label']}**\n"
+        f"**{item['label']}**\n"
         f"{hint}\n"
         f"*No refunds. Squidward is watching.*"
     )
@@ -3370,7 +3405,11 @@ def shop_item_embed(
     embed.add_field(name="Catalog", value=f"**{index + 1}** / **{total}**", inline=True)
 
     if item["kind"] == "title":
-        sample = titled_header_line("Easy", item.get("pin") or "Civilian")
+        sample = titled_header_line(
+            "Easy",
+            item.get("pin") or "Civilian",
+            emoji=str(item.get("emoji") or ""),
+        )
         embed.add_field(
             name="What you get",
             value=(
