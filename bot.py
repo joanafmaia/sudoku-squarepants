@@ -803,6 +803,23 @@ def difficulty_multiplier(difficulty: str | None) -> float:
     return float(DIFFICULTY_TIERS[key]["multiplier"])
 
 
+# Header flair when a title is equipped — one vibe per difficulty tier
+TITLE_HEADER_LINES = {
+    "Very Easy": "Ahoy, {title} — jellyfishing warm-up!",
+    "Easy": "I'm ready, {title}!",
+    "Medium": "Order up, {title}!",
+    "Hard": "Aye aye, {title} — hold the tartar sauce!",
+    "Very Hard": "Jumping jellyfish, {title}!",
+    "Expertttt": "Barnacles! Go get 'em, {title}!",
+}
+
+
+def titled_header_line(tier: str, title_pin: str) -> str:
+    """Difficulty + SpongeBob flair with the equipped title pin."""
+    template = TITLE_HEADER_LINES.get(tier) or "I'm ready, {title}!"
+    return f"~ {tier} ~  {template.format(title=title_pin)}"
+
+
 def make_puzzle(difficulty: float | str = DEFAULT_DIFFICULTY, seed: int | None = None) -> tuple[list[list[dict]], list[list[bool]], list[list[int]]]:
     if isinstance(difficulty, str):
         weight = difficulty_weight(difficulty)
