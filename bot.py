@@ -114,8 +114,9 @@ DEFAULT_BOARD_PALETTE = {
 }
 
 # Fixed Discord attachment canvas — larger = bigger chat preview (full-bleed with keypad)
-BOARD_CANVAS = 800
-BOARD_HEADER_H = 42
+# Taller header for mobile-readable titles; canvas grown so the 9×9 stays roomy.
+BOARD_CANVAS = 860
+BOARD_HEADER_H = 72
 BOARD_CARD_PAD = 0          # full-bleed so the board aligns with the keyboard
 BOARD_CARD_RADIUS = 0
 BOARD_INNER_PAD = 14        # margin around grid — room for random emoji pins
@@ -175,13 +176,13 @@ SHOP_TITLES = {
     "legend": {"label": "🍍 Pineapple Legend", "cost": 3500, "pin": "Legend", "emoji": "🍍"},
     "neptune": {"label": "👑 King Neptune", "cost": 4500, "pin": "Neptune", "emoji": "👑"},
     # Crew tributes — Bikini Bottom shout-outs
-    "darkstriker": {"label": "🤪 Dark Goober", "cost": 900, "pin": "Goober66", "emoji": "🤪"},
+    "darkstriker": {"label": "🦹 Dark Striker", "cost": 900, "pin": "Striker", "emoji": "🦹"},
     "behindyou": {"label": "🕶️ Behind You", "cost": 1400, "pin": "Shadow", "emoji": "🕶️"},
     "glock_sheets": {"label": "📊 Glock Sheets", "cost": 1600, "pin": "Sheets", "emoji": "📊"},
     "bookie": {"label": "📚 Book Queen", "cost": 1800, "pin": "Bookie", "emoji": "📚"},
-    "stacked": {"label": "😎 Stacked Smooth", "cost": 2000, "pin": "Smooth", "emoji": "😎"},
+    "stacked": {"label": "😎 Stacked Smooth", "cost": 2000, "pin": "Stacked", "emoji": "😎"},
     "drea_mom": {"label": "🫶 Mama Drea", "cost": 2400, "pin": "Mama", "emoji": "🫶"},
-    "hulk_r5": {"label": "💥 Hulk Command", "cost": 2800, "pin": "Hulk", "emoji": "💥"},
+    "hulk_r5": {"label": "🧌 Hulk Command", "cost": 2800, "pin": "Hulk", "emoji": "🧌"},
     "apex_whale": {"label": "🐋 Apex Whale", "cost": 5000, "pin": "Apex", "emoji": "🐋"},
 }
 
@@ -216,13 +217,13 @@ SHOP_PINS = {
     "sponge": {"label": "🧽 Sponge Pin", "pin": "Sponge", "emoji": "🧽", "cost": 1350},
     "whirl": {"label": "🌀 Whirlpool Pin", "pin": "Whirlpool", "emoji": "🌀", "cost": 1600},
     # Crew tribute pins
-    "pin_goof": {"label": "🤪 Goof Pin", "pin": "Goof", "emoji": "🤪", "cost": 450},
+    "pin_goof": {"label": "🦹 Thief Pin", "pin": "Thief", "emoji": "🦹", "cost": 450},
     "pin_shadow": {"label": "🕶️ Shadow Pin", "pin": "Shadow", "emoji": "🕶️", "cost": 700},
     "pin_sheets": {"label": "📊 Sheets Pin", "pin": "Sheets", "emoji": "📊", "cost": 850},
     "pin_book": {"label": "📚 Book Pin", "pin": "Book", "emoji": "📚", "cost": 950},
-    "pin_smooth": {"label": "😎 Smooth Pin", "pin": "Smooth", "emoji": "😎", "cost": 1050},
+    "pin_smooth": {"label": "😎 Stacked Pin", "pin": "Stacked", "emoji": "😎", "cost": 1050},
     "pin_mama": {"label": "🫶 Mama Pin", "pin": "Mama", "emoji": "🫶", "cost": 1200},
-    "pin_hulk": {"label": "💥 Hulk Pin", "pin": "Hulk", "emoji": "💥", "cost": 1450},
+    "pin_hulk": {"label": "🧌 Hulk Pin", "pin": "Hulk", "emoji": "🧌", "cost": 1450},
     "pin_apex": {"label": "🐋 Apex Pin", "pin": "Apex", "emoji": "🐋", "cost": 1800},
 }
 
@@ -1435,13 +1436,20 @@ def render_board(
     title_meta = SHOP_TITLES.get(title_id or "")
     title_pin = cosmetic_pin_text(title_meta) if title_meta else ""
     title_emoji = str((title_meta or {}).get("emoji") or "").strip() if title_meta else ""
-
-    header_font = board_font(18, bold=True)
-    header_emoji_size = 20
     header_fill = pal["header_text"]
+
+    def _fit_font(text: str, *, max_size: int, min_size: int = 18) -> ImageFont.ImageFont:
+        """Largest bold font that fits the header width (mobile-readable)."""
+        for size in range(max_size, min_size - 1, -2):
+            font = board_font(size, bold=True)
+            bb = draw.textbbox((0, 0), text, font=font)
+            if bb[2] - bb[0] <= canvas - 20:
+                return font
+        return board_font(min_size, bold=True)
 
     if not title_pin:
         header_label = f"~ {tier} ~"
+        header_font = _fit_font(header_label, max_size=36, min_size=22)
         hb = draw.textbbox((0, 0), header_label, font=header_font)
         htw, hth = hb[2] - hb[0], hb[3] - hb[1]
         draw.text(
@@ -1451,53 +1459,71 @@ def render_board(
             font=header_font,
         )
     else:
-        # Split flair around {title} so we can paste Twemoji beside the name
+        # Two lines fill the blue bar: difficulty on top, flair + title below
         template = TITLE_HEADER_LINES.get(tier) or "I'm ready, {title}!"
         pre, _, post = template.partition("{title}")
-        left = f"~ {tier} ~  {pre}"
+        line1 = f"~ {tier} ~"
         pin_draw = title_pin
+        header_emoji_size = 32
 
-        def _header_width(font, pin: str) -> tuple[int, int, int, int]:
-            lb = draw.textbbox((0, 0), left, font=font)
+        def _flair_width(font, pin: str) -> tuple[int, int, int]:
+            lb = draw.textbbox((0, 0), pre, font=font)
             rb = draw.textbbox((0, 0), pin + post, font=font)
             lw = lb[2] - lb[0]
             rw = rb[2] - rb[0]
-            th = max(lb[3] - lb[1], rb[3] - rb[1])
+            th = max(lb[3] - lb[1], rb[3] - rb[1], header_emoji_size)
             em_w = (header_emoji_size + 4) if title_emoji else 0
-            return lw + em_w + rw, lw, rw, th
+            return lw + em_w + rw, lw, th
 
-        total_w, left_w, _right_w, text_h = _header_width(header_font, pin_draw)
-        if total_w > canvas - 24:
-            header_font = board_font(14, bold=True)
-            total_w, left_w, _right_w, text_h = _header_width(header_font, pin_draw)
+        line1_font = _fit_font(line1, max_size=32, min_size=20)
+        flair_font = board_font(28, bold=True)
+        total_w, left_w, text_h = _flair_width(flair_font, pin_draw)
+        for size, em in ((26, 30), (24, 28), (22, 26), (20, 24)):
+            if total_w <= canvas - 16:
+                break
+            flair_font = board_font(size, bold=True)
+            header_emoji_size = em
+            total_w, left_w, text_h = _flair_width(flair_font, pin_draw)
         while total_w > canvas - 16 and len(pin_draw) > 4:
             pin_draw = pin_draw[:-1]
             trial = pin_draw + "…"
-            total_w, left_w, _right_w, text_h = _header_width(header_font, trial)
+            total_w, left_w, text_h = _flair_width(flair_font, trial)
             if total_w <= canvas - 16 or len(pin_draw) <= 4:
                 pin_draw = trial
                 break
 
+        l1b = draw.textbbox((0, 0), line1, font=line1_font)
+        l1w, l1h = l1b[2] - l1b[0], l1b[3] - l1b[1]
+        gap = 2
+        block_h = l1h + gap + text_h
+        y0 = max(2, (header_h - block_h) / 2)
+
+        draw.text(
+            ((canvas - l1w) / 2, y0),
+            line1,
+            fill=header_fill,
+            font=line1_font,
+        )
+        y_flair = y0 + l1h + gap
         x = (canvas - total_w) / 2
-        y_text = (header_h - text_h) / 2
-        draw.text((x, y_text), left, fill=header_fill, font=header_font)
+        draw.text((x, y_flair), pre, fill=header_fill, font=flair_font)
         x += left_w
         if title_emoji:
             em_img = load_emoji_pin(title_emoji, header_emoji_size)
             if em_img is not None:
-                ey = int((header_h - header_emoji_size) / 2)
+                ey = int(y_flair + (text_h - header_emoji_size) / 2)
                 img.paste(em_img, (int(x), ey), em_img)
                 x += header_emoji_size + 4
             else:
-                eb = draw.textbbox((0, 0), title_emoji + " ", font=header_font)
+                eb = draw.textbbox((0, 0), title_emoji + " ", font=flair_font)
                 draw.text(
-                    (x, y_text),
+                    (x, y_flair),
                     title_emoji + " ",
                     fill=header_fill,
-                    font=header_font,
+                    font=flair_font,
                 )
                 x += eb[2] - eb[0]
-        draw.text((x, y_text), pin_draw + post, fill=header_fill, font=header_font)
+        draw.text((x, y_flair), pin_draw + post, fill=header_fill, font=flair_font)
 
     # Board card = full remaining area (classic large grid)
     card_bottom = canvas - pad
@@ -3514,7 +3540,7 @@ class SudokuView(discord.ui.View):
 # ---------------------------------------------------------------------------
 
 def shop_catalog(kind: str) -> list[dict]:
-    """Browseable catalog entries for the Krusty Shop carousel."""
+    """Browseable catalog entries for the Krusty Shop."""
     if kind == "titles":
         return [
             {
@@ -3540,6 +3566,9 @@ def shop_catalog(kind: str) -> list[dict]:
     ]
 
 
+SHOP_PAGE_SIZE = 8
+
+
 def shop_item_owned(stats: dict, item: dict) -> bool:
     if item["kind"] == "title":
         return item["id"] in (stats.get("owned_titles") or [])
@@ -3553,70 +3582,115 @@ def shop_item_equipped(stats: dict, item: dict) -> bool:
     return shop_item_owned(stats, item)
 
 
-def shop_item_embed(
+def shop_item_status_text(stats: dict, item: dict) -> str:
+    owned = shop_item_owned(stats, item)
+    if item["kind"] == "pin":
+        return "Owned" if owned else "Locked"
+    if shop_item_equipped(stats, item):
+        return "Equipped"
+    if owned:
+        return "Owned"
+    return "Locked"
+
+
+def shop_item_price_text(item: dict) -> str:
+    cost = int(item["cost"])
+    return "FREE" if cost <= 0 else format_sponges(cost)
+
+
+def shop_item_can_buy(stats: dict, item: dict) -> bool:
+    if shop_item_owned(stats, item):
+        return False
+    cost = int(item["cost"])
+    return cost <= 0 or int(stats.get("coins") or 0) >= cost
+
+
+def shop_filter_catalog(
+    items: list[dict], stats: dict, filt: str
+) -> list[dict]:
+    """filt: all | afford | owned"""
+    if filt == "owned":
+        return [it for it in items if shop_item_owned(stats, it)]
+    if filt == "afford":
+        return [it for it in items if shop_item_can_buy(stats, it)]
+    return list(items)
+
+
+def shop_page_embed(
     *,
     stats: dict,
-    item: dict,
     kind: str,
-    index: int,
-    total: int,
+    page_items: list[dict],
+    selected: dict | None,
+    page: int,
+    pages: int,
+    filt: str,
+    filtered_total: int,
 ) -> discord.Embed:
-    owned = shop_item_owned(stats, item)
-    equipped = shop_item_equipped(stats, item)
-    if item["kind"] == "pin":
-        status = "Owned" if owned else "Locked"
-    elif equipped:
-        status = "Equipped"
-    elif owned:
-        status = "Owned"
-    else:
-        status = "Locked"
-
-    cost = int(item["cost"])
-    price = "FREE" if cost <= 0 else format_sponges(cost)
+    """Paginated catalog embed with the selected item highlighted."""
     tab = "Titles" if kind == "titles" else "Pins"
+    filter_label = {"all": "All", "afford": "Can buy", "owned": "Owned"}.get(filt, "All")
     embed = paper_embed(f"{SPONGE} Krusty Shop · {tab}")
-    if item["kind"] == "pin":
-        hint = "*Browse with Prev/Next — Buy to add this emoji to your border.*"
-    else:
-        hint = "*Browse with Prev/Next — Buy or Equip for header flair.*"
-    embed.description = (
-        f"**{item['label']}**\n"
-        f"{hint}\n"
-        f"*No refunds. Squidward is watching.*"
+    hint = (
+        "Pick an item in the menu, then **Buy** / **Equip**. "
+        "Pins also have **Preview**."
+        if kind == "pins"
+        else "Pick an item in the menu, then **Buy** or **Equip** for header flair."
     )
-    embed.add_field(name="Price", value=f"**{price}**", inline=True)
-    embed.add_field(name="Status", value=f"**{status}**", inline=True)
+    lines: list[str] = []
+    selected_id = (selected or {}).get("id")
+    for it in page_items:
+        mark = "▸ " if it["id"] == selected_id else "· "
+        status = shop_item_status_text(stats, it)
+        # Affordable but locked → show Can buy instead of Locked
+        if status == "Locked" and shop_item_can_buy(stats, it):
+            status = "Can buy"
+        price = shop_item_price_text(it)
+        lines.append(f"{mark}{it['label']} — **{price}** · {status}")
+    if not lines:
+        lines.append("_No items match this filter._")
+
+    embed.description = (
+        f"{hint}\n"
+        f"*Filter: **{filter_label}** · Page **{page + 1}/{max(1, pages)}** "
+        f"({filtered_total} items)*\n\n"
+        + "\n".join(lines)
+        + f"\n\n*No refunds. Squidward is watching.*"
+    )
     embed.add_field(
         name=f"Pocket {SPONGE}",
         value=f"**{format_sponges(stats.get('coins', 0))}**",
         inline=True,
     )
-    embed.add_field(name="Catalog", value=f"**{index + 1}** / **{total}**", inline=True)
 
-    if item["kind"] == "title":
-        sample = titled_header_line(
-            "Easy",
-            item.get("pin") or "Civilian",
-            emoji=str(item.get("emoji") or ""),
-        )
+    if selected:
+        status = shop_item_status_text(stats, selected)
+        if status == "Locked" and shop_item_can_buy(stats, selected):
+            status = "Can buy"
         embed.add_field(
-            name="What you get",
-            value=(
-                f"Header flair only — e.g. `{sample}`\n"
-                f"(Border emojis come from the **Pins** tab.)"
-            ),
-            inline=False,
+            name="Selected",
+            value=f"**{selected['label']}**\n{shop_item_price_text(selected)} · {status}",
+            inline=True,
         )
+        if selected["kind"] == "title":
+            sample = titled_header_line(
+                "Easy",
+                selected.get("pin") or "Civilian",
+                emoji=str(selected.get("emoji") or ""),
+            )
+            embed.add_field(
+                name="What you get",
+                value=f"Header flair — e.g. `{sample}`",
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="What you get",
+                value=f"Border pin {selected['emoji']} on your boards.",
+                inline=False,
+            )
     else:
-        embed.add_field(
-            name="What you get",
-            value=(
-                f"Border pin {item['emoji']} on your boards. "
-                "No color change — press **Preview** to peek."
-            ),
-            inline=False,
-        )
+        embed.add_field(name="Selected", value="_Nothing_", inline=True)
 
     eq_title = (
         SHOP_TITLES[stats["title"]]["label"]
@@ -3750,7 +3824,7 @@ def shop_preview_file(stats: dict, item: dict) -> discord.File:
 
 
 class KrustyShopView(discord.ui.View):
-    """Interactive catalog: Titles/Pins tabs, carousel, Buy/Equip/Preview."""
+    """Paginated catalog with Select + filters: Titles/Pins, Buy/Equip/Preview."""
 
     def __init__(
         self,
@@ -3759,128 +3833,237 @@ class KrustyShopView(discord.ui.View):
         owner_id: int,
         guild_id: int,
         kind: str = "titles",
-        index: int = 0,
+        filt: str = "all",
+        page: int = 0,
+        selected_id: str | None = None,
     ):
         super().__init__(timeout=180)
         self.bot = bot
         self.owner_id = owner_id
         self.guild_id = guild_id
         self.kind = kind if kind in ("titles", "pins") else "titles"
-        self.index = max(0, index)
+        self.filt = filt if filt in ("all", "afford", "owned") else "all"
+        self.page = max(0, page)
+        self.selected_id = selected_id
         self.message: discord.Message | None = None
+        self._ensure_selection()
         self._rebuild()
-
-    def catalog(self) -> list[dict]:
-        return shop_catalog(self.kind)
-
-    def current_item(self) -> dict:
-        items = self.catalog()
-        if not items:
-            return {
-                "kind": "title",
-                "id": "",
-                "label": "Empty",
-                "emoji": SPONGE,
-                "cost": 0,
-                "pin": "",
-            }
-        self.index %= len(items)
-        return items[self.index]
 
     def _stats(self) -> dict:
         gstats = guild_stats(self.bot.data, self.guild_id)
         return user_stats(gstats, self.owner_id)
 
+    def catalog(self) -> list[dict]:
+        return shop_catalog(self.kind)
+
+    def filtered_catalog(self) -> list[dict]:
+        return shop_filter_catalog(self.catalog(), self._stats(), self.filt)
+
+    def page_count(self) -> int:
+        total = len(self.filtered_catalog())
+        return max(1, (total + SHOP_PAGE_SIZE - 1) // SHOP_PAGE_SIZE)
+
+    def page_items(self) -> list[dict]:
+        items = self.filtered_catalog()
+        if not items:
+            self.page = 0
+            return []
+        self.page %= self.page_count()
+        start = self.page * SHOP_PAGE_SIZE
+        return items[start : start + SHOP_PAGE_SIZE]
+
+    def selected_item(self) -> dict | None:
+        items = self.filtered_catalog()
+        if not items:
+            return None
+        if self.selected_id:
+            for it in items:
+                if it["id"] == self.selected_id:
+                    return it
+        return items[0]
+
+    def _ensure_selection(self) -> None:
+        """Pick a sensible selected item when opening or after filter/tab changes."""
+        stats = self._stats()
+        items = self.filtered_catalog()
+        if not items:
+            self.selected_id = None
+            self.page = 0
+            return
+
+        # Keep selection if still visible under filter
+        if self.selected_id and any(it["id"] == self.selected_id for it in items):
+            self._sync_page_to_selected(items)
+            return
+
+        # Prefer equipped title / first affordable / first item
+        if self.kind == "titles":
+            eq = equipped_title_id(stats)
+            if eq and any(it["id"] == eq for it in items):
+                self.selected_id = eq
+                self._sync_page_to_selected(items)
+                return
+        for it in items:
+            if shop_item_can_buy(stats, it):
+                self.selected_id = it["id"]
+                self._sync_page_to_selected(items)
+                return
+        self.selected_id = items[0]["id"]
+        self._sync_page_to_selected(items)
+
+    def _sync_page_to_selected(self, items: list[dict]) -> None:
+        if not self.selected_id:
+            self.page = 0
+            return
+        for i, it in enumerate(items):
+            if it["id"] == self.selected_id:
+                self.page = i // SHOP_PAGE_SIZE
+                return
+        self.page = 0
+
     def build_embed(self) -> discord.Embed:
-        items = self.catalog()
-        item = self.current_item()
-        return shop_item_embed(
+        items = self.filtered_catalog()
+        page_items = self.page_items()
+        selected = self.selected_item()
+        return shop_page_embed(
             stats=self._stats(),
-            item=item,
             kind=self.kind,
-            index=self.index,
-            total=len(items),
+            page_items=page_items,
+            selected=selected,
+            page=self.page,
+            pages=self.page_count(),
+            filt=self.filt,
+            filtered_total=len(items),
         )
 
     def _rebuild(self) -> None:
         self.clear_items()
         stats = self._stats()
-        item = self.current_item()
-        owned = shop_item_owned(stats, item)
+        page_items = self.page_items()
+        selected = self.selected_item()
+        owned = shop_item_owned(stats, selected) if selected else False
 
+        # Row 0 — tabs
         titles_btn = discord.ui.Button(
             label="Titles",
             style=discord.ButtonStyle.primary if self.kind == "titles" else discord.ButtonStyle.secondary,
             row=0,
-            custom_id="shop:titles",
         )
         pins_btn = discord.ui.Button(
             label="Pins",
             style=discord.ButtonStyle.primary if self.kind == "pins" else discord.ButtonStyle.secondary,
             row=0,
-            custom_id="shop:pins",
         )
         titles_btn.callback = self.on_titles
         pins_btn.callback = self.on_pins
         self.add_item(titles_btn)
         self.add_item(pins_btn)
 
+        # Row 1 — filters
+        for key, label in (("all", "All"), ("afford", "Can buy"), ("owned", "Owned")):
+            btn = discord.ui.Button(
+                label=label,
+                style=discord.ButtonStyle.primary if self.filt == key else discord.ButtonStyle.secondary,
+                row=1,
+            )
+            btn.callback = self._filter_cb(key)
+            self.add_item(btn)
+
+        # Row 2 — select current page items
+        if page_items:
+            options: list[discord.SelectOption] = []
+            for it in page_items:
+                status = shop_item_status_text(stats, it)
+                if status == "Locked" and shop_item_can_buy(stats, it):
+                    status = "Can buy"
+                price = shop_item_price_text(it)
+                desc = f"{price} · {status}"[:100]
+                label = it["label"][:100]
+                options.append(
+                    discord.SelectOption(
+                        label=label,
+                        value=it["id"],
+                        description=desc,
+                        emoji=it.get("emoji") or None,
+                        default=(it["id"] == (selected or {}).get("id")),
+                    )
+                )
+            select = discord.ui.Select(
+                placeholder="Choose an item…",
+                options=options,
+                row=2,
+                min_values=1,
+                max_values=1,
+            )
+            select.callback = self.on_select
+            self.add_item(select)
+
+        # Row 3 — page nav
         prev_btn = discord.ui.Button(
-            label="Prev",
+            label="◀",
             style=discord.ButtonStyle.secondary,
-            row=1,
-            custom_id="shop:prev",
+            row=3,
+            disabled=self.page_count() <= 1,
         )
         next_btn = discord.ui.Button(
-            label="Next",
+            label="▶",
             style=discord.ButtonStyle.secondary,
-            row=1,
-            custom_id="shop:next",
+            row=3,
+            disabled=self.page_count() <= 1,
         )
         prev_btn.callback = self.on_prev
         next_btn.callback = self.on_next
         self.add_item(prev_btn)
         self.add_item(next_btn)
 
+        # Row 4 — actions
+        if selected is None:
+            return
         if owned:
-            if item["kind"] == "pin":
+            if selected["kind"] == "pin":
                 action = discord.ui.Button(
                     label="Owned",
                     style=discord.ButtonStyle.success,
-                    row=2,
-                    custom_id="shop:owned",
+                    row=4,
                     disabled=True,
                 )
             else:
                 action = discord.ui.Button(
                     label="Equip",
                     style=discord.ButtonStyle.success,
-                    row=2,
-                    custom_id="shop:equip",
-                    disabled=shop_item_equipped(stats, item),
+                    row=4,
+                    disabled=shop_item_equipped(stats, selected),
                 )
                 action.callback = self.on_equip
             self.add_item(action)
         else:
+            cost = int(selected["cost"])
             action = discord.ui.Button(
-                label=f"Buy ({item['cost']} {SPONGE})" if item["cost"] else "Buy",
+                label=f"Buy ({cost} {SPONGE})" if cost else "Claim FREE",
                 style=discord.ButtonStyle.danger,
-                row=2,
-                custom_id="shop:buy",
+                row=4,
             )
             action.callback = self.on_buy
             self.add_item(action)
 
-        # Preview is for Pins (board border look); Titles already show header flair in the embed
         if self.kind == "pins":
             preview = discord.ui.Button(
                 label="Preview",
                 style=discord.ButtonStyle.secondary,
-                row=2,
-                custom_id="shop:preview",
+                row=4,
             )
             preview.callback = self.on_preview
             self.add_item(preview)
+
+    def _filter_cb(self, key: str):
+        async def _cb(interaction: discord.Interaction) -> None:
+            self.filt = key
+            self.page = 0
+            self.selected_id = None
+            self._ensure_selection()
+            await self._refresh(interaction)
+
+        return _cb
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
@@ -3893,45 +4076,72 @@ class KrustyShopView(discord.ui.View):
 
     async def _refresh(self, interaction: discord.Interaction) -> None:
         self._rebuild()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self, attachments=[])
+        await interaction.response.edit_message(
+            embed=self.build_embed(), view=self, attachments=[]
+        )
 
     async def on_titles(self, interaction: discord.Interaction) -> None:
         self.kind = "titles"
-        self.index = 0
+        self.page = 0
+        self.selected_id = None
+        self._ensure_selection()
         await self._refresh(interaction)
 
     async def on_pins(self, interaction: discord.Interaction) -> None:
         self.kind = "pins"
-        self.index = 0
+        self.page = 0
+        self.selected_id = None
+        self._ensure_selection()
         await self._refresh(interaction)
 
     async def on_prev(self, interaction: discord.Interaction) -> None:
-        items = self.catalog()
-        self.index = (self.index - 1) % max(1, len(items))
+        self.page = (self.page - 1) % self.page_count()
+        page_items = self.page_items()
+        if page_items:
+            self.selected_id = page_items[0]["id"]
         await self._refresh(interaction)
 
     async def on_next(self, interaction: discord.Interaction) -> None:
-        items = self.catalog()
-        self.index = (self.index + 1) % max(1, len(items))
+        self.page = (self.page + 1) % self.page_count()
+        page_items = self.page_items()
+        if page_items:
+            self.selected_id = page_items[0]["id"]
+        await self._refresh(interaction)
+
+    async def on_select(self, interaction: discord.Interaction) -> None:
+        if not interaction.data or "values" not in interaction.data:
+            await interaction.response.defer()
+            return
+        values = interaction.data.get("values") or []
+        if values:
+            self.selected_id = str(values[0])
         await self._refresh(interaction)
 
     async def on_equip(self, interaction: discord.Interaction) -> None:
-        result = apply_shop_equip(
-            self.bot, self.guild_id, self.owner_id, self.current_item()
-        )
+        item = self.selected_item()
+        if not item:
+            await interaction.response.send_message("Nothing selected.", ephemeral=True)
+            return
+        result = apply_shop_equip(self.bot, self.guild_id, self.owner_id, item)
         self._rebuild()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self, attachments=[])
+        await interaction.response.edit_message(
+            embed=self.build_embed(), view=self, attachments=[]
+        )
         await interaction.followup.send(result["message"], ephemeral=True)
 
     async def on_buy(self, interaction: discord.Interaction) -> None:
-        item = self.current_item()
+        item = self.selected_item()
+        if not item:
+            await interaction.response.send_message("Nothing selected.", ephemeral=True)
+            return
         result = apply_shop_purchase(self.bot, self.guild_id, self.owner_id, item)
         self._rebuild()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self, attachments=[])
+        await interaction.response.edit_message(
+            embed=self.build_embed(), view=self, attachments=[]
+        )
         if not result["ok"]:
             await interaction.followup.send(result["message"], ephemeral=True)
             return
-        # Public flex in the channel; shop UI stays ephemeral
         who = interaction.user.mention
         cost = int(result.get("cost") or 0)
         pocket = format_sponges(self._stats().get("coins", 0))
@@ -3954,8 +4164,11 @@ class KrustyShopView(discord.ui.View):
                 ephemeral=True,
             )
             return
+        item = self.selected_item()
+        if not item:
+            await interaction.response.send_message("Nothing selected.", ephemeral=True)
+            return
         stats = self._stats()
-        item = self.current_item()
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             file = shop_preview_file(stats, item)
@@ -4355,6 +4568,8 @@ async def help_cmd(interaction: discord.Interaction):
             f"**Sponges** buy cosmetics in `/shop`:\n"
             f"· **Titles** — header flair on your board\n"
             f"· **Pins** — emoji stickers on the border\n"
+            f"· Open `/shop` → pick from the menu → **Buy** / **Equip** "
+            f"(filter All / Can buy / Owned · pages ◀ ▶)\n"
             f"Solve **{format_xp(BASE_WIN_REWARD, signed=True)}** + "
             f"**{format_sponges(BASE_WIN_REWARD, signed=True)}** · "
             f"Daily **+{DAILY_BONUS}** each · "
@@ -4707,7 +4922,6 @@ async def shop_cmd(interaction: discord.Interaction):
         owner_id=interaction.user.id,
         guild_id=interaction.guild.id,
         kind="titles",
-        index=0,
     )
     await interaction.response.send_message(
         embed=view.build_embed(),
