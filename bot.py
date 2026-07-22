@@ -177,7 +177,7 @@ SHOP_TITLES = {
     "neptune": {"label": "👑 King Neptune", "cost": 4500, "pin": "Neptune", "emoji": "👑"},
     # Crew tributes — Bikini Bottom shout-outs
     "darkstriker": {"label": "🦹 Dark Striker", "cost": 900, "pin": "Striker", "emoji": "🦹"},
-    "behindyou": {"label": "🕶️ Behind You", "cost": 1400, "pin": "Shadow", "emoji": "🕶️"},
+    "behindyou": {"label": "👀 Behind You", "cost": 1400, "pin": "Shadow", "emoji": "👀"},
     "glock_sheets": {"label": "📊 Glock Sheets", "cost": 1600, "pin": "Sheets", "emoji": "📊"},
     "bookie": {"label": "📚 Book Queen", "cost": 1800, "pin": "Bookie", "emoji": "📚"},
     "stacked": {"label": "😎 Stacked Smooth", "cost": 2000, "pin": "Stacked", "emoji": "😎"},
@@ -218,7 +218,7 @@ SHOP_PINS = {
     "whirl": {"label": "🌀 Whirlpool Pin", "pin": "Whirlpool", "emoji": "🌀", "cost": 1600},
     # Crew tribute pins
     "pin_goof": {"label": "🦹 Thief Pin", "pin": "Thief", "emoji": "🦹", "cost": 450},
-    "pin_shadow": {"label": "🕶️ Shadow Pin", "pin": "Shadow", "emoji": "🕶️", "cost": 700},
+    "pin_shadow": {"label": "👀 Shadow Pin", "pin": "Shadow", "emoji": "👀", "cost": 700},
     "pin_sheets": {"label": "📊 Sheets Pin", "pin": "Sheets", "emoji": "📊", "cost": 850},
     "pin_book": {"label": "📚 Book Pin", "pin": "Book", "emoji": "📚", "cost": 950},
     "pin_smooth": {"label": "😎 Stacked Pin", "pin": "Stacked", "emoji": "😎", "cost": 1050},
