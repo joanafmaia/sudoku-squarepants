@@ -23,7 +23,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from PIL import Image, ImageDraw, ImageFont
-from sudoku import Sudoku
 
 from challenge_store import create_match_store, match_player_entries, new_match_document
 
@@ -31,14 +30,15 @@ DATA_FILE = Path(__file__).with_name("leaderboard.json")
 VIEW_TIMEOUT = 20 * 60
 DEFAULT_DIFFICULTY = "medium"
 
-# key → weight (py-sudoku), display label, coin multiplier on win
+# key → target clue count (unique solution), display label, coin multiplier on win
+# Clue targets follow human-style bands — NEVER "fewer clues = more solutions".
 DIFFICULTY_TIERS: dict[str, dict] = {
-    "very_easy": {"label": "Very Easy", "weight": 0.25, "multiplier": 0.50},
-    "easy": {"label": "Easy", "weight": 0.40, "multiplier": 0.75},
-    "medium": {"label": "Medium", "weight": 0.55, "multiplier": 1.00},
-    "hard": {"label": "Hard", "weight": 0.70, "multiplier": 1.50},
-    "very_hard": {"label": "Very Hard", "weight": 0.80, "multiplier": 2.00},
-    "expertttt": {"label": "Expertttt", "weight": 0.88, "multiplier": 3.00},
+    "very_easy": {"label": "Very Easy", "clues": 46, "multiplier": 0.50},
+    "easy": {"label": "Easy", "clues": 40, "multiplier": 0.75},
+    "medium": {"label": "Medium", "clues": 34, "multiplier": 1.00},
+    "hard": {"label": "Hard", "clues": 28, "multiplier": 1.50},
+    "very_hard": {"label": "Very Hard", "clues": 24, "multiplier": 2.00},
+    "expertttt": {"label": "Expertttt", "clues": 22, "multiplier": 3.00},
 }
 
 DIFFICULTY_CHOICES = [
@@ -46,12 +46,12 @@ DIFFICULTY_CHOICES = [
     for key, meta in DIFFICULTY_TIERS.items()
 ]
 
-BASE_WIN_REWARD = 80
-DAILY_BONUS = 75
-STREAK_BONUS_PER = 10
+BASE_WIN_REWARD = 50
+DAILY_BONUS = 40
+STREAK_BONUS_PER = 5
 CHALLENGE_WIN_MULT = 2.0  # extra multiplier for speedrun winners
 MAX_CHALLENGE_PLAYERS = 5  # challenger + up to 4 opponents
-CHALLENGE_LOSER_COINS = 25
+CHALLENGE_LOSER_COINS = 15
 CHALLENGE_COOLDOWN_SEC = 60
 INVITE_TIMEOUT_SEC = 5 * 60
 DAILY_EPOCH = datetime(2024, 1, 1, tzinfo=timezone.utc).date()
@@ -159,53 +159,71 @@ WIN_TAUNTS = (
     f"{JELLY} Jellyfishing? Nah — Sudoku fishing. Catch!",
 )
 
-# Titles = header flair only (emoji in the name). One free starter; rest stepped prices.
+# Titles = header flair only. One free starter; rest are a longer sponge grind.
 SHOP_TITLES = {
     "rookie": {"label": "🪼 Jellyfisher", "cost": 0, "pin": "Jellyfisher", "emoji": "🪼"},
-    "patrick": {"label": "⭐ Starfish Genius", "cost": 40, "pin": "Starfish", "emoji": "⭐"},
-    "solver": {"label": "🍔 Fry Cook", "cost": 75, "pin": "Fry Cook", "emoji": "🍔"},
-    "larry": {"label": "💪 Larry Lobster", "cost": 110, "pin": "Larry", "emoji": "💪"},
-    "barnacle": {"label": "🦸 Barnacle Boy", "cost": 150, "pin": "Barnacle", "emoji": "🦸"},
-    "row_master": {"label": "🚗 Boatmobile Ace", "cost": 200, "pin": "Boatmobile", "emoji": "🚗"},
-    "puff": {"label": "⛵ Boating School Grad", "cost": 250, "pin": "Boating Grad", "emoji": "⛵"},
-    "dutchman": {"label": "👻 Flying Dutchman", "cost": 320, "pin": "Dutchman", "emoji": "👻"},
-    "sudoku_pro": {"label": "🍦 Goofy Goober", "cost": 400, "pin": "Goober", "emoji": "🍦"},
-    "plankton": {"label": "🦠 Plankton Plotter", "cost": 500, "pin": "Plankton", "emoji": "🦠"},
-    "mermaid": {"label": "🧜 Mermaid Man", "cost": 650, "pin": "Mermaid Man", "emoji": "🧜"},
-    "legend": {"label": "🍍 Pineapple Legend", "cost": 850, "pin": "Legend", "emoji": "🍍"},
-    "neptune": {"label": "👑 King Neptune", "cost": 1100, "pin": "Neptune", "emoji": "👑"},
+    "patrick": {"label": "⭐ Starfish Genius", "cost": 120, "pin": "Starfish", "emoji": "⭐"},
+    "solver": {"label": "🍔 Fry Cook", "cost": 220, "pin": "Fry Cook", "emoji": "🍔"},
+    "larry": {"label": "💪 Larry Lobster", "cost": 350, "pin": "Larry", "emoji": "💪"},
+    "barnacle": {"label": "🦸 Barnacle Boy", "cost": 500, "pin": "Barnacle", "emoji": "🦸"},
+    "row_master": {"label": "🚗 Boatmobile Ace", "cost": 700, "pin": "Boatmobile", "emoji": "🚗"},
+    "puff": {"label": "⛵ Boating School Grad", "cost": 950, "pin": "Boating Grad", "emoji": "⛵"},
+    "dutchman": {"label": "👻 Flying Dutchman", "cost": 1250, "pin": "Dutchman", "emoji": "👻"},
+    "sudoku_pro": {"label": "🍦 Goofy Goober", "cost": 1600, "pin": "Goober", "emoji": "🍦"},
+    "plankton": {"label": "🦠 Plankton Plotter", "cost": 2100, "pin": "Plankton", "emoji": "🦠"},
+    "mermaid": {"label": "🧜 Mermaid Man", "cost": 2700, "pin": "Mermaid Man", "emoji": "🧜"},
+    "legend": {"label": "🍍 Pineapple Legend", "cost": 3500, "pin": "Legend", "emoji": "🍍"},
+    "neptune": {"label": "👑 King Neptune", "cost": 4500, "pin": "Neptune", "emoji": "👑"},
+    # Crew tributes — Bikini Bottom shout-outs
+    "darkstriker": {"label": "🤪 Dark Goober", "cost": 900, "pin": "Goober66", "emoji": "🤪"},
+    "behindyou": {"label": "🕶️ Behind You", "cost": 1400, "pin": "Shadow", "emoji": "🕶️"},
+    "glock_sheets": {"label": "📊 Glock Sheets", "cost": 1600, "pin": "Sheets", "emoji": "📊"},
+    "bookie": {"label": "📚 Book Queen", "cost": 1800, "pin": "Bookie", "emoji": "📚"},
+    "stacked": {"label": "😎 Stacked Smooth", "cost": 2000, "pin": "Smooth", "emoji": "😎"},
+    "drea_mom": {"label": "🫶 Mama Drea", "cost": 2400, "pin": "Mama", "emoji": "🫶"},
+    "hulk_r5": {"label": "💥 Hulk Command", "cost": 2800, "pin": "Hulk", "emoji": "💥"},
+    "apex_whale": {"label": "🐋 Apex Whale", "cost": 5000, "pin": "Apex", "emoji": "🐋"},
 }
 
-# Pins = border stickers only. Includes former title emojis + extras. One free; cheaper variety.
+# Pins = border stickers only. One free; paid pins scale up so cosmetics stay a chase.
 SHOP_PINS = {
     "wave": {"label": "🌊 Wave Pin", "pin": "Wave", "emoji": "🌊", "cost": 0},
     # Former title emojis → buyable border pins
-    "pin_jelly": {"label": "🪼 Jelly Pin", "pin": "Jelly", "emoji": "🪼", "cost": 25},
-    "pin_star": {"label": "⭐ Star Pin", "pin": "Star", "emoji": "⭐", "cost": 40},
-    "pin_burger": {"label": "🍔 Burger Pin", "pin": "Burger", "emoji": "🍔", "cost": 55},
-    "pin_flex": {"label": "💪 Flex Pin", "pin": "Flex", "emoji": "💪", "cost": 70},
-    "pin_hero": {"label": "🦸 Hero Pin", "pin": "Hero", "emoji": "🦸", "cost": 85},
-    "pin_boat": {"label": "🚗 Boat Pin", "pin": "Boat", "emoji": "🚗", "cost": 100},
-    "pin_sail": {"label": "⛵ Sail Pin", "pin": "Sail", "emoji": "⛵", "cost": 120},
-    "pin_ghost": {"label": "👻 Ghost Pin", "pin": "Ghost", "emoji": "👻", "cost": 140},
-    "pin_goober": {"label": "🍦 Goober Pin", "pin": "Goober", "emoji": "🍦", "cost": 165},
-    "pin_bug": {"label": "🦠 Bug Pin", "pin": "Bug", "emoji": "🦠", "cost": 190},
-    "pin_mermaid": {"label": "🧜 Mermaid Pin", "pin": "Mermaid", "emoji": "🧜", "cost": 220},
-    "pin_pineapple": {"label": "🍍 Pineapple Pin", "pin": "Pineapple", "emoji": "🍍", "cost": 260},
-    "pin_crown": {"label": "👑 Crown Pin", "pin": "Crown", "emoji": "👑", "cost": 300},
+    "pin_jelly": {"label": "🪼 Jelly Pin", "pin": "Jelly", "emoji": "🪼", "cost": 80},
+    "pin_star": {"label": "⭐ Star Pin", "pin": "Star", "emoji": "⭐", "cost": 120},
+    "pin_burger": {"label": "🍔 Burger Pin", "pin": "Burger", "emoji": "🍔", "cost": 180},
+    "pin_flex": {"label": "💪 Flex Pin", "pin": "Flex", "emoji": "💪", "cost": 240},
+    "pin_hero": {"label": "🦸 Hero Pin", "pin": "Hero", "emoji": "🦸", "cost": 320},
+    "pin_boat": {"label": "🚗 Boat Pin", "pin": "Boat", "emoji": "🚗", "cost": 400},
+    "pin_sail": {"label": "⛵ Sail Pin", "pin": "Sail", "emoji": "⛵", "cost": 500},
+    "pin_ghost": {"label": "👻 Ghost Pin", "pin": "Ghost", "emoji": "👻", "cost": 620},
+    "pin_goober": {"label": "🍦 Goober Pin", "pin": "Goober", "emoji": "🍦", "cost": 760},
+    "pin_bug": {"label": "🦠 Bug Pin", "pin": "Bug", "emoji": "🦠", "cost": 920},
+    "pin_mermaid": {"label": "🧜 Mermaid Pin", "pin": "Mermaid", "emoji": "🧜", "cost": 1100},
+    "pin_pineapple": {"label": "🍍 Pineapple Pin", "pin": "Pineapple", "emoji": "🍍", "cost": 1350},
+    "pin_crown": {"label": "👑 Crown Pin", "pin": "Crown", "emoji": "👑", "cost": 1600},
     # Extra unique stickers
-    "coral": {"label": "🪸 Coral Pin", "pin": "Coral", "emoji": "🪸", "cost": 35},
-    "crab": {"label": "🦀 Crab Pin", "pin": "Crab", "emoji": "🦀", "cost": 50},
-    "bubble": {"label": "🫧 Bubble Pin", "pin": "Bubble", "emoji": "🫧", "cost": 65},
-    "shell": {"label": "🐚 Shell Pin", "pin": "Shell", "emoji": "🐚", "cost": 95},
-    "squid": {"label": "🦑 Squid Pin", "pin": "Squid", "emoji": "🦑", "cost": 115},
-    "sandy": {"label": "🐿️ Dome Pin", "pin": "Dome", "emoji": "🐿️", "cost": 145},
-    "pearl": {"label": "💎 Pearl Pin", "pin": "Pearl", "emoji": "💎", "cost": 180},
-    "anchor": {"label": "⚓ Anchor Pin", "pin": "Anchor", "emoji": "⚓", "cost": 210},
-    "shark": {"label": "🦈 Shark Pin", "pin": "Shark", "emoji": "🦈", "cost": 245},
-    "bucket": {"label": "🪣 Bucket Pin", "pin": "Bucket", "emoji": "🪣", "cost": 280},
-    "sponge": {"label": "🧽 Sponge Pin", "pin": "Sponge", "emoji": "🧽", "cost": 320},
-    "whirl": {"label": "🌀 Whirlpool Pin", "pin": "Whirlpool", "emoji": "🌀", "cost": 360},
+    "coral": {"label": "🪸 Coral Pin", "pin": "Coral", "emoji": "🪸", "cost": 100},
+    "crab": {"label": "🦀 Crab Pin", "pin": "Crab", "emoji": "🦀", "cost": 160},
+    "bubble": {"label": "🫧 Bubble Pin", "pin": "Bubble", "emoji": "🫧", "cost": 220},
+    "shell": {"label": "🐚 Shell Pin", "pin": "Shell", "emoji": "🐚", "cost": 300},
+    "squid": {"label": "🦑 Squid Pin", "pin": "Squid", "emoji": "🦑", "cost": 380},
+    "sandy": {"label": "🐿️ Dome Pin", "pin": "Dome", "emoji": "🐿️", "cost": 480},
+    "pearl": {"label": "💎 Pearl Pin", "pin": "Pearl", "emoji": "💎", "cost": 600},
+    "anchor": {"label": "⚓ Anchor Pin", "pin": "Anchor", "emoji": "⚓", "cost": 750},
+    "shark": {"label": "🦈 Shark Pin", "pin": "Shark", "emoji": "🦈", "cost": 920},
+    "bucket": {"label": "🪣 Bucket Pin", "pin": "Bucket", "emoji": "🪣", "cost": 1100},
+    "sponge": {"label": "🧽 Sponge Pin", "pin": "Sponge", "emoji": "🧽", "cost": 1350},
+    "whirl": {"label": "🌀 Whirlpool Pin", "pin": "Whirlpool", "emoji": "🌀", "cost": 1600},
+    # Crew tribute pins
+    "pin_goof": {"label": "🤪 Goof Pin", "pin": "Goof", "emoji": "🤪", "cost": 450},
+    "pin_shadow": {"label": "🕶️ Shadow Pin", "pin": "Shadow", "emoji": "🕶️", "cost": 700},
+    "pin_sheets": {"label": "📊 Sheets Pin", "pin": "Sheets", "emoji": "📊", "cost": 850},
+    "pin_book": {"label": "📚 Book Pin", "pin": "Book", "emoji": "📚", "cost": 950},
+    "pin_smooth": {"label": "😎 Smooth Pin", "pin": "Smooth", "emoji": "😎", "cost": 1050},
+    "pin_mama": {"label": "🫶 Mama Pin", "pin": "Mama", "emoji": "🫶", "cost": 1200},
+    "pin_hulk": {"label": "💥 Hulk Pin", "pin": "Hulk", "emoji": "💥", "cost": 1450},
+    "pin_apex": {"label": "🐋 Apex Pin", "pin": "Apex", "emoji": "🐋", "cost": 1800},
 }
 
 # Legacy shop pin ids → current ids (owned_themes / owned_pins from older builds)
@@ -812,8 +830,8 @@ def values_grid(board: list[list[dict]]) -> list[list[int]]:
     return [[cell_value(board, r, c) for c in range(9)] for r in range(9)]
 
 
-def difficulty_weight(key: str) -> float:
-    return float(DIFFICULTY_TIERS.get(key, DIFFICULTY_TIERS[DEFAULT_DIFFICULTY])["weight"])
+def difficulty_clues(key: str) -> int:
+    return int(DIFFICULTY_TIERS.get(key, DIFFICULTY_TIERS[DEFAULT_DIFFICULTY])["clues"])
 
 
 def difficulty_label(key: str | None) -> str:
@@ -838,6 +856,146 @@ def difficulty_key_from_label(label: str) -> str:
 def difficulty_multiplier(difficulty: str | None) -> float:
     key = difficulty_key_from_label(difficulty or DEFAULT_DIFFICULTY)
     return float(DIFFICULTY_TIERS[key]["multiplier"])
+
+
+def _sudoku_cell_ok(grid: list[list[int]], r: int, c: int, v: int) -> bool:
+    if any(grid[r][j] == v for j in range(9)):
+        return False
+    if any(grid[i][c] == v for i in range(9)):
+        return False
+    br, bc = (r // 3) * 3, (c // 3) * 3
+    for i in range(br, br + 3):
+        for j in range(bc, bc + 3):
+            if grid[i][j] == v:
+                return False
+    return True
+
+
+def _sudoku_candidates(grid: list[list[int]], r: int, c: int) -> list[int]:
+    used = [False] * 10
+    for j in range(9):
+        used[grid[r][j]] = True
+    for i in range(9):
+        used[grid[i][c]] = True
+    br, bc = (r // 3) * 3, (c // 3) * 3
+    for i in range(br, br + 3):
+        for j in range(bc, bc + 3):
+            used[grid[i][j]] = True
+    return [v for v in range(1, 10) if not used[v]]
+
+
+def _sudoku_pick_empty(grid: list[list[int]]) -> tuple[int, int, list[int]] | None:
+    """MRV: empty cell with the fewest candidates (speeds uniqueness checks a lot)."""
+    best: tuple[int, int, list[int]] | None = None
+    best_n = 10
+    for r in range(9):
+        for c in range(9):
+            if grid[r][c] != 0:
+                continue
+            cands = _sudoku_candidates(grid, r, c)
+            n = len(cands)
+            if n == 0:
+                return r, c, []
+            if n < best_n:
+                best = (r, c, cands)
+                best_n = n
+                if n == 1:
+                    return best
+    return best
+
+
+def _sudoku_fill(grid: list[list[int]], rng: random.Random) -> bool:
+    """Fill an empty/partial grid with a valid complete Sudoku (randomized)."""
+    pick = _sudoku_pick_empty(grid)
+    if pick is None:
+        return True
+    r, c, cands = pick
+    if not cands:
+        return False
+    rng.shuffle(cands)
+    for v in cands:
+        grid[r][c] = v
+        if _sudoku_fill(grid, rng):
+            return True
+        grid[r][c] = 0
+    return False
+
+
+def _sudoku_count_solutions(grid: list[list[int]], limit: int = 2) -> int:
+    """Count solutions up to `limit` (2 is enough to prove non-uniqueness)."""
+    count = 0
+
+    def bt() -> None:
+        nonlocal count
+        if count >= limit:
+            return
+        pick = _sudoku_pick_empty(grid)
+        if pick is None:
+            count += 1
+            return
+        r, c, cands = pick
+        if not cands:
+            return
+        for v in cands:
+            grid[r][c] = v
+            bt()
+            grid[r][c] = 0
+            if count >= limit:
+                return
+
+    bt()
+    return count
+
+
+def generate_unique_sudoku(
+    *,
+    target_clues: int,
+    seed: int | None = None,
+) -> tuple[list[list[int]], list[list[int]]]:
+    """Build a uniquely solvable puzzle near `target_clues` givens.
+
+    Returns (puzzle_grid with 0=empty, solution_grid).
+    Retries a few dig orders so harder tiers actually reach the clue target.
+    """
+    target = max(17, min(50, int(target_clues)))
+    base_seed = seed if seed is not None else random.randrange(1 << 30)
+
+    best_puzzle: list[list[int]] | None = None
+    best_solution: list[list[int]] | None = None
+    best_clues = 81
+
+    for attempt in range(5):
+        rng = random.Random(base_seed + attempt * 1_000_003)
+        solution = [[0] * 9 for _ in range(9)]
+        if not _sudoku_fill(solution, rng):
+            continue
+
+        puzzle = [row[:] for row in solution]
+        order = [(r, c) for r in range(9) for c in range(9)]
+        rng.shuffle(order)
+
+        for r, c in order:
+            clues_now = sum(1 for row in puzzle for v in row if v)
+            if clues_now <= target:
+                break
+            backup = puzzle[r][c]
+            puzzle[r][c] = 0
+            if _sudoku_count_solutions(puzzle, limit=2) != 1:
+                puzzle[r][c] = backup
+
+        clues = sum(1 for row in puzzle for v in row if v)
+        if clues < best_clues:
+            best_clues = clues
+            best_puzzle = puzzle
+            best_solution = solution
+        if clues <= target:
+            break
+
+    if best_puzzle is None or best_solution is None:
+        # Last resort — should be unreachable
+        return generate_unique_sudoku(target_clues=target, seed=None)
+
+    return best_puzzle, best_solution
 
 
 # Header flair when a title is equipped — one vibe per difficulty tier
@@ -867,26 +1025,23 @@ def titled_header_line(tier: str, title_pin: str, emoji: str = "") -> str:
     return f"~ {tier} ~  {template.format(title=badge)}"
 
 
-def make_puzzle(difficulty: float | str = DEFAULT_DIFFICULTY, seed: int | None = None) -> tuple[list[list[dict]], list[list[bool]], list[list[int]]]:
+def make_puzzle(
+    difficulty: float | str = DEFAULT_DIFFICULTY, seed: int | None = None
+) -> tuple[list[list[dict]], list[list[bool]], list[list[int]]]:
+    """Unique-solution Sudoku for the given difficulty tier."""
     if isinstance(difficulty, str):
-        weight = difficulty_weight(difficulty)
+        key = difficulty_key_from_label(difficulty)
+        clues = difficulty_clues(key)
     else:
-        weight = float(difficulty)
-    if seed is not None:
-        puzzle = Sudoku(3, seed=seed).difficulty(weight)
-    else:
-        puzzle = Sudoku(3).difficulty(weight)
-    solved = puzzle.solve()
-    if solved is None:
-        # Rare unsolvable draw — retry without a fixed seed
-        return make_puzzle(difficulty, seed=None)
+        # Legacy float weight → map into clue band (kept for old callers)
+        w = float(difficulty)
+        clues = int(round(50 - w * 32))
+        clues = max(17, min(50, clues))
 
-    board = [
-        [make_cell(0 if cell is None else int(cell)) for cell in row]
-        for row in puzzle.board
-    ]
-    given = [[cell["value"] != 0 for cell in row] for row in board]
-    solution = [[int(cell) for cell in row] for row in solved.board]
+    puzzle, solution = generate_unique_sudoku(target_clues=clues, seed=seed)
+
+    board = [[make_cell(int(v)) for v in row] for row in puzzle]
+    given = [[v != 0 for v in row] for row in puzzle]
     return board, given, solution
 
 
@@ -978,20 +1133,18 @@ def is_complete(board: list[list[dict]], solution: list[list[int]]) -> bool:
 
 
 def is_solved(board: list[list[dict]], solution: list[list[int]] | None = None) -> bool:
-    """True when the grid is a finished valid Sudoku (full + no conflicts).
-
-    Prefer matching the stored solution, but a full conflict-free board still counts
-    as solved — avoids false "not solved" nags when solution data drifts after restore.
-    """
+    """True when the board matches the unique stored solution (full + no conflicts)."""
     if filled_count(board) < 81:
         return False
     if find_conflicts(board):
         return False
-    if solution:
-        sol = normalize_solution(solution)
-        if sol and values_grid(board) == sol:
-            return True
-    return True
+    if not solution:
+        # No solution on record — accept any conflict-free complete grid
+        return True
+    sol = normalize_solution(solution)
+    if not sol:
+        return True
+    return values_grid(board) == sol
 
 
 def filled_count(board: list[list[dict]]) -> int:
@@ -2681,9 +2834,11 @@ class BoardRefreshView(discord.ui.View):
     """Shown after SudokuView times out — restores interactive controls."""
 
     def __init__(self, game_key: tuple, bot: "SudokuBot"):
-        super().__init__(timeout=VIEW_TIMEOUT)
+        # No timeout: Refresh must stay clickable until the player resumes.
+        super().__init__(timeout=None)
         self.game_key = game_key
         self.bot = bot
+        self.message: discord.Message | None = None
 
     @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary)
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -2700,17 +2855,38 @@ class BoardRefreshView(discord.ui.View):
         if interaction.user.id != game["owner_id"]:
             await interaction.response.send_message("Not your board.", ephemeral=True)
             return
+
+        # Defer first — PNG render on Render often exceeds Discord's 3s ack window.
+        try:
+            await interaction.response.defer()
+        except discord.HTTPException:
+            return
+
         view = SudokuView(self.game_key, self.bot)
-        content, file = board_file_for(game)
-        await interaction.response.edit_message(
-            content=content,
-            embed=None,
-            attachments=[file],
-            view=view,
-        )
-        view.message = interaction.message
-        if interaction.message:
-            game["message_id"] = interaction.message.id
+        try:
+            content, file = board_file_for(game)
+            await interaction.edit_original_response(
+                content=content,
+                embed=None,
+                attachments=[file],
+                view=view,
+            )
+        except Exception:
+            import traceback
+
+            traceback.print_exc()
+            try:
+                await interaction.followup.send(
+                    "Couldn't refresh the board — try `/play` or tap Refresh again.",
+                    ephemeral=True,
+                )
+            except discord.HTTPException:
+                pass
+            return
+
+        view.message = await interaction.original_response()
+        if view.message:
+            game["message_id"] = view.message.id
         await persist_game(self.game_key, game)
         self.stop()
 
@@ -2992,6 +3168,7 @@ class SudokuView(discord.ui.View):
         if not self.message or not game:
             return
         refresh = BoardRefreshView(self.game_key, self.bot)
+        refresh.message = self.message
         try:
             await self.message.edit(
                 content="⏱ Controls timed out — press **Refresh** to keep playing.",
