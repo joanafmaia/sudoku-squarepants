@@ -65,8 +65,7 @@ One **Docker** Web Service builds the Activity and runs the bot.
    - **Activities → URL Mappings** (sem `https://`):
      - `/` → `YOUR-SERVICE.onrender.com`
      - `/api` → `YOUR-SERVICE.onrender.com`
-     - `/pyscript` → `pyscript.net` _(obrigatório para o tabuleiro)_
-     - `/jsdelivr` → `cdn.jsdelivr.net` _(Pyodide — obrigatório)_
+     - (opcional) `/pyscript` / `/jsdelivr` — já não são necessários; o jogo é Canvas JS
    - **Activities → Settings** → Enable Activities
 7. Suspend **Netlify** and **Fly** when Render is stable (one token / one host).
 
