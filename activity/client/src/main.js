@@ -223,8 +223,9 @@ async function exchangeToken(code) {
       const errBody = await response.clone().json();
       detail =
         errBody.error_description ||
-        errBody.error ||
         errBody.message ||
+        errBody.error ||
+        errBody.body ||
         "";
     } catch {
       /* ignore */

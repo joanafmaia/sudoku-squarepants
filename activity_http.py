@@ -52,11 +52,16 @@ def _client_id() -> str:
         os.getenv("VITE_DISCORD_CLIENT_ID")
         or os.getenv("DISCORD_CLIENT_ID")
         or ""
-    ).strip()
+    ).strip().strip('"').strip("'")
 
 
 def _client_secret() -> str:
-    return (os.getenv("DISCORD_CLIENT_SECRET") or "").strip()
+    return (
+        (os.getenv("DISCORD_CLIENT_SECRET") or "")
+        .strip()
+        .strip('"')
+        .strip("'")
+    )
 
 
 def _json_bytes(payload: dict) -> bytes:
@@ -75,43 +80,72 @@ def _exchange_token(code: str) -> tuple[int, dict]:
     client_secret = _client_secret()
     if not client_id or not client_secret:
         return 500, {"error": "server_misconfigured"}
-    # Must match OAuth2 → Redirects in the Developer Portal (Activity placeholder).
+
     redirect_uri = (
         os.getenv("DISCORD_OAUTH_REDIRECT_URI") or "https://127.0.0.1"
     ).strip()
-    body = urllib.parse.urlencode(
-        {
+
+    # Official Activity sample omits redirect_uri; portal placeholder uses https://127.0.0.1.
+    # Try both — Discord is picky about matching the authorize step.
+    attempts = [
+        {"redirect_uri": redirect_uri},
+        {},  # no redirect_uri (discord embedded-app-sdk examples)
+    ]
+    last: tuple[int, dict] = (502, {"error": "token_exchange_failed"})
+
+    for extra in attempts:
+        form = {
             "client_id": client_id,
             "client_secret": client_secret,
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": redirect_uri,
+            **extra,
         }
-    ).encode()
-    req = urllib.request.Request(
-        "https://discord.com/api/oauth2/token",
-        data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            data = json.loads(resp.read().decode())
-            token = data.get("access_token")
-            if not token:
-                return 502, {"error": "no_access_token", "discord": data}
-            return 200, {"access_token": token}
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode(errors="replace")
+        body = urllib.parse.urlencode(form).encode()
+        req = urllib.request.Request(
+            "https://discord.com/api/v10/oauth2/token",
+            data=body,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": "ThcokuActivity/1.0 (+https://github.com/joanafmaia/sudoku-squarepants)",
+            },
+            method="POST",
+        )
         try:
-            data = json.loads(raw)
-        except Exception:
-            data = {"error": "token_exchange_failed", "status": exc.code, "body": raw[:300]}
-        print(f"oauth token exchange HTTP {exc.code}: {data}")
-        return int(exc.code), data
-    except Exception as exc:  # noqa: BLE001
-        print(f"oauth token exchange failed: {exc}")
-        return 502, {"error": "token_exchange_failed", "message": str(exc)}
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode())
+                token = data.get("access_token")
+                if not token:
+                    last = (502, {"error": "no_access_token", "discord": data})
+                    continue
+                print(
+                    "oauth token exchange ok "
+                    f"(redirect_uri={'yes' if 'redirect_uri' in extra else 'no'})"
+                )
+                return 200, {"access_token": token}
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode(errors="replace")
+            try:
+                data = json.loads(raw)
+            except Exception:
+                data = {
+                    "error": "token_exchange_failed",
+                    "status": exc.code,
+                    "body": raw[:200].replace("\n", " "),
+                }
+            print(
+                f"oauth token exchange HTTP {exc.code} "
+                f"(redirect_uri={'yes' if 'redirect_uri' in extra else 'no'}): {data}"
+            )
+            last = (int(exc.code), data)
+            # invalid_grant / bad code won't be fixed by retry shape — but try anyway once
+            continue
+        except Exception as exc:  # noqa: BLE001
+            print(f"oauth token exchange failed: {exc}")
+            last = (502, {"error": "token_exchange_failed", "message": str(exc)})
+            continue
+
+    return last
 
 
 def _discord_user_from_bearer(auth_header: str | None) -> dict | None:
