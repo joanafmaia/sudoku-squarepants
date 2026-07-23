@@ -5,12 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Thcoku — Discord Activity</title>
     <link rel="stylesheet" href="/src/style.css" />
-    <!-- Relative CDN paths — Discord URL Mapping `/pyscript` → `pyscript.net` -->
-    <link rel="stylesheet" href="/pyscript/releases/2026.7.2/core.css" />
-    <script type="module" src="/pyscript/releases/2026.7.2/core.js"></script>
+    <!-- Absolute CDN URLs: Vite must not bundle these; Discord rewrites via patchUrlMappings. -->
+    <link
+      rel="stylesheet"
+      href="https://pyscript.net/releases/2026.7.2/core.css"
+    />
+    <script
+      type="module"
+      src="https://pyscript.net/releases/2026.7.2/core.js"
+    ></script>
   </head>
   <body>
-    <!-- Overlay until Discord auth finishes (do not display:none the canvas — PyGame needs size). -->
     <div id="boot">
       <p id="boot-status">A ligar ao Discord…</p>
       <div class="spinner" aria-hidden="true"></div>
@@ -19,7 +24,7 @@
     <main id="app">
       <div class="layout">
         <canvas id="canvas"></canvas>
-        <!-- Must be in HTML: Discord CSP blocks createElement('script'). -->
+        <!-- Static tag: Discord CSP blocks createElement('script'). -->
         <script
           type="py-game"
           src="/game/main.py"

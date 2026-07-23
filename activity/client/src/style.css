@@ -1,4 +1,9 @@
-@import url("/gfonts/css2?family=Fredoka:wght@500;600;700&display=swap");
+@font-face {
+  font-family: "Fredoka";
+  src: url("/fonts/Fredoka-Variable.ttf") format("truetype");
+  font-weight: 500 700;
+  font-display: swap;
+}
 
 :root {
   --lagoon: #7dd3fc;
