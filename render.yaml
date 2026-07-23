@@ -1,13 +1,13 @@
-# Bot Discord no Render (plano Free + UptimeRobot a pingar /health).
-# Dashboard: New → Blueprint → conectar este repo, ou criar Web Service manualmente.
+# Bot + Discord Activity on one Render Web Service (Free + UptimeRobot → /health).
+# Language/runtime: Docker (builds Vite Activity + runs Python bot).
 services:
   - type: web
     name: sudoku-squarepants
-    runtime: python
+    runtime: docker
     plan: free
     region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: python -u bot.py
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     healthCheckPath: /health
     envVars:
       - key: DISCORD_TOKEN
@@ -18,5 +18,9 @@ services:
         value: sudoku
       - key: DISCORD_GUILD_ID
         sync: false
-      - key: PYTHON_VERSION
-        value: "3.12.8"
+      - key: VITE_DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: ACTIVITY_STATIC_DIR
+        value: /app/activity_dist

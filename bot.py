@@ -4304,48 +4304,10 @@ class KrustyShopView(discord.ui.View):
 # ---------------------------------------------------------------------------
 
 def start_health_server_early() -> None:
-    """Bind :PORT immediately so platform health checks pass during Discord login."""
-    import threading
-    import time
-    from http.server import BaseHTTPRequestHandler, HTTPServer
+    """Health + Activity static + OAuth/Mongo APIs on the same PORT."""
+    from activity_http import start_unified_http_server
 
-    port = int(os.getenv("PORT", "8080") or 8080)
-    started_at = time.monotonic()
-    # Allow cold start / Discord login before reporting unhealthy.
-    ready_grace_s = float(os.getenv("HEALTH_READY_GRACE_S", "90") or 90)
-
-    class HealthHandler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
-            if self.path.split("?", 1)[0] not in ("/", "/health"):
-                self.send_response(404)
-                self.end_headers()
-                return
-            ready = False
-            user = "-"
-            try:
-                ready = bool(bot.is_ready())
-                if ready and bot.user is not None:
-                    user = str(bot.user)
-            except Exception:
-                pass
-            # After grace, not-ready means Discord never connected — fail the check
-            # so Render/Fly restart instead of looking "live" while offline in Discord.
-            aged_out = (time.monotonic() - started_at) >= ready_grace_s
-            status = 200 if ready or not aged_out else 503
-            body = f"{'ok' if status == 200 else 'not_ready'} ready={ready} user={user}".encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, format: str, *args) -> None:  # noqa: A003
-            return
-
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    thread = threading.Thread(target=server.serve_forever, name="health-http", daemon=True)
-    thread.start()
-    print(f"Health server listening on 0.0.0.0:{port} (/ and /health)")
+    start_unified_http_server(lambda: bot)
 
 
 class SudokuBot(commands.Bot):
