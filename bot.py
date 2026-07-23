@@ -3250,16 +3250,29 @@ async def delete_activity_watch_message(
             print(f"cleared stale activity watch message id for {sid}")
 
 
-async def end_activity_watch(bot_ref: "SudokuBot", session_id: str) -> None:
+async def end_activity_watch(
+    bot_ref: "SudokuBot",
+    session_id: str,
+    *,
+    force: bool = False,
+) -> None:
     """Remove the watch announcement but keep the in-progress board for resume."""
     session = await match_store.get_activity_session(session_id)
+    if not session or not session.get("watch_message_id"):
+        parts = str(session_id).split(":")
+        if len(parts) >= 3:
+            alt = await match_store.find_activity_session_by_user_id(parts[2])
+            if alt and alt.get("watch_message_id"):
+                session_id = str(alt.get("_id") or session_id)
+                session = alt
     if not session:
         return
-    posted_at = float(session.get("watch_posted_at") or 0)
-    if posted_at and (time.time() - posted_at) < ACTIVITY_WATCH_END_GRACE_SEC:
-        print(f"activity watch end ignored (grace) for {session_id}")
-        return
-    await delete_activity_watch_message(bot_ref, session)
+    if not force:
+        posted_at = float(session.get("watch_posted_at") or 0)
+        if posted_at and (time.time() - posted_at) < ACTIVITY_WATCH_END_GRACE_SEC:
+            print(f"activity watch end ignored (grace) for {session_id}")
+            return
+    await delete_activity_watch_message(bot_ref, session, session_id=session_id)
     await match_store.merge_activity_session(
         session_id,
         {

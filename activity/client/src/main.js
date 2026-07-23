@@ -23,7 +23,8 @@ let autosaveTimer = null;
 let saving = false;
 let exitHooksBound = false;
 let sessionOpenedAt = 0;
-const WATCH_END_MIN_MS = 25000;
+let hideEndWatchTimer = null;
+const HIDE_END_WATCH_DELAY_MS = 1500;
 
 function setStatus(message) {
   if (statusEl) statusEl.textContent = message;
@@ -254,9 +255,13 @@ async function reportSessionActive() {
   }
 }
 
-function endWatchOnExit() {
+function endWatchOnExit({ force = false } = {}) {
   if (!window.__DISCORD_ACCESS_TOKEN__) return;
-  const body = JSON.stringify({ end_watch: true, guild_id: guildId() });
+  const body = JSON.stringify({
+    end_watch: true,
+    force,
+    guild_id: guildId(),
+  });
   for (const url of apiUrlCandidates("/api/activity/session")) {
     try {
       fetch(url, {
@@ -272,6 +277,23 @@ function endWatchOnExit() {
     } catch {
       /* try next candidate */
     }
+  }
+}
+
+function scheduleEndWatchOnHide() {
+  if (hideEndWatchTimer) clearTimeout(hideEndWatchTimer);
+  hideEndWatchTimer = setTimeout(() => {
+    hideEndWatchTimer = null;
+    if (document.visibilityState === "hidden") {
+      endWatchOnExit({ force: true });
+    }
+  }, HIDE_END_WATCH_DELAY_MS);
+}
+
+function cancelEndWatchOnHide() {
+  if (hideEndWatchTimer) {
+    clearTimeout(hideEndWatchTimer);
+    hideEndWatchTimer = null;
   }
 }
 
@@ -301,11 +323,7 @@ function flushSessionOnExit({ endWatch = false } = {}) {
     }
   }
   if (endWatch) {
-    const ageMs = Date.now() - sessionOpenedAt;
-    if (sessionOpenedAt && ageMs < WATCH_END_MIN_MS) {
-      return;
-    }
-    endWatchOnExit();
+    endWatchOnExit({ force: true });
   }
 }
 
@@ -319,6 +337,9 @@ function startAutosave() {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       flushSessionOnExit({ endWatch: false });
+      scheduleEndWatchOnHide();
+    } else {
+      cancelEndWatchOnHide();
     }
   });
   window.addEventListener("pagehide", (event) => {

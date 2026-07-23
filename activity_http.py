@@ -427,7 +427,11 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         try:
             from bot import end_activity_watch
 
-            await end_activity_watch(bot, session_id)
+            await end_activity_watch(
+                bot,
+                session_id,
+                force=bool(body.get("force")),
+            )
         except Exception as exc:  # noqa: BLE001
             print(f"activity end_watch failed: {exc}")
         return {"ok": True, "watch_ended": True}
