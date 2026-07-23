@@ -5,24 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Thcoku — Discord Activity</title>
     <link rel="stylesheet" href="/src/style.css" />
-    <link
-      rel="stylesheet"
-      href="https://pyscript.net/releases/2026.7.2/core.css"
-    />
-    <script
-      type="module"
-      src="https://pyscript.net/releases/2026.7.2/core.js"
-    ></script>
+    <!-- Relative CDN paths — Discord URL Mapping `/pyscript` → `pyscript.net` -->
+    <link rel="stylesheet" href="/pyscript/releases/2026.7.2/core.css" />
+    <script type="module" src="/pyscript/releases/2026.7.2/core.js"></script>
   </head>
   <body>
+    <!-- Overlay until Discord auth finishes (do not display:none the canvas — PyGame needs size). -->
     <div id="boot">
       <p id="boot-status">A ligar ao Discord…</p>
       <div class="spinner" aria-hidden="true"></div>
     </div>
 
-    <main id="app" hidden>
+    <main id="app">
       <div class="layout">
         <canvas id="canvas"></canvas>
+        <!-- Must be in HTML: Discord CSP blocks createElement('script'). -->
+        <script
+          type="py-game"
+          src="/game/main.py"
+          config="/game/pyscript.toml"
+          target="canvas"
+        ></script>
         <aside id="sidebar" aria-label="Leaderboard">
           <div class="sidebar-head">
             <h2>Top XP</h2>

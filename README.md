@@ -65,6 +65,10 @@ One **Docker** Web Service builds the Activity and runs the bot.
    - **Activities → URL Mappings** (sem `https://`):
      - `/` → `YOUR-SERVICE.onrender.com`
      - `/api` → `YOUR-SERVICE.onrender.com`
+     - `/pyscript` → `pyscript.net`
+     - `/jsdelivr` → `cdn.jsdelivr.net`
+     - `/gfonts` → `fonts.googleapis.com`
+     - `/gstatic` → `fonts.gstatic.com`
    - **Activities → Settings** → Enable Activities
 7. Suspend **Netlify** and **Fly** when Render is stable (one token / one host).
 

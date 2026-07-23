@@ -2,7 +2,27 @@
  * Discord Embedded App SDK bootstrap for Thcoku.
  * Initializes Discord session, wires Mongo APIs, then starts PyScript.
  */
-import { DiscordSDK } from "@discord/embedded-app-sdk";
+import { DiscordSDK, patchUrlMappings } from "@discord/embedded-app-sdk";
+
+// Rewrite absolute CDN URLs → Discord proxy prefixes (must match Developer Portal mappings).
+try {
+  patchUrlMappings(
+    [
+      { prefix: "/pyscript", target: "pyscript.net" },
+      { prefix: "/jsdelivr", target: "cdn.jsdelivr.net" },
+      { prefix: "/gfonts", target: "fonts.googleapis.com" },
+      { prefix: "/gstatic", target: "fonts.gstatic.com" },
+    ],
+    {
+      patchFetch: true,
+      patchWebSocket: true,
+      patchXhr: true,
+      patchSrcAttributes: true,
+    }
+  );
+} catch (err) {
+  console.warn("[Thcoku] patchUrlMappings skipped", err);
+}
 
 const CLIENT_ID = import.meta.env.VITE_DISCORD_CLIENT_ID;
 const bootEl = document.getElementById("boot");
@@ -17,7 +37,6 @@ function setStatus(message) {
 
 function showGame() {
   if (bootEl) bootEl.hidden = true;
-  if (appEl) appEl.hidden = false;
 }
 
 function apiUrl(path) {
@@ -168,23 +187,11 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed) {
 
 window.thcokuRefreshLeaderboard = refreshLeaderboard;
 
-function startPyGame() {
-  if (document.querySelector('script[type="py-game"]')) return;
-
-  const script = document.createElement("script");
-  script.type = "py-game";
-  script.src = "/game/main.py";
-  script.setAttribute("config", "/game/pyscript.toml");
-  script.setAttribute("target", "canvas");
-  appEl.appendChild(script);
-}
-
 function finishBoot(auth, accessToken, { inDiscord }) {
   window.__DISCORD_AUTH__ = auth;
   window.__DISCORD_ACCESS_TOKEN__ = accessToken || null;
   window.__DISCORD_IN_CLIENT__ = Boolean(inDiscord);
   showGame();
-  startPyGame();
   refreshLeaderboard();
 }
 
