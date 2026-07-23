@@ -158,6 +158,11 @@ class MemoryMatchStore(MatchStore):
         sid = payload.get("_id")
         if not sid:
             raise ValueError("activity session needs _id")
+        existing = self._activity.get(sid)
+        if existing:
+            merged = _clone(existing)
+            merged.update(payload)
+            payload = merged
         payload["updated_at"] = time.time()
         self._activity[sid] = payload
 
@@ -329,6 +334,11 @@ class MongoMatchStore(MatchStore):
         sid = payload.get("_id")
         if not sid:
             raise ValueError("activity session needs _id")
+        existing = await self.get_activity_session(sid)
+        if existing:
+            merged = _clone(existing)
+            merged.update(payload)
+            payload = merged
         payload["updated_at"] = time.time()
         await self._activity.replace_one({"_id": sid}, payload, upsert=True)
 

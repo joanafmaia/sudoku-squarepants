@@ -403,6 +403,16 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         return await _delete_activity_session(bot, user=user, guild_id=guild_id)
 
     uid = int(user["id"])
+    session_id = _activity_session_id(guild_id, uid)
+    if body.get("end_watch"):
+        try:
+            from bot import end_activity_watch
+
+            await end_activity_watch(bot, session_id)
+        except Exception as exc:  # noqa: BLE001
+            print(f"activity end_watch failed: {exc}")
+        return {"ok": True, "watch_ended": True}
+
     board = _normalize_activity_board(body.get("board"))
     given = _normalize_activity_given(body.get("given"), board)
     solution = body.get("solution")
@@ -416,7 +426,6 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
     elapsed = max(0, int(body.get("elapsed") or 0))
     channel_id_raw = body.get("channel_id")
     filled = sum(1 for r in range(9) for c in range(9) if board[r][c]["value"])
-    session_id = _activity_session_id(guild_id, uid)
     # Don't keep fully solved boards as "continue"
     if filled >= 81:
         try:

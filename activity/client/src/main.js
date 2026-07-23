@@ -181,10 +181,13 @@ async function clearSavedSession() {
   }
 }
 
+function currentSessionSnap() {
+  return gameApi?.getStartSnapshot?.() || gameApi?.getSnapshot?.() || null;
+}
+
 async function saveSessionNow({ keepalive = false, force = false, snap = null } = {}) {
   if (!snap) {
-    if (!gameApi?.getSnapshot) return;
-    snap = gameApi.getSnapshot();
+    snap = currentSessionSnap();
   }
   if (!snap) return;
   writeLocalSession(snap);
@@ -205,15 +208,16 @@ async function saveSessionNow({ keepalive = false, force = false, snap = null } 
   }
 }
 
-function flushSessionOnExit() {
-  // Discord "Sair" tears down the Activity fast — localStorage + keepalive fetch.
-  if (!gameApi?.getSnapshot) return;
-  const snap = gameApi.getSnapshot();
+async function reportSessionActive() {
+  if (!window.__DISCORD_ACCESS_TOKEN__ || !gameApi) return;
+  const snap = currentSessionSnap();
   if (!snap) return;
-  writeLocalSession(snap);
+  await saveSessionNow({ force: true, snap });
+}
+
+function endWatchOnExit() {
   if (!window.__DISCORD_ACCESS_TOKEN__) return;
-  const body = JSON.stringify(sessionPayload(snap));
-  // Fire-and-forget; do not await (page is dying).
+  const body = JSON.stringify({ end_watch: true, guild_id: guildId() });
   for (const url of apiUrlCandidates("/api/activity/session")) {
     try {
       fetch(url, {
@@ -230,6 +234,34 @@ function flushSessionOnExit() {
       /* try next candidate */
     }
   }
+}
+
+function flushSessionOnExit() {
+  // Discord "Sair" tears down the Activity fast — save board + end watch announcement.
+  const snap = currentSessionSnap();
+  if (snap) {
+    writeLocalSession(snap);
+    if (window.__DISCORD_ACCESS_TOKEN__) {
+      const body = JSON.stringify(sessionPayload(snap));
+      for (const url of apiUrlCandidates("/api/activity/session")) {
+        try {
+          fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${window.__DISCORD_ACCESS_TOKEN__}`,
+            },
+            body,
+            keepalive: true,
+          });
+          break;
+        } catch {
+          /* try next candidate */
+        }
+      }
+    }
+  }
+  endWatchOnExit();
 }
 
 function startAutosave() {
@@ -281,13 +313,6 @@ function askResume(session) {
     resumeContinueBtn?.addEventListener("click", onContinue);
     resumeNewBtn?.addEventListener("click", onNew);
   });
-}
-
-async function reportSessionActive() {
-  if (!window.__DISCORD_ACCESS_TOKEN__ || !gameApi) return;
-  const snap = gameApi.getStartSnapshot?.() || gameApi.getSnapshot?.();
-  if (!snap) return;
-  await saveSessionNow({ force: true, snap });
 }
 
 async function beginPlay({ resumeSession = null } = {}) {

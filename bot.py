@@ -3034,6 +3034,22 @@ async def delete_activity_watch_message(
         print(f"delete_activity_watch_message failed: {exc}")
 
 
+async def end_activity_watch(bot_ref: "SudokuBot", session_id: str) -> None:
+    """Remove the watch announcement but keep the in-progress board for resume."""
+    session = await match_store.get_activity_session(session_id)
+    if not session:
+        return
+    await delete_activity_watch_message(bot_ref, session)
+    await match_store.merge_activity_session(
+        session_id,
+        {
+            "watch_notified": False,
+            "watch_message_id": None,
+        },
+    )
+    print(f"activity watch ended for {session_id}")
+
+
 async def clear_activity_session(bot_ref: "SudokuBot", session_id: str) -> None:
     """Delete watch announcement (if any) and drop the persisted session."""
     session = await match_store.get_activity_session(session_id)
@@ -3091,18 +3107,23 @@ class ActivityPlayWatchView(discord.ui.View):
         self.add_item(live_btn)
 
     async def _on_live(self, interaction: discord.Interaction) -> None:
-        session = await match_store.get_activity_session(self.session_id)
-        if not session:
-            await interaction.response.send_message(
-                "This game has ended.",
-                ephemeral=True,
-            )
-            return
-        board_raw = session.get("board")
-        given = session.get("given") or []
-        if not board_raw or not given:
-            await interaction.response.send_message(
-                "Board is still loading — try again in a few seconds.",
+        await interaction.response.defer(ephemeral=True)
+        session: dict | None = None
+        for attempt in range(4):
+            session = await match_store.get_activity_session(self.session_id)
+            if not session:
+                await interaction.followup.send("This game has ended.", ephemeral=True)
+                return
+            board_raw = session.get("board")
+            given = session.get("given")
+            if board_raw and isinstance(given, list) and len(given) == 9:
+                break
+            if attempt < 3:
+                await asyncio.sleep(1.5)
+        else:
+            name = str((session or {}).get("name") or "Player")
+            await interaction.followup.send(
+                f"**{name}** is playing, but the board hasn't synced yet — try **Live** again.",
                 ephemeral=True,
             )
             return
@@ -3113,7 +3134,7 @@ class ActivityPlayWatchView(discord.ui.View):
         elapsed = int(session.get("elapsed") or 0)
         image = render_board(board, given, difficulty=session.get("difficulty"))
         file = board_to_file(image)
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"**{name}** — {tier} · {filled}/{CHALLENGE_BOARD_CELLS} · "
             f"{format_time(elapsed)} · spectator view",
             file=file,
