@@ -57,6 +57,7 @@ INVITE_TIMEOUT_SEC = 5 * 60
 DAILY_EPOCH = datetime(2024, 1, 1, tzinfo=timezone.utc).date()
 # Optional: set to your server ID for instant slash-command updates (global sync can lag).
 DISCORD_GUILD_ID = int(os.getenv("DISCORD_GUILD_ID", "0") or 0)
+ACTIVITY_WATCH_CHANNEL_ID = int(os.getenv("ACTIVITY_WATCH_CHANNEL_ID", "1527293243434209300") or 0)
 
 # Fixed weekly difficulty for /daily (Monday=0 … Sunday=6)
 DAILY_WEEKDAY_DIFFICULTY = {
@@ -241,7 +242,6 @@ games: dict = {}
 pending_challenges: dict[int, dict] = {}  # invite message_id → meta
 challenge_cooldowns: dict[int, float] = {}  # user_id → last /challenge timestamp
 _challenge_live_tasks: dict[str, asyncio.Task] = {}
-_activity_channel_tasks: dict[str, asyncio.Task] = {}
 WATCH_ACTIVE_SEC = 45
 CHALLENGE_LIVE_DEBOUNCE_SEC = 4.0
 ACTIVITY_WATCH_MAX_AGE_SEC = 180
@@ -2896,123 +2896,46 @@ def build_activity_watch_view(
     channel_id: int | None,
     bot_ref: "SudokuBot",
     sessions: list[dict],
-) -> "ActivityWatchView":
-    view = ActivityWatchView(guild_id, channel_id, bot_ref)
+) -> "ActivityWatchMenuView":
+    view = ActivityWatchMenuView(guild_id, channel_id, bot_ref)
     view.rebuild_buttons(sessions)
     return view
 
 
-async def update_activity_channel_live_panel(
-    bot_ref: "SudokuBot",
-    guild_id: int,
-    channel_id: int,
-) -> None:
-    sessions = await match_store.list_activity_sessions(
-        guild_id,
-        max_age_sec=ACTIVITY_WATCH_MAX_AGE_SEC,
-    )
-    channel_sessions = [
-        s for s in sessions if str(s.get("channel_id")) == str(channel_id)
-    ]
-    channel = await resolve_channel(bot_ref, channel_id)
+async def notify_activity_play_started(bot_ref: "SudokuBot", session_id: str) -> None:
+    """Post a one-time watch invite when someone starts /play (no live updates)."""
+    if not ACTIVITY_WATCH_CHANNEL_ID:
+        return
+    session = await match_store.get_activity_session(session_id)
+    if not session:
+        return
+
+    channel = await resolve_channel(bot_ref, ACTIVITY_WATCH_CHANNEL_ID)
     if channel is None:
+        print(f"activity watch channel {ACTIVITY_WATCH_CHANNEL_ID} not found")
         return
+
+    guild_id = int(session.get("guild_id") or 0)
     guild = bot_ref.get_guild(guild_id)
-
-    live_message_id: int | None = None
-    for session in channel_sessions:
-        raw = session.get("live_message_id")
-        if raw:
-            live_message_id = int(raw)
-            break
-
-    if not channel_sessions:
-        if live_message_id:
-            try:
-                msg = await channel.fetch_message(live_message_id)
-                await msg.delete()
-            except discord.HTTPException:
-                pass
-        return
-
-    embed = build_activity_live_embed(channel_sessions, guild)
-    view = build_activity_watch_view(guild_id, channel_id, bot_ref, channel_sessions)
-
-    if live_message_id:
-        try:
-            msg = await channel.fetch_message(live_message_id)
-            await msg.edit(embed=embed, view=view)
-            view.message = msg
-            bot_ref.add_view(view)
-            return
-        except discord.HTTPException:
-            live_message_id = None
+    mention = activity_session_mention(guild, session)
+    view = ActivityPlayWatchView(session_id, bot_ref)
 
     try:
-        msg = await channel.send(embed=embed, view=view, silent=True)
+        msg = await channel.send(
+            content=f"{mention} is playing — you can watch here.",
+            view=view,
+        )
         view.message = msg
         bot_ref.add_view(view)
-        for session in channel_sessions:
-            await match_store.update_activity_session(
-                session["_id"],
-                {"live_message_id": msg.id},
-            )
     except discord.HTTPException as exc:
-        print(f"update_activity_channel_live_panel failed: {exc}")
+        print(f"notify_activity_play_started failed for {session_id}: {exc}")
 
 
-def schedule_activity_live_update(
-    guild_id: str | int,
-    user_id: str,
-    *,
-    immediate: bool = False,
-) -> None:
-    async def _run() -> None:
-        gid = int(guild_id)
-        session_id = f"activity:{guild_id}:{user_id}"
-        session = await match_store.get_activity_session(session_id)
-        channel_id = session.get("channel_id") if session else None
-        if channel_id:
-            await update_activity_channel_live_panel(bot, gid, int(channel_id))
-            return
-        sessions = await match_store.list_activity_sessions(
-            gid,
-            max_age_sec=ACTIVITY_WATCH_MAX_AGE_SEC,
-        )
-        seen: set[int] = set()
-        for item in sessions:
-            raw = item.get("channel_id")
-            if not raw:
-                continue
-            cid = int(raw)
-            if cid in seen:
-                continue
-            seen.add(cid)
-            await update_activity_channel_live_panel(bot, gid, cid)
-
-    if immediate:
-        asyncio.create_task(_run())
-        return
-
-    key = str(guild_id)
-    existing = _activity_channel_tasks.get(key)
-    if existing and not existing.done():
-        existing.cancel()
-
-    async def _debounced() -> None:
-        try:
-            await asyncio.sleep(CHALLENGE_LIVE_DEBOUNCE_SEC)
-            await _run()
-        except asyncio.CancelledError:
-            pass
-        finally:
-            if _activity_channel_tasks.get(key) is asyncio.current_task():
-                _activity_channel_tasks.pop(key, None)
-
-    _activity_channel_tasks[key] = asyncio.create_task(_debounced())
+def schedule_activity_play_notify(session_id: str) -> None:
+    asyncio.create_task(notify_activity_play_started(bot, session_id))
 
 
-async def restore_activity_watch_views(bot_ref: "SudokuBot") -> None:
+async def restore_activity_play_watch_views(bot_ref: "SudokuBot") -> None:
     restored = 0
     for guild_key in bot_ref.data:
         try:
@@ -3025,104 +2948,95 @@ async def restore_activity_watch_views(bot_ref: "SudokuBot") -> None:
                 max_age_sec=ACTIVITY_WATCH_MAX_AGE_SEC,
             )
         except Exception as exc:  # noqa: BLE001
-            print(f"restore_activity_watch_views list failed for {gid}: {exc}")
+            print(f"restore_activity_play_watch_views list failed for {gid}: {exc}")
             continue
-        seen_channels: set[int] = set()
         for session in sessions:
-            raw_cid = session.get("channel_id")
-            if not raw_cid or not session.get("live_message_id"):
+            if not session.get("watch_notified"):
                 continue
-            cid = int(raw_cid)
-            if cid in seen_channels:
+            sid = str(session.get("_id") or "")
+            if not sid:
                 continue
-            seen_channels.add(cid)
-            ch_sessions = [s for s in sessions if str(s.get("channel_id")) == str(cid)]
-            view = build_activity_watch_view(gid, cid, bot_ref, ch_sessions)
-            bot_ref.add_view(view)
+            bot_ref.add_view(ActivityPlayWatchView(sid, bot_ref))
             restored += 1
     if restored:
-        print(f"Restored {restored} activity watch panel(s).")
+        print(f"Restored {restored} activity play watch button(s).")
 
 
-class ActivityWatchView(discord.ui.View):
+class ActivityPlayWatchView(discord.ui.View):
+    """Persistent Live button on the channel watch announcement."""
+
+    def __init__(self, session_id: str, bot_ref: "SudokuBot"):
+        super().__init__(timeout=None)
+        self.session_id = session_id
+        self.bot = bot_ref
+        self.message: discord.Message | None = None
+
+        live_btn = discord.ui.Button(
+            label="Live",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"watchplay:{session_id}:live",
+        )
+        live_btn.callback = self._on_live
+        self.add_item(live_btn)
+
+    async def _on_live(self, interaction: discord.Interaction) -> None:
+        session = await match_store.get_activity_session(self.session_id)
+        if not session:
+            await interaction.response.send_message(
+                "This game has ended.",
+                ephemeral=True,
+            )
+            return
+        board = normalize_board(session.get("board") or [])
+        given = session.get("given") or []
+        name = str(session.get("name") or "Player")
+        filled = int(session.get("filled") or 0)
+        tier = difficulty_label(session.get("difficulty"))
+        elapsed = int(session.get("elapsed") or 0)
+        image = render_board(board, given, difficulty=session.get("difficulty"))
+        file = board_to_file(image)
+        await interaction.response.send_message(
+            f"**{name}** — {tier} · {filled}/{CHALLENGE_BOARD_CELLS} · "
+            f"{format_time(elapsed)} · spectator view",
+            file=file,
+            ephemeral=True,
+        )
+
+
+class ActivityWatchMenuView(discord.ui.View):
+    """Ephemeral /watch menu — Live button per active /play session."""
+
     def __init__(
         self,
         guild_id: int,
         channel_id: int | None,
         bot_ref: "SudokuBot",
     ):
-        super().__init__(timeout=None)
+        super().__init__(timeout=120)
         self.guild_id = guild_id
         self.channel_id = channel_id
         self.bot = bot_ref
-        self.message: discord.Message | None = None
-
-    def _panel_key(self) -> str:
-        return f"{self.guild_id}:{self.channel_id or 0}"
 
     def rebuild_buttons(self, sessions: list[dict]) -> None:
         self.clear_items()
-        refresh = discord.ui.Button(
-            label="Refresh",
-            style=discord.ButtonStyle.primary,
-            custom_id=f"watchplay:{self._panel_key()}:refresh",
-            row=0,
-        )
-        refresh.callback = self._on_refresh
-        self.add_item(refresh)
-
-        row = 1
-        for session in sessions:
+        for session in sessions[:5]:
             name = str(session.get("name") or "Player")[:20]
             sid = str(session.get("_id") or "")
             if not sid:
                 continue
             btn = discord.ui.Button(
-                label=f"View {name}",
-                style=discord.ButtonStyle.secondary,
-                custom_id=f"watchplay:{sid}:board",
-                row=row,
+                label=f"Live — {name}",
+                style=discord.ButtonStyle.primary,
             )
-            btn.callback = self._make_board_cb(sid)
+            btn.callback = self._make_live_cb(sid)
             self.add_item(btn)
-            row = min(row + 1, 4)
 
-    async def _on_refresh(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
-        if self.channel_id:
-            await update_activity_channel_live_panel(
-                self.bot,
-                self.guild_id,
-                self.channel_id,
-            )
-        await interaction.followup.send("Live board updated.", ephemeral=True)
-
-    def _make_board_cb(self, session_id: str):
+    def _make_live_cb(self, session_id: str):
         async def _cb(interaction: discord.Interaction) -> None:
-            await self._show_session_board(interaction, session_id)
+            view = ActivityPlayWatchView(session_id, self.bot)
+            await view._on_live(interaction)
 
         return _cb
-
-    async def _show_session_board(
-        self,
-        interaction: discord.Interaction,
-        session_id: str,
-    ) -> None:
-        session = await match_store.get_activity_session(session_id)
-        if not session:
-            await interaction.response.send_message("Session not found.", ephemeral=True)
-            return
-        board = normalize_board(session.get("board") or [])
-        given = session.get("given") or []
-        name = str(session.get("name") or "Player")
-        filled = int(session.get("filled") or 0)
-        image = render_board(board, given, difficulty=session.get("difficulty"))
-        file = board_to_file(image)
-        await interaction.response.send_message(
-            f"**{name}** — /play · {filled}/{CHALLENGE_BOARD_CELLS} · spectator view (read-only)",
-            file=file,
-            ephemeral=True,
-        )
 
 
 class ChallengeInviteView(discord.ui.View):
@@ -5151,7 +5065,7 @@ async def on_ready():
     await bot.change_presence(activity=STATUS_ROTATION[0])
     await restore_persisted_sessions(bot)
     await restore_challenge_watch_views(bot)
-    await restore_activity_watch_views(bot)
+    await restore_activity_play_watch_views(bot)
 
 
 @bot.tree.command(

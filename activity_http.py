@@ -300,8 +300,6 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
     )
     uid = int(user["id"])
 
-    channel_id_for_panel = str(channel_id_raw) if channel_id_raw else None
-
     try:
         gid_key = int(guild_id)
     except ValueError:
@@ -371,14 +369,6 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
     except Exception as exc:  # noqa: BLE001
         print(f"activity session clear on win failed: {exc}")
 
-    if channel_id_for_panel:
-        try:
-            from bot import schedule_activity_live_update
-
-            schedule_activity_live_update(guild_id, str(uid), immediate=True)
-        except Exception as exc:  # noqa: BLE001
-            print(f"activity live panel clear failed: {exc}")
-
     result = {
         "ok": True,
         "coins": coins,
@@ -428,8 +418,12 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         await match_store.delete_activity_session(_activity_session_id(guild_id, uid))
         return {"ok": True, "cleared": True}
 
+    session_id = _activity_session_id(guild_id, uid)
+    existing = await match_store.get_activity_session(session_id)
+    already_notified = bool(existing and existing.get("watch_notified"))
+
     doc = {
-        "_id": _activity_session_id(guild_id, uid),
+        "_id": session_id,
         "guild_id": guild_id,
         "user_id": str(uid),
         "difficulty": difficulty,
@@ -445,14 +439,16 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         or "Unknown",
         "channel_id": str(channel_id_raw) if channel_id_raw else None,
         "last_move_at": time.time(),
+        "watch_notified": True,
     }
     await match_store.upsert_activity_session(doc)
-    try:
-        from bot import schedule_activity_live_update
+    if not already_notified:
+        try:
+            from bot import schedule_activity_play_notify
 
-        schedule_activity_live_update(guild_id, str(uid))
-    except Exception as exc:  # noqa: BLE001
-        print(f"activity live panel schedule failed: {exc}")
+            schedule_activity_play_notify(session_id)
+        except Exception as exc:  # noqa: BLE001
+            print(f"activity play notify schedule failed: {exc}")
     return {"ok": True, "filled": filled, "elapsed": elapsed}
 
 
