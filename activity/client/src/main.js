@@ -1,13 +1,9 @@
 /**
  * Discord Embedded App SDK bootstrap for Thcoku.
- * Initializes Discord session, wires Mongo APIs, then starts PyScript.
+ * Initializes Discord session, wires Mongo APIs, then starts the Canvas game.
  */
 import { DiscordSDK } from "@discord/embedded-app-sdk";
-import "./cdn-patch.js";
-import { loadPyScript } from "./load-pyscript.js";
-
-// Patch CDN first, then load PyScript (otherwise Pyodide is blocked by Discord CSP).
-loadPyScript();
+import { startThcokuGame } from "./game.js";
 
 const CLIENT_ID = import.meta.env.VITE_DISCORD_CLIENT_ID;
 const bootEl = document.getElementById("boot");
@@ -17,40 +13,32 @@ const lbListEl = document.getElementById("lb-list");
 const winToastEl = document.getElementById("win-toast");
 const gameHintEl = document.getElementById("game-hint");
 
+let gameStarted = false;
+
 function setStatus(message) {
   if (statusEl) statusEl.textContent = message;
 }
 
-function showGame() {
-  if (bootEl) bootEl.hidden = true;
-  // First Pyodide download can take a minute; only warn after that.
-  window.setTimeout(() => {
-    const canvas = document.getElementById("canvas");
-    if (!canvas || !gameHintEl) return;
-    if (!gameHintEl.hidden && canvas.width > 0) {
-      gameHintEl.textContent =
-        "Sudoku ainda a carregar… Confirma /jsdelivr → cdn.jsdelivr.net no Portal e reinicia o Discord. Se já estiver certo, espera mais um pouco (1.ª vez).";
+function startGameOnce() {
+  if (gameStarted) return;
+  gameStarted = true;
+  const canvas = document.getElementById("canvas");
+  try {
+    startThcokuGame(canvas);
+    if (gameHintEl) gameHintEl.hidden = true;
+  } catch (err) {
+    console.error(err);
+    if (gameHintEl) {
+      gameHintEl.hidden = false;
+      gameHintEl.textContent = `Falha ao iniciar o jogo: ${err?.message || err}`;
     }
-  }, 60000);
+  }
 }
 
-// Hide hint only after pygame has actually painted (opaque non-black pixels).
-window.setInterval(() => {
-  if (!gameHintEl || gameHintEl.hidden) return;
-  const canvas = document.getElementById("canvas");
-  if (!canvas) return;
-  try {
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    const pixel = ctx.getImageData(24, 24, 1, 1).data;
-    const painted = pixel[3] > 200 && (pixel[0] + pixel[1] + pixel[2]) > 80;
-    if (painted) {
-      gameHintEl.hidden = true;
-    }
-  } catch {
-    /* tainted canvas / not ready */
-  }
-}, 1000);
+function showGame() {
+  if (bootEl) bootEl.hidden = true;
+  startGameOnce();
+}
 
 function apiUrl(path) {
   // Discord Activity iframe uses the mapped proxy; local Vite uses /api via proxy or Netlify.
@@ -160,7 +148,7 @@ function showWinToast(message) {
   }, 6500);
 }
 
-/** Called from PyScript/Pygame after a solved board. */
+/** Called from the Canvas game after a solved board. */
 window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed) {
   if (!window.__DISCORD_ACCESS_TOKEN__) {
     showWinToast("Vitória local (sem Discord auth — XP não gravado).");

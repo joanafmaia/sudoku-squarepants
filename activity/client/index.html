@@ -4,20 +4,6 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Thcoku — Discord Activity</title>
-    <!-- Remap absolute CDN imports (PyScript uses import(), not fetch). Must be before any module. -->
-    <script>
-      (function () {
-        var el = document.createElement("script");
-        el.type = "importmap";
-        el.textContent = JSON.stringify({
-          imports: {
-            "https://cdn.jsdelivr.net/": "/jsdelivr/",
-            "https://pyscript.net/": "/pyscript/",
-          },
-        });
-        document.currentScript.after(el);
-      })();
-    </script>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
@@ -30,14 +16,8 @@
       <div class="layout">
         <div id="game-shell">
           <canvas id="canvas" width="720" height="980"></canvas>
-          <p id="game-hint">A carregar o Sudoku (Pyodide)… primeira vez pode demorar ~30–60s</p>
+          <p id="game-hint">A preparar o Sudoku…</p>
         </div>
-        <script
-          type="py-game"
-          src="/game/main.py"
-          config="/game/pyscript.toml"
-          target="canvas"
-        ></script>
         <aside id="sidebar" aria-label="Leaderboard">
           <div class="sidebar-head">
             <h2>Top XP</h2>
