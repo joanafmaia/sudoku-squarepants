@@ -75,7 +75,27 @@ def _run_coro(bot: Any, coro: Any, timeout: float = 20.0) -> Any:
     return asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=timeout)
 
 
-def _exchange_token(code: str) -> tuple[int, dict]:
+def _exchange_token(code: str, bot: Any | None = None) -> tuple[int, dict]:
+    """Sync wrapper — prefer aiohttp on the bot event loop (avoids Cloudflare 1010)."""
+    if bot is not None and getattr(bot, "loop", None) and bot.loop.is_running():
+        try:
+            return _run_coro(bot, _exchange_token_async(code), timeout=25.0)
+        except Exception as exc:  # noqa: BLE001
+            print(f"oauth token exchange via bot loop failed: {exc}")
+
+    # Fallback if bot loop is not ready yet (startup race)
+    return asyncio.run(_exchange_token_async(code))
+
+
+async def _exchange_token_async(code: str) -> tuple[int, dict]:
+    """
+    Exchange OAuth code using aiohttp.
+
+    Cloudflare returns error 1010 for Python urllib's browser signature; discord.py
+    already talks to Discord from this host via aiohttp, so we use the same stack.
+    """
+    import aiohttp
+
     client_id = _client_id()
     client_secret = _client_secret()
     if not client_id or not client_secret:
@@ -84,67 +104,59 @@ def _exchange_token(code: str) -> tuple[int, dict]:
     redirect_uri = (
         os.getenv("DISCORD_OAUTH_REDIRECT_URI") or "https://127.0.0.1"
     ).strip()
-
-    # Official Activity sample omits redirect_uri; portal placeholder uses https://127.0.0.1.
-    # Try both — Discord is picky about matching the authorize step.
     attempts = [
         {"redirect_uri": redirect_uri},
-        {},  # no redirect_uri (discord embedded-app-sdk examples)
+        {},
     ]
     last: tuple[int, dict] = (502, {"error": "token_exchange_failed"})
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        # Match discord.py-ish identity — avoids Cloudflare 1010 (urllib UA ban).
+        "User-Agent": "DiscordBot (https://github.com/Rapptz/discord.py 2.7.1) Python/3.12 aiohttp/3.14",
+    }
+    url = "https://discord.com/api/v10/oauth2/token"
 
-    for extra in attempts:
-        form = {
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "grant_type": "authorization_code",
-            "code": code,
-            **extra,
-        }
-        body = urllib.parse.urlencode(form).encode()
-        req = urllib.request.Request(
-            "https://discord.com/api/v10/oauth2/token",
-            data=body,
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "ThcokuActivity/1.0 (+https://github.com/joanafmaia/sudoku-squarepants)",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                data = json.loads(resp.read().decode())
-                token = data.get("access_token")
-                if not token:
-                    last = (502, {"error": "no_access_token", "discord": data})
-                    continue
-                print(
-                    "oauth token exchange ok "
-                    f"(redirect_uri={'yes' if 'redirect_uri' in extra else 'no'})"
-                )
-                return 200, {"access_token": token}
-        except urllib.error.HTTPError as exc:
-            raw = exc.read().decode(errors="replace")
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for extra in attempts:
+            form = {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "grant_type": "authorization_code",
+                "code": code,
+                **extra,
+            }
             try:
-                data = json.loads(raw)
-            except Exception:
-                data = {
-                    "error": "token_exchange_failed",
-                    "status": exc.code,
-                    "body": raw[:200].replace("\n", " "),
-                }
-            print(
-                f"oauth token exchange HTTP {exc.code} "
-                f"(redirect_uri={'yes' if 'redirect_uri' in extra else 'no'}): {data}"
-            )
-            last = (int(exc.code), data)
-            # invalid_grant / bad code won't be fixed by retry shape — but try anyway once
-            continue
-        except Exception as exc:  # noqa: BLE001
-            print(f"oauth token exchange failed: {exc}")
-            last = (502, {"error": "token_exchange_failed", "message": str(exc)})
-            continue
-
+                async with session.post(url, data=form, headers=headers) as resp:
+                    raw = await resp.text()
+                    try:
+                        data = json.loads(raw) if raw else {}
+                    except Exception:
+                        data = {
+                            "error": "token_exchange_failed",
+                            "status": resp.status,
+                            "body": raw[:200].replace("\n", " "),
+                        }
+                    if resp.status >= 400:
+                        print(
+                            f"oauth token exchange HTTP {resp.status} "
+                            f"(redirect_uri={'yes' if 'redirect_uri' in extra else 'no'}): {data}"
+                        )
+                        last = (int(resp.status), data if isinstance(data, dict) else {"error": str(data)})
+                        continue
+                    token = data.get("access_token") if isinstance(data, dict) else None
+                    if not token:
+                        last = (502, {"error": "no_access_token", "discord": data})
+                        continue
+                    print(
+                        "oauth token exchange ok "
+                        f"(redirect_uri={'yes' if 'redirect_uri' in extra else 'no'})"
+                    )
+                    return 200, {"access_token": token}
+            except Exception as exc:  # noqa: BLE001
+                print(f"oauth token exchange failed: {exc}")
+                last = (502, {"error": "token_exchange_failed", "message": str(exc)})
+                continue
     return last
 
 
@@ -374,7 +386,7 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
             if not code:
                 self._send_json(400, {"error": "missing_code"})
                 return
-            status, data = _exchange_token(str(code))
+            status, data = _exchange_token(str(code), bot=bot_getter())
             self._send_json(status, data)
 
         def _leaderboard(self) -> None:
