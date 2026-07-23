@@ -4352,8 +4352,9 @@ class SudokuBot(commands.Bot):
         await restore_leaderboard_from_mongo(self)
 
         print("Slash tree: testboard uses autocomplete (no static pin choices).")
-        # Global sync can take minutes; guild sync is instant for that server.
         self._log_slash_payload_limits()
+        # Sync to ONE place only — guild+global together causes duplicate /commands
+        # in Discord (and stale /play signatures → "This interaction failed").
         if DISCORD_GUILD_ID:
             guild = discord.Object(id=DISCORD_GUILD_ID)
             self.tree.copy_global_to(guild=guild)
@@ -4362,11 +4363,18 @@ class SudokuBot(commands.Bot):
                 print(f"Synced {len(guild_synced)} slash command(s) to guild {DISCORD_GUILD_ID}.")
             except app_commands.CommandSyncFailure as exc:
                 print(f"Guild command sync failed (continuing): {exc}")
-        try:
-            synced = await self.tree.sync()
-            print(f"Synced {len(synced)} global slash command(s).")
-        except app_commands.CommandSyncFailure as exc:
-            print(f"Global command sync failed (continuing): {exc}")
+            # Wipe globals so the main server only lists the guild copy once.
+            try:
+                await self.http.bulk_upsert_global_commands(self.application_id, [])
+                print("Cleared global slash commands to remove duplicates.")
+            except Exception as exc:  # noqa: BLE001
+                print(f"Clear global commands failed: {exc}")
+        else:
+            try:
+                synced = await self.tree.sync()
+                print(f"Synced {len(synced)} global slash command(s).")
+            except app_commands.CommandSyncFailure as exc:
+                print(f"Global command sync failed (continuing): {exc}")
 
     def _log_slash_payload_limits(self) -> None:
         """Warn before Discord rejects option choice lists over 25."""
@@ -4676,19 +4684,22 @@ async def _launch_activity_window(interaction: discord.Interaction) -> None:
     """Open the Embedded App Activity (Wordle-style game window)."""
     try:
         await interaction.response.launch_activity()
-    except discord.HTTPException as exc:
+        return
+    except Exception as exc:  # noqa: BLE001 — always acknowledge the interaction
+        print(f"launch_activity failed: {exc}")
+    tip = (
+        "Não consegui abrir a janela da Activity.\n"
+        "Confirma no Developer Portal: **Activities → Enable**, "
+        "URL Mapping `/` → `thcoku.netlify.app`.\n"
+        "Ou inicia a Activity num **canal de voz** (ícone Actividades)."
+    )
+    try:
         if interaction.response.is_done():
-            await interaction.followup.send(
-                "Couldn't open the Activity window. Check Developer Portal → "
-                "Activities is enabled, and URL Mappings point to thcoku.netlify.app.",
-                ephemeral=True,
-            )
+            await interaction.followup.send(tip, ephemeral=True)
         else:
-            await interaction.response.send_message(
-                "Couldn't open the Activity window. Check Developer Portal → "
-                f"Activities is enabled.\n`{exc}`",
-                ephemeral=True,
-            )
+            await interaction.response.send_message(tip, ephemeral=True)
+    except discord.HTTPException:
+        pass
 
 
 @bot.tree.command(
