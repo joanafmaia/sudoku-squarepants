@@ -513,6 +513,10 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 self._leaderboard()
                 return
 
+            if path in ("/api/activity/profile", "/activity/profile", "/api/profile", "/profile"):
+                self._activity_profile()
+                return
+
             proxied = _proxy_cdn(path)
             if proxied is not None:
                 status, body, ctype = proxied
@@ -577,6 +581,58 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 return
             top = _collect_top_xp(data, guild_id, limit)
             self._send_json(200, {"top": top, "guild_id": guild_id, "updated": True})
+
+        def _activity_profile(self) -> None:
+            bot = bot_getter()
+            user = _discord_user_from_bearer(self.headers.get("Authorization"), bot=bot)
+            if not user or not user.get("id"):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            guild_raw = (qs.get("guild_id") or ["0"])[0]
+            try:
+                gid_key = int(guild_raw)
+            except ValueError:
+                gid_key = 0
+            try:
+                from bot import (
+                    SHOP_TITLES,
+                    equipped_title_id,
+                    guild_stats,
+                    owned_pin_emojis,
+                    user_stats,
+                )
+
+                uid = int(user["id"])
+                gstats = guild_stats(bot.data if isinstance(getattr(bot, "data", None), dict) else {}, gid_key)
+                stats = user_stats(gstats, uid)
+                tid = equipped_title_id(stats)
+                title_meta = SHOP_TITLES.get(tid or "") if tid else None
+                title = None
+                if title_meta:
+                    title = {
+                        "id": tid,
+                        "label": title_meta.get("label") or "",
+                        "pin": title_meta.get("pin") or "",
+                        "emoji": title_meta.get("emoji") or "",
+                    }
+                self._send_json(
+                    200,
+                    {
+                        "user_id": str(uid),
+                        "guild_id": str(gid_key),
+                        "name": stats.get("name")
+                        or user.get("global_name")
+                        or user.get("username")
+                        or "Unknown",
+                        "title": title,
+                        "pins": owned_pin_emojis(stats),
+                        "xp": int(stats.get("xp") or 0),
+                        "coins": int(stats.get("coins") or 0),
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._send_json(500, {"error": "profile_failed", "message": str(exc)})
 
         def _activity_win(self) -> None:
             bot = bot_getter()

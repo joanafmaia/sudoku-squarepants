@@ -34,9 +34,9 @@ const RGB = {
 };
 
 const WIDTH = 720;
-const HEIGHT = 720;
-const BOARD_ORIGIN = { x: 36, y: 88 };
-const CELL = 72;
+const HEIGHT = 780;
+const BOARD_ORIGIN = { x: 48, y: 96 };
+const CELL = 68;
 const BOARD_SIZE = CELL * 9;
 
 function discordUsername() {
@@ -80,13 +80,37 @@ function ensureControls(shell) {
   return bar;
 }
 
-export function startThcokuGame(canvas) {
+const TITLE_HEADER_LINES = {
+  "Very Easy": "Ahoy, {title}!",
+  Easy: "I'm ready, {title}!",
+  Medium: "Order up, {title}!",
+  Hard: "Aye aye, {title}!",
+  "Very Hard": "Jumping jellyfish, {title}!",
+  Expertttt: "Barnacles, {title}!",
+};
+
+function mulberry32(seed) {
+  let t = seed >>> 0;
+  return () => {
+    t += 0x6d2b79f5;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export function startThcokuGame(canvas, options = {}) {
   if (!canvas) return null;
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
 
   const shell = canvas.closest("#game-shell") || canvas.parentElement;
   const controls = ensureControls(shell);
+  const cosmetics = {
+    title: options.cosmetics?.title || null,
+    pins: Array.isArray(options.cosmetics?.pins) ? options.cosmetics.pins.slice() : [],
+    seed: Number(options.cosmetics?.seed) || 1,
+  };
 
   canvas.width = WIDTH;
   canvas.height = HEIGHT;
@@ -112,6 +136,62 @@ export function startThcokuGame(canvas) {
 
   const diffBtn = controls.querySelector("#ctrl-diff");
   const pencilBtn = controls.querySelector("#ctrl-pencil");
+
+  function titleBadge() {
+    const t = cosmetics.title;
+    if (!t) return "";
+    const pin = (t.pin || t.label || "").replace(/^[^\wÀ-ÿ]+/u, "").trim() || t.pin || "";
+    const em = (t.emoji || "").trim();
+    if (em && pin) return `${em} ${pin}`;
+    return em || pin;
+  }
+
+  function headerTitleLine() {
+    const badge = titleBadge();
+    const tier = difficultyLabel(DIFF_KEYS[state.diffIndex]);
+    if (!badge) return `~ ${tier} ~`;
+    const template = TITLE_HEADER_LINES[tier] || "I'm ready, {title}!";
+    return `~ ${tier} ~  ${template.replace("{title}", badge)}`;
+  }
+
+  function drawBorderPins() {
+    const pins = cosmetics.pins.filter(Boolean);
+    if (!pins.length) return;
+    const rng = mulberry32(cosmetics.seed || 1);
+    const ox = BOARD_ORIGIN.x;
+    const oy = BOARD_ORIGIN.y;
+    const slots = [];
+    // Left / right margins
+    for (let i = 0; i < 9; i++) {
+      slots.push({ x: 10, y: oy + i * CELL + CELL / 2 });
+      slots.push({ x: WIDTH - 10, y: oy + i * CELL + CELL / 2 });
+    }
+    // Bottom under board
+    for (let i = 0; i < 9; i++) {
+      slots.push({ x: ox + i * CELL + CELL / 2, y: oy + BOARD_SIZE + 18 });
+    }
+    // Shuffle slots stably
+    for (let i = slots.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [slots[i], slots[j]] = [slots[j], slots[i]];
+    }
+    ctx.font = "26px Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const count = Math.min(pins.length, slots.length, 18);
+    for (let i = 0; i < count; i++) {
+      const emoji = pins[i % pins.length];
+      const slot = slots[i];
+      ctx.fillText(emoji, slot.x, slot.y);
+    }
+  }
+
+  function setCosmetics(next) {
+    cosmetics.title = next?.title || null;
+    cosmetics.pins = Array.isArray(next?.pins) ? next.pins.slice() : [];
+    if (next?.seed != null) cosmetics.seed = Number(next.seed) || cosmetics.seed;
+    draw();
+  }
 
   function syncControls() {
     if (diffBtn) diffBtn.textContent = difficultyLabel(DIFF_KEYS[state.diffIndex]);
@@ -260,15 +340,19 @@ export function startThcokuGame(canvas) {
     ctx.fill();
 
     ctx.fillStyle = RGB.panel;
-    roundRect(ctx, 20, 14, WIDTH - 40, 56, 14);
+    roundRect(ctx, 20, 14, WIDTH - 40, 64, 14);
     ctx.fill();
     ctx.fillStyle = RGB.header;
-    ctx.font = "700 26px Fredoka, Segoe UI, sans-serif";
+    ctx.font = "700 22px Fredoka, Segoe UI, sans-serif";
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
-    ctx.fillText("Thcoku", 36, 42);
-    ctx.font = "600 16px Fredoka, Segoe UI, sans-serif";
-    ctx.fillText(String(state.status).slice(0, 34), 150, 42);
+    ctx.fillText("Thcoku", 36, 34);
+    ctx.font = "600 15px Fredoka, Segoe UI, Apple Color Emoji, Segoe UI Emoji, sans-serif";
+    ctx.fillText(headerTitleLine().slice(0, 48), 130, 34);
+    ctx.font = "500 14px Fredoka, Segoe UI, sans-serif";
+    ctx.fillText(String(state.status).slice(0, 40), 36, 58);
+
+    drawBorderPins();
 
     ctx.save();
     ctx.translate(shakeX, 0);
@@ -455,5 +539,5 @@ export function startThcokuGame(canvas) {
   });
 
   newGame();
-  return { newGame, place, draw };
+  return { newGame, place, draw, setCosmetics };
 }

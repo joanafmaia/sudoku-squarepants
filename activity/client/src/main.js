@@ -12,17 +12,23 @@ const winToastEl = document.getElementById("win-toast");
 const gameHintEl = document.getElementById("game-hint");
 
 let gameStarted = false;
+let gameApi = null;
 
 function setStatus(message) {
   if (statusEl) statusEl.textContent = message;
 }
 
-function startGameOnce() {
-  if (gameStarted) return;
+function startGameOnce(cosmetics = null) {
+  if (gameStarted) {
+    if (cosmetics && gameApi?.setCosmetics) gameApi.setCosmetics(cosmetics);
+    return;
+  }
   gameStarted = true;
   const canvas = document.getElementById("canvas");
   try {
-    startThcokuGame(canvas);
+    gameApi = startThcokuGame(canvas, {
+      cosmetics: cosmetics || { title: null, pins: [], seed: 1 },
+    });
     if (gameHintEl) gameHintEl.hidden = true;
   } catch (err) {
     console.error(err);
@@ -33,9 +39,32 @@ function startGameOnce() {
   }
 }
 
-function showGame() {
+async function loadCosmetics() {
+  const sdk = window.__DISCORD_SDK__;
+  const guildId = sdk?.guildId || "0";
+  try {
+    const res = await apiFetch(`/api/activity/profile?guild_id=${encodeURIComponent(guildId)}`);
+    if (!res || !res.ok) return null;
+    const data = await res.json();
+    return {
+      title: data.title || null,
+      pins: Array.isArray(data.pins) ? data.pins : [],
+      seed: Number(data.user_id) || Date.now(),
+    };
+  } catch (err) {
+    console.warn("[Thcoku] profile load failed", err);
+    return null;
+  }
+}
+
+async function showGame() {
   if (bootEl) bootEl.hidden = true;
-  startGameOnce();
+  // Start board immediately; cosmetics apply when profile returns.
+  startGameOnce(null);
+  if (window.__DISCORD_ACCESS_TOKEN__) {
+    const cosmetics = await loadCosmetics();
+    if (cosmetics) startGameOnce(cosmetics);
+  }
 }
 
 /** When Activities map `/api` → host, Discord strips `/api`, so `/api/token` becomes `/token`. */

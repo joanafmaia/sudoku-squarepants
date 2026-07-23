@@ -105,7 +105,7 @@ body {
 #canvas {
   display: block;
   max-width: min(100vw - 16px, 720px);
-  max-height: min(58vh, 720px);
+  max-height: min(62vh, 780px);
   width: auto;
   height: auto;
   border-radius: 18px;
