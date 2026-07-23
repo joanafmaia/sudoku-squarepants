@@ -4323,9 +4323,8 @@ class SudokuBot(commands.Bot):
 
         print("Slash tree: testboard uses autocomplete (no static pin choices).")
         self._log_slash_payload_limits()
-        # Prefer guild sync. Do NOT bulk-clear global commands: with Activities
-        # enabled, Discord keeps an Entry Point command that cannot be removed
-        # via bulk upsert [] (error 50240).
+        # Prefer guild sync. Global sync must preserve the Activities Entry Point
+        # command (type 4) or Discord returns 50240.
         if DISCORD_GUILD_ID:
             guild = discord.Object(id=DISCORD_GUILD_ID)
             self.tree.copy_global_to(guild=guild)
@@ -4335,26 +4334,41 @@ class SudokuBot(commands.Bot):
             except (app_commands.CommandSyncFailure, discord.Forbidden, discord.HTTPException) as exc:
                 print(f"Guild command sync failed (continuing): {exc}")
                 print(
-                    "Hint: confirma DISCORD_GUILD_ID e que o bot está nesse servidor "
-                    "(re-convida com scope applications.commands)."
+                    "Hint: DISCORD_GUILD_ID tem de ser o servidor onde o bot está "
+                    "(Developer Mode → clique direito no servidor → Copy Server ID)."
                 )
-                try:
-                    synced = await self.tree.sync()
-                    print(f"Fallback: synced {len(synced)} global slash command(s).")
-                except (app_commands.CommandSyncFailure, discord.HTTPException) as exc2:
-                    print(f"Global command sync failed (continuing): {exc2}")
+                await self._sync_globals_preserving_entrypoint()
         else:
-            try:
-                synced = await self.tree.sync()
-                print(f"Synced {len(synced)} global slash command(s).")
-            except (app_commands.CommandSyncFailure, discord.HTTPException) as exc:
-                # 50240 = Entry Point command must stay when Activities are enabled
-                print(f"Global command sync failed (continuing): {exc}")
-                if getattr(exc, "code", None) == 50240:
-                    print(
-                        "Hint: define DISCORD_GUILD_ID para sync no servidor "
-                        "(Activities Entry Point bloqueia limpar comandos globais)."
-                    )
+            await self._sync_globals_preserving_entrypoint()
+
+    async def _sync_globals_preserving_entrypoint(self) -> None:
+        """Bulk-upsert slash commands without deleting the Activity Entry Point."""
+        try:
+            existing = await self.http.get_global_commands(self.application_id)
+            entry_points = [cmd for cmd in existing if int(cmd.get("type") or 0) == 4]
+            payload = [cmd.to_dict(self.tree) for cmd in self.tree.get_commands()]
+            for ep in entry_points:
+                kept = {
+                    "name": ep.get("name") or "launch",
+                    "type": 4,
+                    "description": ep.get("description") or "",
+                }
+                if ep.get("id"):
+                    kept["id"] = ep["id"]
+                if ep.get("handler") is not None:
+                    kept["handler"] = ep["handler"]
+                if ep.get("integration_types") is not None:
+                    kept["integration_types"] = ep["integration_types"]
+                if ep.get("contexts") is not None:
+                    kept["contexts"] = ep["contexts"]
+                payload.append(kept)
+            synced = await self.http.bulk_upsert_global_commands(self.application_id, payload)
+            print(
+                f"Synced {len(synced)} global command(s) "
+                f"(kept {len(entry_points)} Activity Entry Point)."
+            )
+        except (app_commands.CommandSyncFailure, discord.HTTPException) as exc:
+            print(f"Global command sync failed (continuing): {exc}")
 
     def _log_slash_payload_limits(self) -> None:
         """Warn before Discord rejects option choice lists over 25."""
