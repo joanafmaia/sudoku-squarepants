@@ -46,8 +46,65 @@ body {
 }
 
 #boot[hidden],
-#win-toast[hidden] {
+#win-toast[hidden],
+#resume[hidden] {
   display: none !important;
+}
+
+#resume {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-content: center;
+  gap: 1rem;
+  padding: 1.5rem;
+  text-align: center;
+  background: rgba(14, 116, 144, 0.55);
+  backdrop-filter: blur(6px);
+  animation: fade-in 0.35s ease;
+}
+
+#resume-copy {
+  margin: 0 auto;
+  max-width: 22rem;
+  padding: 14px 18px;
+  background: var(--sand);
+  border: 2px solid var(--gold);
+  border-radius: 16px;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--header);
+}
+
+.resume-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  width: min(100%, 22rem);
+  margin: 0 auto;
+}
+
+.resume-actions button {
+  appearance: none;
+  border: 2px solid var(--header);
+  border-radius: 14px;
+  background: var(--sand);
+  color: var(--header);
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 1.05rem;
+  min-height: 52px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+#resume-continue {
+  background: var(--gold);
+}
+
+.resume-actions button:active {
+  transform: translateY(1px);
 }
 
 #boot-status {
@@ -165,8 +222,8 @@ body {
 #game-controls button {
   appearance: none;
   border: 2px solid var(--header);
-  border-radius: 12px;
-  background: var(--sand);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fffef5 0%, var(--sand) 100%);
   color: var(--header);
   font-family: inherit;
   font-weight: 700;
@@ -178,28 +235,37 @@ body {
   cursor: pointer;
   touch-action: manipulation;
   box-sizing: border-box;
+  box-shadow: 0 3px 0 rgba(15, 118, 110, 0.25);
 }
 
 #game-controls .ctrl-digit {
-  font-size: 1.35rem;
+  font-size: 1.4rem;
+  background: linear-gradient(180deg, #fff7ed 0%, #ffedd5 55%, #fdba74 100%);
+  border-color: #c2410c;
+  color: #7c2d12;
 }
 
 #game-controls .ctrl-clear {
-  background: var(--gold);
+  background: linear-gradient(180deg, #fde047 0%, var(--gold) 100%);
+  border-color: #b45309;
   min-height: 46px;
 }
 
 #game-controls .ctrl-actions button {
-  background: var(--gold);
-  font-size: 0.95rem;
+  background: linear-gradient(180deg, #fde68a 0%, var(--gold) 100%);
+  border-color: #b45309;
+  font-size: 0.88rem;
+  letter-spacing: 0.01em;
 }
 
 #game-controls button.is-active {
-  background: #fde047;
+  background: linear-gradient(180deg, #fef08a 0%, #facc15 100%);
+  box-shadow: inset 0 2px 4px rgba(120, 53, 15, 0.2);
 }
 
 #game-controls button:active {
-  transform: translateY(1px);
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(15, 118, 110, 0.2);
 }
 
 #win-toast {
@@ -219,9 +285,77 @@ body {
   animation: toast-in 0.35s ease;
 }
 
-@media (max-width: 900px) {
+/* Mobile / Activity narrow: stack (board on top, pad below) */
+@media (max-width: 859px) {
   #canvas {
     max-width: min(100vw - 12px, 720px);
-    max-height: min(55vh, 780px);
+    max-height: min(52vh, 780px);
+  }
+
+  #game-shell {
+    width: min(100vw - 12px, 720px);
+  }
+}
+
+/* Desktop / wide Activity: board left, controls right — no giant stretched pad */
+@media (min-width: 860px) {
+  #app {
+    padding: 16px 20px;
+    align-content: center;
+  }
+
+  #game-shell {
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    width: min(96vw, 1080px);
+    max-height: min(92vh, 820px);
+  }
+
+  #canvas {
+    flex: 0 1 auto;
+    max-width: min(62vw, 720px);
+    max-height: min(88vh, 780px);
+    width: auto;
+    height: auto;
+  }
+
+  #game-controls {
+    width: min(260px, 28vw);
+    max-width: 280px;
+    flex: 0 0 auto;
+    gap: 10px;
+    padding: 12px;
+    background: rgba(255, 248, 220, 0.72);
+    border: 2px solid rgba(245, 158, 11, 0.55);
+    border-radius: 18px;
+    box-shadow: 0 10px 28px rgba(15, 118, 110, 0.15);
+  }
+
+  #game-controls button {
+    min-height: 48px;
+    font-size: 1rem;
+    border-radius: 14px;
+  }
+
+  #game-controls .ctrl-digit {
+    font-size: 1.45rem;
+    min-height: 54px;
+  }
+
+  #game-controls .ctrl-clear,
+  #game-controls .ctrl-actions button {
+    min-height: 44px;
+    font-size: 0.92rem;
+  }
+
+  .ctrl-pad,
+  .ctrl-actions {
+    gap: 8px;
+  }
+
+  #game-hint {
+    left: 31%;
   }
 }

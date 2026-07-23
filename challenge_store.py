@@ -78,12 +78,23 @@ class MatchStore:
     async def list_daily_completions(self) -> list[dict]:
         return []
 
+    async def upsert_activity_session(self, doc: dict) -> None:
+        """Save in-progress Activity puzzle (keyed by guild+user)."""
+        raise NotImplementedError
+
+    async def get_activity_session(self, session_id: str) -> dict | None:
+        raise NotImplementedError
+
+    async def delete_activity_session(self, session_id: str) -> None:
+        raise NotImplementedError
+
 
 class MemoryMatchStore(MatchStore):
     def __init__(self) -> None:
         self._docs: dict[str, dict] = {}
         self._daily: dict[str, dict] = {}
         self._active: dict[str, dict] = {}
+        self._activity: dict[str, dict] = {}
         self._leaderboard: dict | None = None
 
     async def connect(self) -> None:
@@ -130,6 +141,21 @@ class MemoryMatchStore(MatchStore):
 
     async def list_active_games(self) -> list[dict]:
         return [_clone(d) for d in self._active.values()]
+
+    async def upsert_activity_session(self, doc: dict) -> None:
+        payload = _clone(doc)
+        sid = payload.get("_id")
+        if not sid:
+            raise ValueError("activity session needs _id")
+        payload["updated_at"] = time.time()
+        self._activity[sid] = payload
+
+    async def get_activity_session(self, session_id: str) -> dict | None:
+        doc = self._activity.get(session_id)
+        return _clone(doc) if doc else None
+
+    async def delete_activity_session(self, session_id: str) -> None:
+        self._activity.pop(session_id, None)
 
     def _daily_key(self, guild_id: int, user_id: int, day: str) -> str:
         return f"{guild_id}:{day}:{user_id}"
@@ -191,6 +217,7 @@ class MongoMatchStore(MatchStore):
         self._col = None
         self._daily = None
         self._active = None
+        self._activity = None
         self._leaderboard = None
 
     async def connect(self) -> None:
@@ -201,10 +228,12 @@ class MongoMatchStore(MatchStore):
         self._col = db["challenge_matches"]
         self._daily = db["daily_completions"]
         self._active = db["active_games"]
+        self._activity = db["activity_sessions"]
         self._leaderboard = db["leaderboard"]
         await self._col.create_index("status")
         await self._daily.create_index([("guild_id", 1), ("date", 1)])
         await self._active.create_index("updated_at")
+        await self._activity.create_index("updated_at")
 
     async def close(self) -> None:
         if self._client is not None:
@@ -247,6 +276,26 @@ class MongoMatchStore(MatchStore):
     async def list_active_games(self) -> list[dict]:
         cursor = self._active.find({})
         return await cursor.to_list(length=500)
+
+    async def upsert_activity_session(self, doc: dict) -> None:
+        if self._activity is None:
+            await self.connect()
+        payload = _clone(doc)
+        sid = payload.get("_id")
+        if not sid:
+            raise ValueError("activity session needs _id")
+        payload["updated_at"] = time.time()
+        await self._activity.replace_one({"_id": sid}, payload, upsert=True)
+
+    async def get_activity_session(self, session_id: str) -> dict | None:
+        if self._activity is None:
+            await self.connect()
+        return await self._activity.find_one({"_id": session_id})
+
+    async def delete_activity_session(self, session_id: str) -> None:
+        if self._activity is None:
+            await self.connect()
+        await self._activity.delete_one({"_id": session_id})
 
     async def try_claim_daily_win(
         self,

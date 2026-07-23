@@ -25,7 +25,7 @@ BotGetter = Callable[[], Any]
 CORS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS, HEAD",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS, HEAD, DELETE",
 }
 
 CDN_PREFIXES = {
@@ -362,6 +362,13 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
         post_error = str(exc)
         print(f"activity win chat post failed: {exc}")
 
+    try:
+        from challenge_store import match_store
+
+        await match_store.delete_activity_session(_activity_session_id(guild_id, uid))
+    except Exception as exc:  # noqa: BLE001
+        print(f"activity session clear on win failed: {exc}")
+
     result = {
         "ok": True,
         "coins": coins,
@@ -379,6 +386,85 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
     if post_error and not posted:
         result["post_error"] = post_error
     return result
+
+
+def _activity_session_id(guild_id: str | int, user_id: str | int) -> str:
+    return f"activity:{guild_id}:{user_id}"
+
+
+async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
+    from challenge_store import match_store
+
+    guild_id = str(body.get("guild_id") if body.get("guild_id") is not None else "0")
+    if body.get("clear") or body.get("action") == "clear":
+        return await _delete_activity_session(bot, user=user, guild_id=guild_id)
+
+    uid = int(user["id"])
+    board = _normalize_activity_board(body.get("board"))
+    given = _normalize_activity_given(body.get("given"), board)
+    solution = body.get("solution")
+    if board is None or given is None:
+        return {"ok": False, "error": "invalid_board"}
+    if not isinstance(solution, list) or len(solution) != 9:
+        return {"ok": False, "error": "invalid_solution"}
+
+    difficulty = body.get("difficulty") or "medium"
+    diff_index = int(body.get("diff_index") or 0)
+    elapsed = max(0, int(body.get("elapsed") or 0))
+    filled = sum(1 for r in range(9) for c in range(9) if board[r][c]["value"])
+    # Don't keep fully solved boards as "continue"
+    if filled >= 81:
+        await match_store.delete_activity_session(_activity_session_id(guild_id, uid))
+        return {"ok": True, "cleared": True}
+
+    doc = {
+        "_id": _activity_session_id(guild_id, uid),
+        "guild_id": guild_id,
+        "user_id": str(uid),
+        "difficulty": difficulty,
+        "diff_index": diff_index,
+        "elapsed": elapsed,
+        "board": board,
+        "given": given,
+        "solution": solution,
+        "filled": filled,
+        "name": body.get("name")
+        or user.get("global_name")
+        or user.get("username")
+        or "Unknown",
+    }
+    await match_store.upsert_activity_session(doc)
+    return {"ok": True, "filled": filled, "elapsed": elapsed}
+
+
+async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict:
+    from challenge_store import match_store
+
+    uid = int(user["id"])
+    doc = await match_store.get_activity_session(_activity_session_id(guild_id, uid))
+    if not doc:
+        return {"ok": True, "session": None}
+    return {
+        "ok": True,
+        "session": {
+            "difficulty": doc.get("difficulty") or "medium",
+            "diff_index": int(doc.get("diff_index") or 0),
+            "elapsed": int(doc.get("elapsed") or 0),
+            "board": doc.get("board"),
+            "given": doc.get("given"),
+            "solution": doc.get("solution"),
+            "filled": int(doc.get("filled") or 0),
+            "updated_at": doc.get("updated_at"),
+        },
+    }
+
+
+async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict:
+    from challenge_store import match_store
+
+    uid = int(user["id"])
+    await match_store.delete_activity_session(_activity_session_id(guild_id, uid))
+    return {"ok": True, "cleared": True}
 
 
 def _normalize_activity_board(raw: Any) -> list[list[dict]] | None:
@@ -517,6 +603,10 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 self._activity_profile()
                 return
 
+            if path in ("/api/activity/session", "/activity/session"):
+                self._activity_session_get()
+                return
+
             proxied = _proxy_cdn(path)
             if proxied is not None:
                 status, body, ctype = proxied
@@ -539,6 +629,16 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 return
             if path in ("/api/activity/win", "/activity/win"):
                 self._activity_win()
+                return
+            if path in ("/api/activity/session", "/activity/session"):
+                self._activity_session_save()
+                return
+            self._send_json(404, {"error": "not_found", "path": path})
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            path = self._path_only()
+            if path in ("/api/activity/session", "/activity/session"):
+                self._activity_session_delete()
                 return
             self._send_json(404, {"error": "not_found", "path": path})
 
@@ -649,6 +749,55 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 result = _run_coro(bot, _apply_activity_win(bot, user=user, body=body))
             except Exception as exc:  # noqa: BLE001
                 self._send_json(500, {"error": "win_failed", "message": str(exc)})
+                return
+            self._send_json(200, result)
+
+        def _activity_session_get(self) -> None:
+            bot = bot_getter()
+            user = _discord_user_from_bearer(self.headers.get("Authorization"), bot=bot)
+            if not user or not user.get("id"):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            guild_id = (qs.get("guild_id") or ["0"])[0]
+            try:
+                result = _run_coro(bot, _load_activity_session(bot, user=user, guild_id=str(guild_id)))
+            except Exception as exc:  # noqa: BLE001
+                self._send_json(500, {"error": "session_load_failed", "message": str(exc)})
+                return
+            self._send_json(200, result)
+
+        def _activity_session_save(self) -> None:
+            bot = bot_getter()
+            user = _discord_user_from_bearer(self.headers.get("Authorization"), bot=bot)
+            if not user or not user.get("id"):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            try:
+                body = self._read_json()
+            except Exception:
+                self._send_json(400, {"error": "invalid_json"})
+                return
+            try:
+                result = _run_coro(bot, _save_activity_session(bot, user=user, body=body))
+            except Exception as exc:  # noqa: BLE001
+                self._send_json(500, {"error": "session_save_failed", "message": str(exc)})
+                return
+            status = 200 if result.get("ok") else 400
+            self._send_json(status, result)
+
+        def _activity_session_delete(self) -> None:
+            bot = bot_getter()
+            user = _discord_user_from_bearer(self.headers.get("Authorization"), bot=bot)
+            if not user or not user.get("id"):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            guild_id = (qs.get("guild_id") or ["0"])[0]
+            try:
+                result = _run_coro(bot, _delete_activity_session(bot, user=user, guild_id=str(guild_id)))
+            except Exception as exc:  # noqa: BLE001
+                self._send_json(500, {"error": "session_delete_failed", "message": str(exc)})
                 return
             self._send_json(200, result)
 

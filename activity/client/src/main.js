@@ -1,49 +1,73 @@
 /**
  * Discord Embedded App SDK bootstrap for Thcoku.
  * Initializes Discord session, then starts the Canvas puzzle (no leaderboard UI).
+ * Saves in-progress boards to Mongo and offers Resume / New puzzle on next /play.
  */
 import { DiscordSDK } from "@discord/embedded-app-sdk";
 import { startThcokuGame } from "./game.js";
+import { difficultyLabel } from "./sudoku-core.js";
 
 const CLIENT_ID = import.meta.env.VITE_DISCORD_CLIENT_ID;
 const bootEl = document.getElementById("boot");
 const statusEl = document.getElementById("boot-status");
 const winToastEl = document.getElementById("win-toast");
 const gameHintEl = document.getElementById("game-hint");
+const resumeEl = document.getElementById("resume");
+const resumeCopyEl = document.getElementById("resume-copy");
+const resumeContinueBtn = document.getElementById("resume-continue");
+const resumeNewBtn = document.getElementById("resume-new");
 
 let gameStarted = false;
 let gameApi = null;
+let autosaveTimer = null;
+let saving = false;
 
 function setStatus(message) {
   if (statusEl) statusEl.textContent = message;
 }
 
-function startGameOnce(cosmetics = null) {
+function guildId() {
+  return window.__DISCORD_SDK__?.guildId || "0";
+}
+
+function playerName() {
+  return (
+    window.__DISCORD_AUTH__?.user?.global_name ||
+    window.__DISCORD_AUTH__?.user?.username ||
+    undefined
+  );
+}
+
+function startGameOnce(cosmetics = null, gameOptions = {}) {
   if (gameStarted) {
     if (cosmetics && gameApi?.setCosmetics) gameApi.setCosmetics(cosmetics);
-    return;
+    return gameApi;
   }
   gameStarted = true;
   const canvas = document.getElementById("canvas");
   try {
     gameApi = startThcokuGame(canvas, {
       cosmetics: cosmetics || { title: null, pins: [], seed: 1 },
+      autoStart: gameOptions.autoStart !== false,
+      onNewGame: () => {
+        clearSavedSession();
+      },
     });
     if (gameHintEl) gameHintEl.hidden = true;
   } catch (err) {
     console.error(err);
     if (gameHintEl) {
       gameHintEl.hidden = false;
-      gameHintEl.textContent = `Falha ao iniciar o jogo: ${err?.message || err}`;
+      gameHintEl.textContent = `Failed to start: ${err?.message || err}`;
     }
   }
+  return gameApi;
 }
 
 async function loadCosmetics() {
-  const sdk = window.__DISCORD_SDK__;
-  const guildId = sdk?.guildId || "0";
+  if (!window.__DISCORD_ACCESS_TOKEN__) return null;
   try {
-    const res = await apiFetch(`/api/activity/profile?guild_id=${encodeURIComponent(guildId)}`);
+    const res = await apiFetch(`/api/activity/profile?guild_id=${encodeURIComponent(guildId())}`);
     if (!res || !res.ok) return null;
     const data = await res.json();
     return {
@@ -57,14 +81,149 @@ async function loadCosmetics() {
   }
 }
 
+async function loadSavedSession() {
+  if (!window.__DISCORD_ACCESS_TOKEN__) return null;
+  try {
+    const res = await apiFetch(`/api/activity/session?guild_id=${encodeURIComponent(guildId())}`);
+    if (!res || !res.ok) return null;
+    const data = await res.json();
+    const session = data?.session;
+    if (!session?.board || !session?.given || !session?.solution) return null;
+    if ((session.filled || 0) <= 0) return null;
+    return session;
+  } catch (err) {
+    console.warn("[Thcoku] session load failed", err);
+    return null;
+  }
+}
+
+async function clearSavedSession() {
+  if (!window.__DISCORD_ACCESS_TOKEN__) return;
+  const gid = encodeURIComponent(guildId());
+  try {
+    let res = await apiFetch(`/api/activity/session?guild_id=${gid}`, { method: "DELETE" });
+    if (res && (res.ok || res.status === 401 || res.status === 404)) return;
+    await apiFetch("/api/activity/session", {
+      method: "POST",
+      body: JSON.stringify({ clear: true, guild_id: guildId() }),
+    });
+  } catch (err) {
+    console.warn("[Thcoku] session clear failed", err);
+  }
+}
+
+async function saveSessionNow() {
+  if (!window.__DISCORD_ACCESS_TOKEN__ || !gameApi?.getSnapshot || saving) return;
+  const snap = gameApi.getSnapshot();
+  if (!snap) return;
+  saving = true;
+  try {
+    await apiFetch("/api/activity/session", {
+      method: "POST",
+      body: JSON.stringify({
+        ...snap,
+        guild_id: guildId(),
+        name: playerName(),
+      }),
+    });
+  } catch (err) {
+    console.warn("[Thcoku] session save failed", err);
+  } finally {
+    saving = false;
+  }
+}
+
+function startAutosave() {
+  stopAutosave();
+  if (!window.__DISCORD_ACCESS_TOKEN__) return;
+  autosaveTimer = setInterval(() => {
+    saveSessionNow();
+  }, 12000);
+  const flush = () => {
+    saveSessionNow();
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flush();
+  });
+  window.addEventListener("pagehide", flush);
+  window.addEventListener("beforeunload", flush);
+}
+
+function stopAutosave() {
+  if (autosaveTimer) {
+    clearInterval(autosaveTimer);
+    autosaveTimer = null;
+  }
+}
+
+function askResume(session) {
+  return new Promise((resolve) => {
+    if (!resumeEl) {
+      resolve(true);
+      return;
+    }
+    const filled = session.filled ?? "?";
+    const diff = difficultyLabel(session.difficulty || "medium");
+    const t = formatTime(session.elapsed);
+    if (resumeCopyEl) {
+      resumeCopyEl.textContent = `Krabby Patty mid-cook (${diff}) · ${filled}/81 · ${t}. Resume or start a new order?`;
+    }
+    resumeEl.hidden = false;
+    if (gameHintEl) gameHintEl.hidden = true;
+
+    const done = (resume) => {
+      resumeEl.hidden = true;
+      resumeContinueBtn?.removeEventListener("click", onContinue);
+      resumeNewBtn?.removeEventListener("click", onNew);
+      resolve(resume);
+    };
+    const onContinue = () => done(true);
+    const onNew = () => done(false);
+    resumeContinueBtn?.addEventListener("click", onContinue);
+    resumeNewBtn?.addEventListener("click", onNew);
+  });
+}
+
+async function beginPlay({ resumeSession = null } = {}) {
+  const cosmetics = await loadCosmetics();
+  if (resumeSession) {
+    startGameOnce(cosmetics, { autoStart: false });
+    if (!gameApi?.loadSnapshot?.(resumeSession)) {
+      gameApi?.newGame?.();
+    }
+  } else {
+    startGameOnce(cosmetics, { autoStart: true });
+  }
+  if (cosmetics && gameApi?.setCosmetics) gameApi.setCosmetics(cosmetics);
+  startAutosave();
+}
+
 async function showGame() {
   if (bootEl) bootEl.hidden = true;
-  // Start board immediately; cosmetics apply when profile returns.
-  startGameOnce(null);
-  if (window.__DISCORD_ACCESS_TOKEN__) {
-    const cosmetics = await loadCosmetics();
-    if (cosmetics) startGameOnce(cosmetics);
+
+  if (!window.__DISCORD_ACCESS_TOKEN__) {
+    startGameOnce(null, { autoStart: true });
+    return;
   }
+
+  if (gameHintEl) {
+    gameHintEl.hidden = false;
+    gameHintEl.textContent = "Checking saved progress…";
+  }
+
+  const session = await loadSavedSession();
+  if (session) {
+    const resume = await askResume(session);
+    if (resume) {
+      await beginPlay({ resumeSession: session });
+    } else {
+      await clearSavedSession();
+      await beginPlay({ resumeSession: null });
+    }
+    return;
+  }
+
+  await beginPlay({ resumeSession: null });
 }
 
 /** When Activities map `/api` → host, Discord strips `/api`, so `/api/token` becomes `/token`. */
@@ -128,7 +287,7 @@ function showWinToast(message) {
 /** Called from the Canvas game after a solved board. */
 window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boardPayload) {
   if (!window.__DISCORD_ACCESS_TOKEN__) {
-    showWinToast("Vitória local (sem Discord auth — XP não gravado).");
+    showWinToast("Local win (no Discord auth — XP not saved).");
     return null;
   }
   try {
@@ -140,10 +299,7 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boa
         elapsed: Math.floor(Number(elapsed) || 0),
         guild_id: sdk?.guildId ?? "0",
         channel_id: sdk?.channelId ?? null,
-        name:
-          window.__DISCORD_AUTH__?.user?.global_name ||
-          window.__DISCORD_AUTH__?.user?.username ||
-          undefined,
+        name: playerName(),
         board: boardPayload?.board ?? null,
         given: boardPayload?.given ?? null,
         solution: boardPayload?.solution ?? null,
@@ -151,19 +307,19 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boa
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      showWinToast(`Vitória OK, mas Mongo falhou (${data.error || res.status}).`);
+      showWinToast(`Win OK, but Mongo failed (${data.error || res.status}).`);
       return null;
     }
-    const posted = data.posted ? " · foto no chat" : "";
+    const posted = data.posted ? " · photo in chat" : "";
     showWinToast(
-      `+${data.xp} XP · +${data.coins} sponges · streak ${data.streak} · ${formatTime(
+      `Order up! +${data.xp} XP · +${data.coins} sponges · streak ${data.streak} · ${formatTime(
         elapsed
       )}${posted}`
     );
     return data;
   } catch (err) {
     console.error(err);
-    showWinToast("Vitória OK, mas não foi possível gravar no Mongo.");
+    showWinToast("Win OK, but could not save to Mongo.");
     return null;
   }
 };
@@ -230,22 +386,22 @@ async function exchangeToken(code) {
 
 async function setupDiscordSdk() {
   if (!CLIENT_ID || CLIENT_ID === "YOUR_DISCORD_CLIENT_ID_HERE") {
-    launchLocal("VITE_DISCORD_CLIENT_ID em falta — modo local.");
+    launchLocal("VITE_DISCORD_CLIENT_ID missing — local mode.");
     return;
   }
 
   const discordSdk = new DiscordSDK(CLIENT_ID);
   window.__DISCORD_SDK__ = discordSdk;
 
-  setStatus("A aguardar handshake do Discord…");
+  setStatus("Waiting for Discord handshake…");
   try {
     await withTimeout(discordSdk.ready(), 4000, "discordSdk.ready()");
   } catch {
-    launchLocal("Sem frame Discord (pré-visualização local). A carregar o jogo…");
+    launchLocal("No Discord frame (local preview). Loading game…");
     return;
   }
 
-  setStatus("A pedir autorização…");
+  setStatus("Requesting authorization…");
   const { code } = await discordSdk.commands.authorize({
     client_id: CLIENT_ID,
     response_type: "code",
@@ -254,13 +410,13 @@ async function setupDiscordSdk() {
     scope: ["identify", "guilds"],
   });
 
-  setStatus("A trocar o código por token…");
+  setStatus("Exchanging code for token…");
   const access_token = await exchangeToken(code);
 
-  setStatus("A autenticar sessão…");
+  setStatus("Authenticating session…");
   const auth = await discordSdk.commands.authenticate({ access_token });
-  const name = auth?.user?.username ?? "jogador";
-  setStatus(`Ligado como ${name}. A carregar o jogo…`);
+  const name = auth?.user?.username ?? "player";
+  setStatus(`Signed in as ${name}. Loading game…`);
   finishBoot(auth, access_token, { inDiscord: true });
 }
 
@@ -268,7 +424,7 @@ setupDiscordSdk().catch((err) => {
   console.error(err);
   const raw = String(err?.message ?? err);
   const tip = /redirect_uri/i.test(raw)
-    ? "No Developer Portal → OAuth2 → Redirects, adiciona https://127.0.0.1 e grava. Depois reinicia a Activity."
+    ? "In Developer Portal → OAuth2 → Redirects, add https://127.0.0.1 and save. Then restart the Activity."
     : raw;
-  launchLocal(`Falha no Discord SDK: ${tip} A abrir o jogo na mesma…`);
+  launchLocal(`Discord SDK failed: ${tip} Opening the game anyway…`);
 });

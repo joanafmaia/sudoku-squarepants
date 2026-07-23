@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="pt">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,14 +8,21 @@
   </head>
   <body>
     <div id="boot">
-      <p id="boot-status">A ligar ao Discord…</p>
+      <p id="boot-status">Connecting to Discord…</p>
       <div class="spinner" aria-hidden="true"></div>
     </div>
 
     <main id="app">
+      <div id="resume" hidden>
+        <p id="resume-copy">You've got a puzzle in progress.</p>
+        <div class="resume-actions">
+          <button type="button" id="resume-continue">Resume</button>
+          <button type="button" id="resume-new">New puzzle</button>
+        </div>
+      </div>
       <div id="game-shell">
         <canvas id="canvas" width="720" height="980"></canvas>
-        <p id="game-hint">A preparar o Sudoku…</p>
+        <p id="game-hint">Cooking up a Sudoku…</p>
       </div>
       <div id="win-toast" hidden></div>
     </main>
