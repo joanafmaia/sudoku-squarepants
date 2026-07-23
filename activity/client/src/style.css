@@ -222,6 +222,6 @@ body {
 @media (max-width: 900px) {
   #canvas {
     max-width: min(100vw - 12px, 720px);
-    max-height: min(52vh, 720px);
+    max-height: min(55vh, 780px);
   }
 }
