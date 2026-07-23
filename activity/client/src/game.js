@@ -41,9 +41,12 @@ const RGB = {
 
 const WIDTH = 720;
 const HEIGHT = 780;
-const BOARD_ORIGIN = { x: 48, y: 96 };
-const CELL = 68;
+// Extra side margin so pin badges sit fully outside the pineapple frame.
+const BOARD_ORIGIN = { x: 64, y: 108 };
+const CELL = 64;
 const BOARD_SIZE = CELL * 9;
+const FRAME_PAD = 16;
+const PIN_RADIUS = 22;
 
 const TITLE_HEADER_LINES = {
   "Very Easy": "Ahoy, {title}!",
@@ -213,14 +216,22 @@ export function startThcokuGame(canvas, options = {}) {
     const rng = mulberry32(cosmetics.seed || 1);
     const ox = BOARD_ORIGIN.x;
     const oy = BOARD_ORIGIN.y;
+    // Frame outer edge — pin centers stay fully outside so badges are never clipped
+    const frameLeft = ox - FRAME_PAD - 4;
+    const frameRight = ox + BOARD_SIZE + FRAME_PAD + 4;
+    const frameBottom = oy + BOARD_SIZE + FRAME_PAD + 4;
+    const leftX = Math.max(PIN_RADIUS + 2, frameLeft - PIN_RADIUS - 4);
+    const rightX = Math.min(WIDTH - PIN_RADIUS - 2, frameRight + PIN_RADIUS + 4);
+    const bottomY = Math.min(HEIGHT - PIN_RADIUS - 8, frameBottom + PIN_RADIUS + 6);
+
     const slots = [];
-    // Keep pins clear of the blue water — sit on cream badges beside / under the board
     for (let i = 0; i < 9; i++) {
-      slots.push({ x: 26, y: oy + i * CELL + CELL / 2 });
-      slots.push({ x: WIDTH - 26, y: oy + i * CELL + CELL / 2 });
+      const y = oy + i * CELL + CELL / 2;
+      slots.push({ x: leftX, y });
+      slots.push({ x: rightX, y });
     }
     for (let i = 0; i < 9; i++) {
-      slots.push({ x: ox + i * CELL + CELL / 2, y: oy + BOARD_SIZE + 22 });
+      slots.push({ x: ox + i * CELL + CELL / 2, y: bottomY });
     }
     for (let i = slots.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
@@ -237,23 +248,42 @@ export function startThcokuGame(canvas, options = {}) {
     for (let i = 0; i < Math.min(unique.length, slots.length); i++) {
       const emoji = unique[i];
       const slot = slots[i];
-      // Soft circular backing so pins read on the lagoon
       ctx.beginPath();
-      ctx.arc(slot.x, slot.y, 18, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(255, 248, 220, 0.95)";
+      ctx.arc(slot.x, slot.y, PIN_RADIUS, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255, 248, 220, 0.98)";
       ctx.fill();
-      ctx.lineWidth = 2.5;
+      ctx.lineWidth = 3;
       ctx.strokeStyle = RGB.gold;
       ctx.stroke();
       ctx.beginPath();
-      ctx.arc(slot.x - 4, slot.y - 5, 5, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(255, 255, 255, 0.45)";
+      ctx.arc(slot.x - 5, slot.y - 6, 6, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
       ctx.fill();
-      ctx.font = "26px Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol, sans-serif";
+      ctx.font = "32px Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(emoji, slot.x, slot.y + 1);
     }
+  }
+
+  function drawHeader() {
+    ctx.fillStyle = RGB.panel;
+    roundRect(ctx, 20, 14, WIDTH - 40, 64, 14);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(245, 158, 11, 0.45)";
+    ctx.lineWidth = 2;
+    roundRect(ctx, 20, 14, WIDTH - 40, 64, 14);
+    ctx.stroke();
+
+    ctx.fillStyle = RGB.header;
+    ctx.font = "700 22px Fredoka, Segoe UI, sans-serif";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText("Thcoku", 36, 34);
+    ctx.font = "600 15px Fredoka, Segoe UI, Apple Color Emoji, Segoe UI Emoji, sans-serif";
+    ctx.fillText(headerTitleLine().slice(0, 48), 130, 34);
+    ctx.font = "500 14px Fredoka, Segoe UI, sans-serif";
+    ctx.fillText(String(state.status).slice(0, 42), 36, 58);
   }
 
   function getSnapshot() {
@@ -538,36 +568,36 @@ export function startThcokuGame(canvas, options = {}) {
   }
 
   function drawPineappleFrame(ox, oy) {
-    const pad = 16;
+    const pad = FRAME_PAD;
     const x = ox - pad;
     const y = oy - pad;
     const w = BOARD_SIZE + pad * 2;
     const h = BOARD_SIZE + pad * 2;
 
-    // Leaves
+    // Short crown — stays in the gap under the header (header is redrawn on top)
     const cx = x + w / 2;
     ctx.fillStyle = RGB.leafDark;
     for (const [dx, rot] of [
-      [-28, -0.45],
-      [-10, -0.15],
-      [10, 0.15],
-      [28, 0.45],
+      [-22, -0.4],
+      [-8, -0.12],
+      [8, 0.12],
+      [22, 0.4],
     ]) {
       ctx.save();
-      ctx.translate(cx + dx, y - 2);
+      ctx.translate(cx + dx, y + 2);
       ctx.rotate(rot);
       ctx.beginPath();
       ctx.moveTo(0, 0);
-      ctx.quadraticCurveTo(8, -28, 0, -52);
-      ctx.quadraticCurveTo(-8, -28, 0, 0);
+      ctx.quadraticCurveTo(6, -12, 0, -22);
+      ctx.quadraticCurveTo(-6, -12, 0, 0);
       ctx.fill();
       ctx.restore();
     }
     ctx.fillStyle = RGB.leaf;
     ctx.beginPath();
     ctx.moveTo(cx, y + 4);
-    ctx.quadraticCurveTo(cx + 10, y - 24, cx, y - 46);
-    ctx.quadraticCurveTo(cx - 10, y - 24, cx, y + 4);
+    ctx.quadraticCurveTo(cx + 7, y - 8, cx, y - 18);
+    ctx.quadraticCurveTo(cx - 7, y - 8, cx, y + 4);
     ctx.fill();
 
     // Gold shell
@@ -599,38 +629,19 @@ export function startThcokuGame(canvas, options = {}) {
     const now = Date.now();
     drawLagoon(now);
 
-    ctx.fillStyle = RGB.panel;
-    roundRect(ctx, 20, 14, WIDTH - 40, 64, 14);
-    ctx.fill();
-    ctx.strokeStyle = "rgba(245, 158, 11, 0.45)";
-    ctx.lineWidth = 2;
-    roundRect(ctx, 20, 14, WIDTH - 40, 64, 14);
-    ctx.stroke();
-
-    ctx.fillStyle = RGB.header;
-    ctx.font = "700 22px Fredoka, Segoe UI, sans-serif";
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-    ctx.fillText("Thcoku", 36, 34);
-    ctx.font = "600 15px Fredoka, Segoe UI, Apple Color Emoji, Segoe UI Emoji, sans-serif";
-    ctx.fillText(headerTitleLine().slice(0, 48), 130, 34);
-    ctx.font = "500 14px Fredoka, Segoe UI, sans-serif";
-    ctx.fillText(String(state.status).slice(0, 42), 36, 58);
-
     if (!state.board?.length || !state.given?.length) {
+      drawHeader();
       return;
     }
-
-    drawBorderPins();
 
     let shakeX = 0;
     if (now < state.shakeUntil) shakeX = Math.sin(now / 30) * 4;
 
-    const zoom = state.won ? state.winZoom : 1;
     if (state.won) {
       const age = (now - state.winAt) / 1000;
       state.winZoom = 1 + Math.max(0, 0.05 - age * 0.02);
     }
+    const zoom = state.won ? state.winZoom : 1;
 
     ctx.save();
     ctx.translate(shakeX + WIDTH / 2, HEIGHT / 2);
@@ -712,6 +723,11 @@ export function startThcokuGame(canvas, options = {}) {
       ctx.stroke();
     }
     ctx.restore();
+
+    // Pins after the board so badges sit on top of the frame (not behind it)
+    drawBorderPins();
+    // Header last so pineapple leaves never cover the title text
+    drawHeader();
 
     if (state.won) {
       const dt = 1 / 60;
