@@ -395,3 +395,7 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
     thread = threading.Thread(target=server.serve_forever, name="activity-http", daemon=True)
     thread.start()
     print(f"Unified HTTP listening on 0.0.0.0:{port} (/health, Activity, /api/*)")
+    print(
+        f"OAuth token exchange redirect_uri="
+        f"{(os.getenv('DISCORD_OAUTH_REDIRECT_URI') or 'https://127.0.0.1').strip()}"
+    )

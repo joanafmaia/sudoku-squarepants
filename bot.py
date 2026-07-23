@@ -4323,46 +4323,38 @@ class SudokuBot(commands.Bot):
 
         print("Slash tree: testboard uses autocomplete (no static pin choices).")
         self._log_slash_payload_limits()
-        # Sync to ONE place only — guild+global together causes duplicate /commands
-        # in Discord (and stale /play signatures → "This interaction failed").
+        # Prefer guild sync. Do NOT bulk-clear global commands: with Activities
+        # enabled, Discord keeps an Entry Point command that cannot be removed
+        # via bulk upsert [] (error 50240).
         if DISCORD_GUILD_ID:
             guild = discord.Object(id=DISCORD_GUILD_ID)
             self.tree.copy_global_to(guild=guild)
-            guild_ok = False
             try:
                 guild_synced = await self.tree.sync(guild=guild)
                 print(f"Synced {len(guild_synced)} slash command(s) to guild {DISCORD_GUILD_ID}.")
-                guild_ok = True
             except (app_commands.CommandSyncFailure, discord.Forbidden, discord.HTTPException) as exc:
-                # 50001 Missing Access = bot not in that guild, or wrong DISCORD_GUILD_ID
                 print(f"Guild command sync failed (continuing): {exc}")
                 print(
                     "Hint: confirma DISCORD_GUILD_ID e que o bot está nesse servidor "
                     "(re-convida com scope applications.commands)."
                 )
-            if guild_ok:
-                # Wipe globals so the main server only lists the guild copy once.
-                try:
-                    cleared = await self.http.bulk_upsert_global_commands(self.application_id, [])
-                    print(
-                        f"Cleared global slash commands to remove duplicates "
-                        f"(now {len(cleared or [])} global)."
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    print(f"Clear global commands failed: {exc}")
-            else:
-                # Fallback so /commands still exist while guild access is fixed.
                 try:
                     synced = await self.tree.sync()
                     print(f"Fallback: synced {len(synced)} global slash command(s).")
-                except (app_commands.CommandSyncFailure, discord.HTTPException) as exc:
-                    print(f"Global command sync failed (continuing): {exc}")
+                except (app_commands.CommandSyncFailure, discord.HTTPException) as exc2:
+                    print(f"Global command sync failed (continuing): {exc2}")
         else:
             try:
                 synced = await self.tree.sync()
                 print(f"Synced {len(synced)} global slash command(s).")
             except (app_commands.CommandSyncFailure, discord.HTTPException) as exc:
+                # 50240 = Entry Point command must stay when Activities are enabled
                 print(f"Global command sync failed (continuing): {exc}")
+                if getattr(exc, "code", None) == 50240:
+                    print(
+                        "Hint: define DISCORD_GUILD_ID para sync no servidor "
+                        "(Activities Entry Point bloqueia limpar comandos globais)."
+                    )
 
     def _log_slash_payload_limits(self) -> None:
         """Warn before Discord rejects option choice lists over 25."""
