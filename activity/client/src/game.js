@@ -193,7 +193,11 @@ export function startThcokuGame(canvas) {
       state.status = `Resolvido ${mm}:${ss}!`;
       spawnBubbles();
       if (typeof window.thcokuReportWin === "function") {
-        window.thcokuReportWin(state.difficulty, elapsed);
+        window.thcokuReportWin(state.difficulty, elapsed, {
+          board: state.board,
+          given: state.given,
+          solution: state.solution,
+        });
       }
     } else {
       state.status = digit ? `Ok · ${filledCount(state.board)}/81` : `Apagado · ${filledCount(state.board)}/81`;

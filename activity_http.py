@@ -276,11 +276,22 @@ def _collect_top_xp(data: dict, guild_id: str | None, limit: int) -> list[dict]:
 
 async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
     # Local imports avoid circular import at module load.
-    from bot import guild_stats, save_data, user_stats, win_reward
+    from bot import (
+        board_to_file,
+        equipped_title_id,
+        guild_stats,
+        owned_pin_emojis,
+        render_board,
+        save_data,
+        user_stats,
+        win_reward,
+        win_reward_caption,
+    )
 
     difficulty = body.get("difficulty") or "medium"
     elapsed = max(0, int(body.get("elapsed") or 0))
     guild_id = str(body.get("guild_id") if body.get("guild_id") is not None else "0")
+    channel_id_raw = body.get("channel_id")
     display_name = (
         body.get("name")
         or user.get("global_name")
@@ -289,7 +300,6 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
     )
     uid = int(user["id"])
 
-    # guild_stats expects int guild ids for Discord guilds; activity may use "0"
     try:
         gid_key = int(guild_id)
     except ValueError:
@@ -313,7 +323,46 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
     stats["last_activity_win_at"] = time.time()
 
     save_data(bot.data)
-    return {
+
+    posted = False
+    post_error = None
+    try:
+        board = _normalize_activity_board(body.get("board"))
+        given = _normalize_activity_given(body.get("given"), board)
+        if board and given and channel_id_raw:
+            channel_id = int(channel_id_raw)
+            channel = bot.get_channel(channel_id)
+            if channel is None:
+                try:
+                    channel = await bot.fetch_channel(channel_id)
+                except Exception as exc:  # noqa: BLE001
+                    post_error = f"fetch_channel: {exc}"
+                    channel = None
+            if channel is not None:
+                image = render_board(
+                    board,
+                    given,
+                    solution=None,
+                    conflicts=set(),
+                    difficulty=difficulty,
+                    title_id=equipped_title_id(stats),
+                    pin_emojis=owned_pin_emojis(stats),
+                    pin_seed=uid,
+                )
+                file = board_to_file(image)
+                mm, ss = divmod(elapsed, 60)
+                caption = (
+                    f"{win_reward_caption(coins, xp)}\n"
+                    f"**{display_name}** resolved Activity · "
+                    f"{difficulty} · {mm:02d}:{ss:02d}"
+                )
+                await channel.send(content=caption, file=file)
+                posted = True
+    except Exception as exc:  # noqa: BLE001
+        post_error = str(exc)
+        print(f"activity win chat post failed: {exc}")
+
+    result = {
         "ok": True,
         "coins": coins,
         "xp": xp,
@@ -325,7 +374,51 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
         "difficulty": difficulty,
         "guild_id": guild_id,
         "user_id": str(uid),
+        "posted": posted,
     }
+    if post_error and not posted:
+        result["post_error"] = post_error
+    return result
+
+
+def _normalize_activity_board(raw: Any) -> list[list[dict]] | None:
+    if not isinstance(raw, list) or len(raw) != 9:
+        return None
+    board: list[list[dict]] = []
+    for row in raw:
+        if not isinstance(row, list) or len(row) != 9:
+            return None
+        out_row: list[dict] = []
+        for cell in row:
+            if isinstance(cell, dict):
+                value = int(cell.get("value") or 0)
+                marks = cell.get("pencil_marks") or []
+                if not isinstance(marks, list):
+                    marks = []
+                out_row.append(
+                    {
+                        "value": value,
+                        "pencil_marks": [int(m) for m in marks if str(m).isdigit()],
+                    }
+                )
+            else:
+                out_row.append({"value": int(cell or 0), "pencil_marks": []})
+        board.append(out_row)
+    return board
+
+
+def _normalize_activity_given(raw: Any, board: list[list[dict]] | None) -> list[list[bool]] | None:
+    if board is None:
+        return None
+    if isinstance(raw, list) and len(raw) == 9:
+        given: list[list[bool]] = []
+        for r, row in enumerate(raw):
+            if not isinstance(row, list) or len(row) != 9:
+                return None
+            given.append([bool(row[c]) for c in range(9)])
+        return given
+    # Fallback: treat filled cells as given (solved board still looks fine).
+    return [[board[r][c]["value"] != 0 for c in range(9)] for r in range(9)]
 
 
 def start_unified_http_server(bot_getter: BotGetter) -> None:

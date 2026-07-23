@@ -97,22 +97,27 @@ function showWinToast(message) {
 }
 
 /** Called from the Canvas game after a solved board. */
-window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed) {
+window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boardPayload) {
   if (!window.__DISCORD_ACCESS_TOKEN__) {
     showWinToast("Vitória local (sem Discord auth — XP não gravado).");
     return null;
   }
   try {
+    const sdk = window.__DISCORD_SDK__;
     const res = await apiFetch("/api/activity/win", {
       method: "POST",
       body: JSON.stringify({
         difficulty,
         elapsed: Math.floor(Number(elapsed) || 0),
-        guild_id: window.__DISCORD_SDK__?.guildId ?? "0",
+        guild_id: sdk?.guildId ?? "0",
+        channel_id: sdk?.channelId ?? null,
         name:
           window.__DISCORD_AUTH__?.user?.global_name ||
           window.__DISCORD_AUTH__?.user?.username ||
           undefined,
+        board: boardPayload?.board ?? null,
+        given: boardPayload?.given ?? null,
+        solution: boardPayload?.solution ?? null,
       }),
     });
     const data = await res.json().catch(() => ({}));
@@ -120,10 +125,11 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed) {
       showWinToast(`Vitória OK, mas Mongo falhou (${data.error || res.status}).`);
       return null;
     }
+    const posted = data.posted ? " · foto no chat" : "";
     showWinToast(
       `+${data.xp} XP · +${data.coins} sponges · streak ${data.streak} · ${formatTime(
         elapsed
-      )}`
+      )}${posted}`
     );
     return data;
   } catch (err) {
