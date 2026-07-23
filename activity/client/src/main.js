@@ -108,6 +108,9 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
       onNewGame: () => {
         clearSavedSession();
       },
+      onBoardReady: () => {
+        saveSessionNow({ force: true });
+      },
       onProgress: () => {
         // Persist immediately so Discord "Exit" cannot race the async flush.
         saveSessionNow({ keepalive: false, force: true });
@@ -212,9 +215,15 @@ async function saveSessionNow({ keepalive = false, force = false, snap = null } 
 
 async function reportSessionActive() {
   if (!window.__DISCORD_ACCESS_TOKEN__ || !gameApi) return;
-  const snap = currentSessionSnap();
-  if (!snap) return;
-  await saveSessionNow({ force: true, snap });
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const snap = currentSessionSnap();
+    if (!snap) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      continue;
+    }
+    await saveSessionNow({ force: true, snap });
+    return;
+  }
 }
 
 function endWatchOnExit() {
@@ -329,18 +338,35 @@ function askResume(session) {
 
 async function beginPlay({ resumeSession = null } = {}) {
   sessionOpenedAt = Date.now();
-  const cosmetics = await loadCosmetics();
   if (resumeSession) {
-    startGameOnce(cosmetics, { autoStart: false });
+    startGameOnce(null, { autoStart: false });
     if (!gameApi?.loadSnapshot?.(resumeSession)) {
       gameApi?.newGame?.();
     }
   } else {
-    startGameOnce(cosmetics, { autoStart: true });
+    startGameOnce(null, { autoStart: true });
   }
-  if (cosmetics && gameApi?.setCosmetics) gameApi.setCosmetics(cosmetics);
   startAutosave();
   await reportSessionActive();
+  const cosmetics = await loadCosmetics();
+  if (cosmetics && gameApi?.setCosmetics) gameApi.setCosmetics(cosmetics);
+}
+
+async function prefetchSessionBoard(session) {
+  if (!session?.board || !session?.given || !session?.solution) return;
+  if (!window.__DISCORD_ACCESS_TOKEN__) return;
+  await saveSessionNow({
+    force: true,
+    snap: {
+      difficulty: session.difficulty || "medium",
+      diff_index: session.diff_index ?? 0,
+      elapsed: session.elapsed ?? 0,
+      board: session.board,
+      given: session.given,
+      solution: session.solution,
+      filled: session.filled ?? 0,
+    },
+  });
 }
 
 async function showGame() {
@@ -353,6 +379,7 @@ async function showGame() {
 
   const session = await loadSavedSession();
   if (session) {
+    await prefetchSessionBoard(session);
     const resume = await askResume(session);
     if (resume) {
       await beginPlay({ resumeSession: session });

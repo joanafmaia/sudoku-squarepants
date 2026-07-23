@@ -3194,7 +3194,7 @@ class ActivityPlayWatchView(discord.ui.View):
     async def _on_live(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         session: dict | None = None
-        for attempt in range(4):
+        for attempt in range(10):
             session = await match_store.get_activity_session(self.session_id)
             if not session:
                 await interaction.followup.send("This game has ended.", ephemeral=True)
@@ -3203,8 +3203,8 @@ class ActivityPlayWatchView(discord.ui.View):
             given = session.get("given")
             if board_raw and isinstance(given, list) and len(given) == 9:
                 break
-            if attempt < 3:
-                await asyncio.sleep(1.5)
+            if attempt < 9:
+                await asyncio.sleep(2.0)
         else:
             name = str((session or {}).get("name") or "Player")
             await interaction.followup.send(

@@ -415,6 +415,13 @@ export function startThcokuGame(canvas, options = {}) {
     state.status = user ? `Hey, ${user}! I'm ready!` : "Tap a cell — I'm ready!";
     syncControls();
     draw();
+    if (typeof options.onBoardReady === "function") {
+      try {
+        options.onBoardReady();
+      } catch (err) {
+        console.warn("[Thcoku] onBoardReady", err);
+      }
+    }
   }
 
   function place(digit) {
@@ -875,6 +882,13 @@ export function startThcokuGame(canvas, options = {}) {
 
   if (options.autoStart !== false) {
     newGame();
+    if (typeof options.onBoardReady === "function") {
+      try {
+        options.onBoardReady();
+      } catch (err) {
+        console.warn("[Thcoku] onBoardReady", err);
+      }
+    }
   } else {
     state.status = "Loading…";
     draw();
