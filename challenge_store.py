@@ -88,8 +88,13 @@ class MatchStore:
     async def delete_activity_session(self, session_id: str) -> None:
         raise NotImplementedError
 
+    async def update_activity_session(self, session_id: str, fields: dict) -> dict | None:
+        raise NotImplementedError
 
-class MemoryMatchStore(MatchStore):
+    async def list_activity_sessions(
+        self, guild_id: int, *, max_age_sec: int = 180
+    ) -> list[dict]:
+        raise NotImplementedError
     def __init__(self) -> None:
         self._docs: dict[str, dict] = {}
         self._daily: dict[str, dict] = {}
@@ -156,6 +161,29 @@ class MemoryMatchStore(MatchStore):
 
     async def delete_activity_session(self, session_id: str) -> None:
         self._activity.pop(session_id, None)
+
+    async def update_activity_session(self, session_id: str, fields: dict) -> dict | None:
+        doc = self._activity.get(session_id)
+        if not doc:
+            return None
+        doc.update(fields)
+        return _clone(doc)
+
+    async def list_activity_sessions(
+        self, guild_id: int, *, max_age_sec: int = 180
+    ) -> list[dict]:
+        cutoff = time.time() - max_age_sec
+        gid = str(guild_id)
+        out: list[dict] = []
+        for doc in self._activity.values():
+            if str(doc.get("guild_id")) != gid:
+                continue
+            updated = float(doc.get("updated_at") or doc.get("last_move_at") or 0)
+            if updated < cutoff:
+                continue
+            out.append(_clone(doc))
+        out.sort(key=lambda d: float(d.get("last_move_at") or d.get("updated_at") or 0), reverse=True)
+        return out
 
     def _daily_key(self, guild_id: int, user_id: int, day: str) -> str:
         return f"{guild_id}:{day}:{user_id}"
@@ -296,6 +324,32 @@ class MongoMatchStore(MatchStore):
         if self._activity is None:
             await self.connect()
         await self._activity.delete_one({"_id": session_id})
+
+    async def update_activity_session(self, session_id: str, fields: dict) -> dict | None:
+        if self._activity is None:
+            await self.connect()
+        await self._activity.update_one({"_id": session_id}, {"$set": fields})
+        return await self.get_activity_session(session_id)
+
+    async def list_activity_sessions(
+        self, guild_id: int, *, max_age_sec: int = 180
+    ) -> list[dict]:
+        if self._activity is None:
+            await self.connect()
+        cutoff = time.time() - max_age_sec
+        gid = str(guild_id)
+        cursor = self._activity.find(
+            {
+                "guild_id": gid,
+                "updated_at": {"$gte": cutoff},
+            }
+        )
+        docs = await cursor.to_list(length=50)
+        docs.sort(
+            key=lambda d: float(d.get("last_move_at") or d.get("updated_at") or 0),
+            reverse=True,
+        )
+        return docs
 
     async def try_claim_daily_win(
         self,

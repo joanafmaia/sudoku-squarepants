@@ -39,12 +39,25 @@ function localSessionKey() {
   return `thcoku_session_v1:${guildId()}:${userId()}`;
 }
 
+function channelId() {
+  return window.__DISCORD_SDK__?.channelId || null;
+}
+
 function playerName() {
   return (
     window.__DISCORD_AUTH__?.user?.global_name ||
     window.__DISCORD_AUTH__?.user?.username ||
     undefined
   );
+}
+
+function sessionPayload(snap) {
+  return {
+    ...snap,
+    guild_id: guildId(),
+    channel_id: channelId(),
+    name: playerName(),
+  };
 }
 
 function writeLocalSession(snap) {
@@ -179,11 +192,7 @@ async function saveSessionNow({ keepalive = false, force = false } = {}) {
   try {
     await apiFetch("/api/activity/session", {
       method: "POST",
-      body: JSON.stringify({
-        ...snap,
-        guild_id: guildId(),
-        name: playerName(),
-      }),
+      body: JSON.stringify(sessionPayload(snap)),
       keepalive,
     });
   } catch (err) {
@@ -201,11 +210,7 @@ function flushSessionOnExit() {
   if (!snap) return;
   writeLocalSession(snap);
   if (!window.__DISCORD_ACCESS_TOKEN__) return;
-  const body = JSON.stringify({
-    ...snap,
-    guild_id: guildId(),
-    name: playerName(),
-  });
+  const body = JSON.stringify(sessionPayload(snap));
   // Fire-and-forget; do not await (page is dying).
   for (const url of apiUrlCandidates("/api/activity/session")) {
     try {

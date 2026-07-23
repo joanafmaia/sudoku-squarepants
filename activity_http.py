@@ -300,6 +300,8 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
     )
     uid = int(user["id"])
 
+    channel_id_for_panel = str(channel_id_raw) if channel_id_raw else None
+
     try:
         gid_key = int(guild_id)
     except ValueError:
@@ -369,6 +371,14 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
     except Exception as exc:  # noqa: BLE001
         print(f"activity session clear on win failed: {exc}")
 
+    if channel_id_for_panel:
+        try:
+            from bot import schedule_activity_live_update
+
+            schedule_activity_live_update(guild_id, str(uid), immediate=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"activity live panel clear failed: {exc}")
+
     result = {
         "ok": True,
         "coins": coins,
@@ -411,6 +421,7 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
     difficulty = body.get("difficulty") or "medium"
     diff_index = int(body.get("diff_index") or 0)
     elapsed = max(0, int(body.get("elapsed") or 0))
+    channel_id_raw = body.get("channel_id")
     filled = sum(1 for r in range(9) for c in range(9) if board[r][c]["value"])
     # Don't keep fully solved boards as "continue"
     if filled >= 81:
@@ -432,8 +443,16 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         or user.get("global_name")
         or user.get("username")
         or "Unknown",
+        "channel_id": str(channel_id_raw) if channel_id_raw else None,
+        "last_move_at": time.time(),
     }
     await match_store.upsert_activity_session(doc)
+    try:
+        from bot import schedule_activity_live_update
+
+        schedule_activity_live_update(guild_id, str(uid))
+    except Exception as exc:  # noqa: BLE001
+        print(f"activity live panel schedule failed: {exc}")
     return {"ok": True, "filled": filled, "elapsed": elapsed}
 
 
