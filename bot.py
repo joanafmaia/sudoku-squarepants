@@ -4331,6 +4331,8 @@ class SudokuBot(commands.Bot):
             try:
                 guild_synced = await self.tree.sync(guild=guild)
                 print(f"Synced {len(guild_synced)} slash command(s) to guild {DISCORD_GUILD_ID}.")
+                # Remove global slash duplicates; keep only Activity Entry Point.
+                await self._clear_global_slash_keep_entrypoint()
             except (app_commands.CommandSyncFailure, discord.Forbidden, discord.HTTPException) as exc:
                 print(f"Guild command sync failed (continuing): {exc}")
                 print(
@@ -4340,6 +4342,27 @@ class SudokuBot(commands.Bot):
                 await self._sync_globals_preserving_entrypoint()
         else:
             await self._sync_globals_preserving_entrypoint()
+
+    async def _clear_global_slash_keep_entrypoint(self) -> None:
+        """Delete global CHAT_INPUT commands so guild copies aren't duplicated."""
+        try:
+            existing = await self.http.get_global_commands(self.application_id)
+        except discord.HTTPException as exc:
+            print(f"List global commands failed: {exc}")
+            return
+        removed = 0
+        for cmd in existing:
+            if int(cmd.get("type") or 0) == 4:
+                continue  # keep Activity Entry Point / Launch
+            cmd_id = cmd.get("id")
+            if not cmd_id:
+                continue
+            try:
+                await self.http.delete_global_command(self.application_id, int(cmd_id))
+                removed += 1
+            except discord.HTTPException as exc:
+                print(f"Delete global /{cmd.get('name')} failed: {exc}")
+        print(f"Removed {removed} global slash command(s); Entry Point kept.")
 
     async def _sync_globals_preserving_entrypoint(self) -> None:
         """Bulk-upsert slash commands without deleting the Activity Entry Point."""
