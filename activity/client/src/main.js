@@ -91,10 +91,14 @@ function showWinToast(message) {
   if (!winToastEl) return;
   winToastEl.hidden = false;
   winToastEl.textContent = message;
+  // retrigger CSS animation
+  winToastEl.style.animation = "none";
+  void winToastEl.offsetWidth;
+  winToastEl.style.animation = "";
   clearTimeout(showWinToast._t);
   showWinToast._t = setTimeout(() => {
     winToastEl.hidden = true;
-  }, 6000);
+  }, 6500);
 }
 
 /** Called from PyScript/Pygame after a solved board. */
