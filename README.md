@@ -19,7 +19,7 @@ Free tip: keep the service awake with **UptimeRobot** → `https://YOUR-SERVICE.
 
 ## Features
 
-- **`/play`** — opens the Discord Activity window (like Wordle); classic board → `/classic`
+- **`/play`** — opens the Discord Activity window (like Wordle)
 - **`/daily`** · **`/challenge`** · **`/shop`** · **`/leaderboard`** · **`/stats`**
 - Activity wins write XP/sponges to the same Mongo leaderboard as the bot
 - HTTP `/health` for Render + UptimeRobot
@@ -67,6 +67,8 @@ One **Docker** Web Service builds the Activity and runs the bot.
      - `/api` → `YOUR-SERVICE.onrender.com`
      - (opcional) `/pyscript` / `/jsdelivr` — já não são necessários; o jogo é Canvas JS
    - **Activities → Settings** → Enable Activities
+   - **Activities → Settings → Supported Platforms** → ativa **Desktop**, **iOS** e **Android**
+     (sem isto, no telemóvel aparece “não disponível para este SO”)
 7. Suspend **Netlify** and **Fly** when Render is stable (one token / one host).
 
 If you already created a **Python** service, change it to **Docker** (or recreate from Blueprint) so the Activity build runs.
@@ -91,4 +93,4 @@ Never commit `.env`.
 
 ## Commands
 
-`/help` · `/play` · `/thcoku` · `/classic` · `/daily` · `/challenge` · `/shop` · `/quit` · `/leaderboard` · `/stats` · `/testboard`
+`/help` · `/play` · `/daily` · `/challenge` · `/shop` · `/quit` · `/leaderboard` · `/stats` · `/testboard`

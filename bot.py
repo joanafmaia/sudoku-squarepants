@@ -4745,14 +4745,6 @@ async def play_cmd(interaction: discord.Interaction):
     await _launch_activity_window(interaction)
 
 
-@bot.tree.command(
-    name="thcoku",
-    description="Open the Thcoku game window (same as /play)",
-)
-async def thcoku_cmd(interaction: discord.Interaction):
-    await _launch_activity_window(interaction)
-
-
 @bot.tree.command(name="help", description="I'm ready! How to play Bikini Bottom Sudoku")
 async def help_cmd(interaction: discord.Interaction):
     tiers = " · ".join(
@@ -4768,22 +4760,20 @@ async def help_cmd(interaction: discord.Interaction):
     embed.add_field(
         name=f"{BUBBLE} Play",
         value=(
-            "`/play` — **opens the game window** (Activity, like Wordle)\n"
-            "`/thcoku` — same as `/play`\n"
-            "`/classic` — old chat board (image + buttons)\n"
+            "`/play` — **opens the game window** (Activity)\n"
             "`/daily` — one pineapple puzzle a day\n"
             "`/challenge` — race your pals on private boards"
         ),
         inline=False,
     )
-    embed.add_field(name="① Box", value="Arrow pad → pick a 3×3", inline=True)
-    embed.add_field(name="② Cell", value="Choose a square", inline=True)
-    embed.add_field(name="③ Number", value="1–9 · tap again to erase", inline=True)
+    embed.add_field(name="① Cell", value="Tap a square on the board", inline=True)
+    embed.add_field(name="② Number", value="1–9 on the pad", inline=True)
+    embed.add_field(name="③ Clear", value="Apagar · Notes = Lápis", inline=True)
     embed.add_field(
         name=f"{JELLY} Rules",
         value=(
             "Red cells = clash in row / column / box.\n"
-            "**Notes** = doodle candidates · **Quit** leaves the board."
+            "**Lápis** = notes · solve to earn XP in chat."
         ),
         inline=False,
     )
@@ -4812,75 +4802,6 @@ async def help_cmd(interaction: discord.Interaction):
         inline=False,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(
-    name="classic",
-    description="Classic chat Sudoku (image + buttons in Discord)",
-)
-@app_commands.describe(difficulty="Puzzle difficulty")
-@app_commands.choices(difficulty=DIFFICULTY_CHOICES)
-async def classic_cmd(
-    interaction: discord.Interaction,
-    difficulty: app_commands.Choice[str] | None = None,
-):
-    if interaction.guild is None:
-        await interaction.response.send_message("Server only.", ephemeral=True)
-        return
-
-    guild_id, user_id = interaction.guild.id, interaction.user.id
-    if find_challenge_game_for_user(user_id):
-        await interaction.response.send_message(
-            "Finish your speedrun challenge first.",
-            ephemeral=True,
-        )
-        return
-    sk = solo_key(guild_id, user_id)
-    if sk in games:
-        existing = games[sk]
-        if is_solved(existing.get("board") or [], existing.get("solution")):
-            # Defer before slow award so the interaction doesn't expire
-            await interaction.response.defer()
-            await close_solved_session(bot, sk, existing, interaction.user, guild_id)
-            # Fall through and start a fresh game
-        else:
-            await interaction.response.send_message(
-                f"You already have a **{existing['mode']}** game. Use **Quit** or `/quit`.",
-                ephemeral=True,
-            )
-            return
-
-    diff_key = difficulty.value if difficulty else DEFAULT_DIFFICULTY
-    board, given, solution = make_puzzle(diff_key)
-    gstats = guild_stats(bot.data, guild_id)
-    stats = user_stats(gstats, user_id)
-    games[sk] = new_game_state(
-        mode="solo",
-        board=board,
-        given=given,
-        solution=solution,
-        owner_id=user_id,
-        owner_name=interaction.user.display_name,
-        owner_title=equipped_title_id(stats),
-        channel_id=interaction.channel_id,
-        guild_id=guild_id,
-        difficulty=diff_key,
-        pin_emojis=owned_pin_emojis(stats),
-    )
-    try:
-        await start_panel(interaction, sk, games[sk])
-    except Exception:
-        await remove_game(sk)
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                "Couldn't start the board. Try again.",
-                ephemeral=True,
-            )
-        else:
-            await interaction.followup.send(
-                "Couldn't start the board. Try again.",
-                ephemeral=True,
-            )
 
 
 @bot.tree.command(
