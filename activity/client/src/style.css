@@ -71,10 +71,13 @@ body {
 #canvas {
   display: block;
   max-width: min(100vw - 16px, 720px);
+  max-height: min(92vh, 980px);
+  width: auto;
   height: auto;
   border-radius: 16px;
   box-shadow: 0 12px 40px rgba(15, 118, 110, 0.25);
   background: var(--sand);
+  touch-action: none;
 }
 
 #sidebar {

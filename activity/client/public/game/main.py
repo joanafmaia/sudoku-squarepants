@@ -1,4 +1,7 @@
-"""Thcoku — Sudoku playable in the browser via PyScript + Pygame-CE."""
+"""Thcoku — Sudoku playable in the browser via PyScript + Pygame-CE.
+
+Touch-first: tap a cell, then tap a number on the on-screen pad.
+"""
 
 from __future__ import annotations
 
@@ -38,12 +41,18 @@ RGB_PENCIL = (100, 116, 139)
 RGB_HEADER = (15, 118, 110)
 RGB_UI = (245, 158, 11)
 RGB_PANEL = (255, 248, 220)
+RGB_PAD = (255, 251, 235)
 
-WIDTH, HEIGHT = 720, 820
-BOARD_ORIGIN = (40, 110)
+WIDTH, HEIGHT = 720, 980
+BOARD_ORIGIN = (48, 100)
 CELL = 68
 BOARD_SIZE = CELL * 9
 DIFF_KEYS = list(DIFFICULTY_TIERS.keys())
+
+# On-screen number pad (touch targets)
+PAD_KEY = 72
+PAD_GAP = 10
+PAD_ORIGIN_Y = 740
 
 
 def discord_username() -> str:
@@ -73,11 +82,13 @@ class ThcokuGame:
             self.font_md = pygame.font.Font("fonts/Fredoka-Variable.ttf", 28)
             self.font_sm = pygame.font.Font("fonts/Fredoka-Variable.ttf", 18)
             self.font_xs = pygame.font.Font("fonts/Fredoka-Variable.ttf", 14)
+            self.font_pad = pygame.font.Font("fonts/Fredoka-Variable.ttf", 32)
         except Exception:
             self.font_lg = pygame.font.SysFont("arial", 36, bold=True)
             self.font_md = pygame.font.SysFont("arial", 28, bold=True)
             self.font_sm = pygame.font.SysFont("arial", 18)
             self.font_xs = pygame.font.SysFont("arial", 14)
+            self.font_pad = pygame.font.SysFont("arial", 32, bold=True)
 
         self.diff_index = DIFF_KEYS.index(DEFAULT_DIFFICULTY)
         self.selected = (0, 0)
@@ -88,14 +99,34 @@ class ThcokuGame:
         self.board = []
         self.given = []
         self.solution = []
-        self.new_game()
 
+        pad_w = 3 * PAD_KEY + 2 * PAD_GAP
+        pad_x = (WIDTH - pad_w) // 2
+        self.pad_keys: dict[int | str, pygame.Rect] = {}
+        for n in range(1, 10):
+            row, col = (n - 1) // 3, (n - 1) % 3
+            self.pad_keys[n] = pygame.Rect(
+                pad_x + col * (PAD_KEY + PAD_GAP),
+                PAD_ORIGIN_Y + row * (PAD_KEY + PAD_GAP),
+                PAD_KEY,
+                PAD_KEY,
+            )
+        # Clear sits under the pad, centered
+        self.pad_keys["clear"] = pygame.Rect(
+            pad_x,
+            PAD_ORIGIN_Y + 3 * (PAD_KEY + PAD_GAP),
+            pad_w,
+            48,
+        )
+
+        action_y = self.pad_keys["clear"].bottom + 14
         self.buttons = {
-            "new": pygame.Rect(40, 740, 140, 44),
-            "diff": pygame.Rect(200, 740, 180, 44),
-            "pencil": pygame.Rect(400, 740, 140, 44),
-            "clear": pygame.Rect(560, 740, 120, 44),
+            "new": pygame.Rect(40, action_y, 140, 44),
+            "diff": pygame.Rect(200, action_y, 200, 44),
+            "pencil": pygame.Rect(420, action_y, 140, 44),
         }
+
+        self.new_game()
 
     def new_game(self) -> None:
         key = DIFF_KEYS[self.diff_index]
@@ -109,7 +140,7 @@ class ThcokuGame:
         self.pencil_mode = False
         user = discord_username()
         hello = f"Olá, {user}! " if user else ""
-        self.status = f"{hello}{difficulty_label(key)} — clica numa célula"
+        self.status = f"{hello}Toca numa célula, depois num número"
 
     def cell_at(self, pos: tuple[int, int]) -> tuple[int, int] | None:
         x, y = pos
@@ -152,11 +183,23 @@ class ThcokuGame:
         except Exception:
             pass
 
-    def handle_click(self, pos: tuple[int, int]) -> None:
+    def handle_pointer(self, pos: tuple[int, int]) -> None:
+        """Unified mouse / touch handler."""
         cell = self.cell_at(pos)
         if cell is not None:
             self.selected = cell
+            self.status = "Célula escolhida — toca num número"
             return
+
+        for key, rect in self.pad_keys.items():
+            if not rect.collidepoint(pos):
+                continue
+            if key == "clear":
+                self.place(0)
+            else:
+                self.place(int(key))
+            return
+
         for name, rect in self.buttons.items():
             if not rect.collidepoint(pos):
                 continue
@@ -168,8 +211,6 @@ class ThcokuGame:
             elif name == "pencil":
                 self.pencil_mode = not self.pencil_mode
                 self.status = "Modo lápis ON" if self.pencil_mode else "Modo lápis OFF"
-            elif name == "clear":
-                self.place(0)
             return
 
     def handle_key(self, key: int) -> None:
@@ -196,18 +237,25 @@ class ThcokuGame:
 
     def draw_button(self, rect: pygame.Rect, label: str, active: bool = False) -> None:
         color = RGB_SELECT if active else RGB_UI
-        pygame.draw.rect(self.screen, color, rect, border_radius=10)
-        pygame.draw.rect(self.screen, RGB_HEADER, rect, 2, border_radius=10)
+        pygame.draw.rect(self.screen, color, rect, border_radius=12)
+        pygame.draw.rect(self.screen, RGB_HEADER, rect, 2, border_radius=12)
         text = self.font_sm.render(label, True, RGB_HEADER)
+        self.screen.blit(text, text.get_rect(center=rect.center))
+
+    def draw_pad_key(self, rect: pygame.Rect, label: str, *, wide: bool = False) -> None:
+        pygame.draw.rect(self.screen, RGB_PAD, rect, border_radius=14)
+        pygame.draw.rect(self.screen, RGB_HEADER, rect, 3, border_radius=14)
+        font = self.font_sm if wide else self.font_pad
+        text = font.render(label, True, RGB_HEADER)
         self.screen.blit(text, text.get_rect(center=rect.center))
 
     def draw(self) -> None:
         self.screen.fill(RGB_BG)
-        pygame.draw.rect(self.screen, RGB_PANEL, (20, 20, WIDTH - 40, 70), border_radius=16)
+        pygame.draw.rect(self.screen, RGB_PANEL, (20, 16, WIDTH - 40, 64), border_radius=16)
         title = self.font_lg.render("Thcoku", True, RGB_HEADER)
-        self.screen.blit(title, (40, 32))
-        status = self.font_sm.render(self.status, True, RGB_HEADER)
-        self.screen.blit(status, (200, 42))
+        self.screen.blit(title, (36, 24))
+        status = self.font_sm.render(self.status[:48], True, RGB_HEADER)
+        self.screen.blit(status, (180, 34))
 
         conflicts = find_conflicts(self.board) if self.board else set()
         sr, sc = self.selected
@@ -270,24 +318,34 @@ class ThcokuGame:
                 self.screen, color, (ox + i * CELL, oy), (ox + i * CELL, oy + BOARD_SIZE), width
             )
 
+        hint = self.font_xs.render(
+            "Toca célula → toca número  ·  teclado 1-9 também funciona",
+            True,
+            RGB_HEADER,
+        )
+        self.screen.blit(hint, (40, 710))
+
+        for n in range(1, 10):
+            self.draw_pad_key(self.pad_keys[n], str(n))
+        self.draw_pad_key(self.pad_keys["clear"], "Apagar", wide=True)
+
         self.draw_button(self.buttons["new"], "Novo")
         self.draw_button(
             self.buttons["diff"], difficulty_label(DIFF_KEYS[self.diff_index])
         )
         self.draw_button(self.buttons["pencil"], "Lápis", active=self.pencil_mode)
-        self.draw_button(self.buttons["clear"], "Apagar")
-
-        hint = self.font_xs.render(
-            "Setas / WASD · 1-9 · P lápis · N novo", True, RGB_HEADER
-        )
-        self.screen.blit(hint, (40, 700))
 
     def handle_events(self) -> bool:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return False
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                self.handle_click(event.pos)
+                self.handle_pointer(event.pos)
+            elif event.type == getattr(pygame, "FINGERDOWN", -1):
+                # Browser / mobile touch → normalized 0–1 coords
+                px = int(event.x * WIDTH)
+                py = int(event.y * HEIGHT)
+                self.handle_pointer((px, py))
             elif event.type == pygame.KEYDOWN:
                 self.handle_key(event.key)
         return True
