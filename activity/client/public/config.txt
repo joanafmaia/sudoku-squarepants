@@ -1,0 +1,4 @@
+{
+  "interpreter": "/jsdelivr/pyodide/v0.27.7/full/pyodide.mjs",
+  "packages": ["pygame-ce"]
+}

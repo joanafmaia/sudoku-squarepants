@@ -23,16 +23,15 @@ function setStatus(message) {
 
 function showGame() {
   if (bootEl) bootEl.hidden = true;
-  // If PyGame never paints, surface a hint after a while.
+  // First Pyodide download can take a minute; only warn after that.
   window.setTimeout(() => {
     const canvas = document.getElementById("canvas");
     if (!canvas || !gameHintEl) return;
-    // PyGame usually resizes/draws; if hint still visible, runtime failed to boot.
     if (!gameHintEl.hidden && canvas.width > 0) {
       gameHintEl.textContent =
-        "Sudoku ainda a carregar… Confirma no Portal: /pyscript → pyscript.net e /jsdelivr → cdn.jsdelivr.net, depois reinicia o Discord.";
+        "Sudoku ainda a carregar… Confirma /jsdelivr → cdn.jsdelivr.net no Portal e reinicia o Discord. Se já estiver certo, espera mais um pouco (1.ª vez).";
     }
-  }, 20000);
+  }, 60000);
 }
 
 // Hide hint only after pygame has actually painted (opaque non-black pixels).

@@ -1,3 +1,8 @@
+# Relative interpreter URL so Discord CSP/URL mappings can load Pyodide
+# (absolute cdn.jsdelivr.net imports are blocked; patchUrlMappings does not cover import()).
+interpreter = "/jsdelivr/pyodide/v0.27.7/full/pyodide.mjs"
+packages = ["pygame-ce"]
+
 # Paths are fetched by the browser and mounted into the Pyodide filesystem.
 [files]
 "sudoku_core.py" = "/game/sudoku_core.py"
