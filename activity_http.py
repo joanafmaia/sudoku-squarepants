@@ -366,8 +366,9 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
 
     try:
         from challenge_store import match_store
+        from bot import clear_activity_session
 
-        await match_store.delete_activity_session(_activity_session_id(guild_id, uid))
+        await clear_activity_session(bot, _activity_session_id(guild_id, uid))
     except Exception as exc:  # noqa: BLE001
         print(f"activity session clear on win failed: {exc}")
 
@@ -415,12 +416,17 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
     elapsed = max(0, int(body.get("elapsed") or 0))
     channel_id_raw = body.get("channel_id")
     filled = sum(1 for r in range(9) for c in range(9) if board[r][c]["value"])
+    session_id = _activity_session_id(guild_id, uid)
     # Don't keep fully solved boards as "continue"
     if filled >= 81:
-        await match_store.delete_activity_session(_activity_session_id(guild_id, uid))
+        try:
+            from bot import clear_activity_session
+
+            await clear_activity_session(bot, session_id)
+        except Exception as exc:  # noqa: BLE001
+            print(f"activity session clear on solve failed: {exc}")
         return {"ok": True, "cleared": True}
 
-    session_id = _activity_session_id(guild_id, uid)
     existing = await match_store.get_activity_session(session_id)
     already_notified = bool(existing and existing.get("watch_notified"))
 
@@ -441,8 +447,11 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         or "Unknown",
         "channel_id": str(channel_id_raw) if channel_id_raw else None,
         "last_move_at": time.time(),
-        "watch_notified": True,
     }
+    if existing:
+        for key in ("watch_notified", "watch_message_id", "watch_channel_id"):
+            if existing.get(key) is not None:
+                doc[key] = existing[key]
     await match_store.upsert_activity_session(doc)
     if not already_notified:
         try:
@@ -477,10 +486,10 @@ async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict
 
 
 async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict:
-    from challenge_store import match_store
+    from bot import clear_activity_session
 
     uid = int(user["id"])
-    await match_store.delete_activity_session(_activity_session_id(guild_id, uid))
+    await clear_activity_session(bot, _activity_session_id(guild_id, uid))
     return {"ok": True, "cleared": True}
 
 

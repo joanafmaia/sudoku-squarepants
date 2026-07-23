@@ -242,6 +242,7 @@ games: dict = {}
 pending_challenges: dict[int, dict] = {}  # invite message_id → meta
 challenge_cooldowns: dict[int, float] = {}  # user_id → last /challenge timestamp
 _challenge_live_tasks: dict[str, asyncio.Task] = {}
+_activity_notify_inflight: set[str] = set()
 WATCH_ACTIVE_SEC = 45
 CHALLENGE_LIVE_DEBOUNCE_SEC = 4.0
 ACTIVITY_WATCH_MAX_AGE_SEC = 180
@@ -2934,29 +2935,74 @@ async def notify_activity_play_started(bot_ref: "SudokuBot", session_id: str) ->
     """Post a one-time watch invite when someone starts /play (no live updates)."""
     if not ACTIVITY_WATCH_CHANNEL_ID:
         return
+    if session_id in _activity_notify_inflight:
+        return
+
     session = await match_store.get_activity_session(session_id)
-    if not session:
+    if not session or session.get("watch_notified"):
         return
 
-    channel = await resolve_channel(bot_ref, ACTIVITY_WATCH_CHANNEL_ID)
-    if channel is None:
-        print(f"activity watch channel {ACTIVITY_WATCH_CHANNEL_ID} not found")
-        return
-
-    guild_id = int(session.get("guild_id") or 0)
-    guild = bot_ref.get_guild(guild_id)
-    mention = activity_session_mention(guild, session)
-    view = ActivityPlayWatchView(session_id, bot_ref)
-
+    _activity_notify_inflight.add(session_id)
     try:
+        session = await match_store.get_activity_session(session_id)
+        if not session or session.get("watch_notified"):
+            return
+
+        channel = await resolve_channel(bot_ref, ACTIVITY_WATCH_CHANNEL_ID)
+        if channel is None:
+            print(f"activity watch channel {ACTIVITY_WATCH_CHANNEL_ID} not found")
+            return
+
+        guild_id = int(session.get("guild_id") or 0)
+        guild = bot_ref.get_guild(guild_id)
+        mention = activity_session_mention(guild, session)
+        view = ActivityPlayWatchView(session_id, bot_ref)
+
         msg = await channel.send(
             content=f"{mention} is playing — you can watch here.",
             view=view,
         )
         view.message = msg
         bot_ref.add_view(view)
+        await match_store.update_activity_session(
+            session_id,
+            {
+                "watch_notified": True,
+                "watch_message_id": msg.id,
+                "watch_channel_id": str(ACTIVITY_WATCH_CHANNEL_ID),
+            },
+        )
     except discord.HTTPException as exc:
         print(f"notify_activity_play_started failed for {session_id}: {exc}")
+    finally:
+        _activity_notify_inflight.discard(session_id)
+
+
+async def delete_activity_watch_message(
+    bot_ref: "SudokuBot",
+    session: dict,
+) -> None:
+    """Remove the channel watch announcement when the /play session ends."""
+    raw_msg = session.get("watch_message_id")
+    if not raw_msg:
+        return
+    channel_id = session.get("watch_channel_id") or ACTIVITY_WATCH_CHANNEL_ID
+    channel = await resolve_channel(bot_ref, int(channel_id))
+    if channel is None:
+        return
+    try:
+        msg = await channel.fetch_message(int(raw_msg))
+        await msg.delete()
+    except discord.HTTPException as exc:
+        print(f"delete_activity_watch_message failed: {exc}")
+
+
+async def clear_activity_session(bot_ref: "SudokuBot", session_id: str) -> None:
+    """Delete watch announcement (if any) and drop the persisted session."""
+    session = await match_store.get_activity_session(session_id)
+    if session:
+        await delete_activity_watch_message(bot_ref, session)
+    await match_store.delete_activity_session(session_id)
 
 
 def schedule_activity_play_notify(session_id: str) -> None:
