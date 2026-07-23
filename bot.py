@@ -1695,6 +1695,34 @@ def win_reward_caption(coins: int, xp: int | None = None) -> str:
     )
 
 
+def build_activity_win_embed(
+    *,
+    user_id: int,
+    difficulty: str,
+    elapsed: int,
+    coins: int,
+    xp: int,
+    streak: int,
+) -> discord.Embed:
+    """Channel announcement when someone clears an Activity (/play) puzzle."""
+    mention = f"<@{user_id}>"
+    tier = difficulty_label(difficulty)
+    embed = paper_embed(f"{SPONGE} /play — puzzle solved!")
+    embed.description = (
+        f"{WAVE} {mention} cleared the board!\n"
+        f"{random.choice(WIN_TAUNTS)}"
+    )
+    embed.add_field(name="Difficulty", value=f"**{tier}**", inline=True)
+    embed.add_field(name="Time", value=f"**{format_time(elapsed)}**", inline=True)
+    embed.add_field(name="Streak", value=f"{STAR} **{streak}**", inline=True)
+    embed.add_field(
+        name="Reward",
+        value=f"{format_xp(xp, signed=True)} · {format_sponges(coins, signed=True)}",
+        inline=False,
+    )
+    return embed
+
+
 def board_to_file(image: BytesIO) -> discord.File:
     """Standalone PNG attachment (full Discord image size — not embed thumbnail)."""
     image.seek(0)

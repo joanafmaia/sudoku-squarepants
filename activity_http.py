@@ -278,6 +278,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
     # Local imports avoid circular import at module load.
     from bot import (
         board_to_file,
+        build_activity_win_embed,
         equipped_title_id,
         guild_stats,
         owned_pin_emojis,
@@ -285,7 +286,6 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
         save_data,
         user_stats,
         win_reward,
-        win_reward_caption,
     )
 
     difficulty = body.get("difficulty") or "medium"
@@ -350,13 +350,15 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                     pin_seed=uid,
                 )
                 file = board_to_file(image)
-                mm, ss = divmod(elapsed, 60)
-                caption = (
-                    f"{win_reward_caption(coins, xp)}\n"
-                    f"**{display_name}** resolved Activity · "
-                    f"{difficulty} · {mm:02d}:{ss:02d}"
+                embed = build_activity_win_embed(
+                    user_id=uid,
+                    difficulty=difficulty,
+                    elapsed=elapsed,
+                    coins=coins,
+                    xp=xp,
+                    streak=int(stats["streak"]),
                 )
-                await channel.send(content=caption, file=file)
+                await channel.send(embed=embed, file=file)
                 posted = True
     except Exception as exc:  # noqa: BLE001
         post_error = str(exc)
