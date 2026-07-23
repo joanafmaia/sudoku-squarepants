@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="pt">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Thcoku — Discord Activity</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <link
+      rel="stylesheet"
+      href="https://pyscript.net/releases/2026.7.2/core.css"
+    />
+    <script
+      type="module"
+      src="https://pyscript.net/releases/2026.7.2/core.js"
+    ></script>
+  </head>
+  <body>
+    <div id="boot">
+      <p id="boot-status">A ligar ao Discord…</p>
+      <div class="spinner" aria-hidden="true"></div>
+    </div>
+
+    <main id="app" hidden>
+      <canvas id="canvas"></canvas>
+      <!-- PyScript starts after Discord SDK ready (see main.js) -->
+    </main>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

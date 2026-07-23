@@ -6,3 +6,6 @@ __pycache__/
 venv/
 assets/emoji_pins/
 testboard_preview.png
+node_modules/
+activity/.env
+activity/client/dist/

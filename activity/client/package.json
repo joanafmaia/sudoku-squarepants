@@ -1,0 +1,17 @@
+{
+  "name": "thcoku-activity-client",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview --host"
+  },
+  "dependencies": {
+    "@discord/embedded-app-sdk": "^2.0.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}

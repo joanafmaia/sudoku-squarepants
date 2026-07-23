@@ -1,0 +1,21 @@
+# Netlify — Discord Activity (cliente Vite + função OAuth)
+[build]
+  command = "npm install --prefix activity/client && npm run build --prefix activity/client"
+  publish = "activity/client/dist"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# Exchange OAuth code → access_token (usado pelo Embedded App SDK)
+[[redirects]]
+  from = "/api/token"
+  to = "/.netlify/functions/token"
+  status = 200
+  force = true
+
+# SPA fallback (Activity é single-page)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

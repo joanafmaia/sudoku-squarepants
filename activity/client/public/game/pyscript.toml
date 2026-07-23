@@ -1,0 +1,4 @@
+# Paths are fetched by the browser and mounted into the Pyodide filesystem.
+[files]
+"sudoku_core.py" = "/game/sudoku_core.py"
+"fonts/Fredoka-Variable.ttf" = "/fonts/Fredoka-Variable.ttf"
