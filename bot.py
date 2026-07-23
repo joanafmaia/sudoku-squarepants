@@ -240,6 +240,10 @@ intents = discord.Intents.default()
 games: dict = {}
 pending_challenges: dict[int, dict] = {}  # invite message_id → meta
 challenge_cooldowns: dict[int, float] = {}  # user_id → last /challenge timestamp
+_challenge_live_tasks: dict[str, asyncio.Task] = {}
+WATCH_ACTIVE_SEC = 45
+CHALLENGE_LIVE_DEBOUNCE_SEC = 4.0
+CHALLENGE_BOARD_CELLS = 81
 match_store = create_match_store()
 
 
@@ -2079,10 +2083,14 @@ async def sync_challenge_board(game: dict) -> None:
     await match_store.update_player(
         match_id,
         slot,
-        {"current_board": copy_grid(game["board"])},
+        {
+            "current_board": copy_grid(game["board"]),
+            "last_move_at": time.time(),
+        },
     )
     key = challenge_game_key(match_id, game["owner_id"])
     await persist_game(key, game)
+    schedule_challenge_live_update(match_id)
 
 
 def challenge_home_channel(
@@ -2255,6 +2263,7 @@ async def settle_challenge_match(
             "settle_reason": detail,
         },
     )
+    schedule_challenge_live_update(match["_id"], immediate=True)
 
     for _slot, player in entries:
         key = challenge_game_key(match["_id"], player["user_id"])
@@ -2416,6 +2425,8 @@ async def handle_challenge_completion(
     view.stop()
     await remove_game(view.game_key)
 
+    schedule_challenge_live_update(match_id, immediate=True)
+
     if challenge_ready_to_settle(match):
         await settle_challenge_match(bot, match, reason="all finished")
 
@@ -2443,6 +2454,7 @@ async def handle_challenge_forfeit(
     await remove_game(view.game_key)
 
     if match:
+        schedule_challenge_live_update(match_id, immediate=True)
         await settle_challenge_match(bot, match, reason="quit")
 
 
@@ -2544,6 +2556,9 @@ async def launch_challenge_match(
             f"Challenge started ({len(players)}): {roster} · **{tier}**. "
             "Private boards are open — fastest clean solve wins.",
         )
+        fresh = await match_store.get_match(match_id)
+        if fresh is not None:
+            await post_challenge_live_panel(bot, home, fresh, interaction.guild)
         return True
     except Exception as exc:  # noqa: BLE001
         print(f"launch_challenge_match failed: {exc}")
@@ -2575,6 +2590,247 @@ def challenge_cooldown_remaining(user_id: int) -> int:
 
 def mark_challenge_cooldown(user_id: int) -> None:
     challenge_cooldowns[user_id] = time.time()
+
+
+def challenge_board_filled(board_raw: list) -> int:
+    board = normalize_board(board_raw or [])
+    return sum(1 for r in range(9) for c in range(9) if cell_value(board, r, c) > 0)
+
+
+def challenge_active_player(match: dict) -> tuple[str, dict] | None:
+    """Unfinished player who moved most recently (within WATCH_ACTIVE_SEC)."""
+    now = time.time()
+    best_slot: str | None = None
+    best_player: dict | None = None
+    best_ts = 0.0
+    for slot, player in match_player_entries(match):
+        if player.get("forfeit") or player.get("finished_time"):
+            continue
+        ts = float(player.get("last_move_at") or 0)
+        if ts > best_ts:
+            best_ts = ts
+            best_slot = slot
+            best_player = player
+    if best_player is None or now - best_ts > WATCH_ACTIVE_SEC:
+        return None
+    return best_slot, best_player
+
+
+def challenge_player_mention(guild: discord.Guild | None, player: dict) -> str:
+    uid = player.get("user_id")
+    if uid is None:
+        return str(player.get("name") or "Unknown")
+    if guild is not None:
+        member = guild.get_member(int(uid))
+        if member is not None:
+            return member.mention
+    return f"<@{uid}>"
+
+
+def challenge_standings_lines(match: dict, guild: discord.Guild | None) -> list[str]:
+    start = float(match.get("start_time") or time.time())
+    active = challenge_active_player(match)
+    active_uid = active[1].get("user_id") if active else None
+    lines: list[str] = []
+    for _slot, player in match_player_entries(match):
+        mention = challenge_player_mention(guild, player)
+        if player.get("forfeit"):
+            lines.append(f"✗ {mention} — quit")
+            continue
+        if player.get("finished_time") is not None:
+            elapsed = player.get("elapsed")
+            if elapsed is None:
+                elapsed = float(player["finished_time"]) - start
+            lines.append(f"✅ {mention} — **{format_time(elapsed)}**")
+            continue
+        filled = challenge_board_filled(player.get("current_board") or [])
+        elapsed = time.time() - start
+        marker = "🎮 " if player.get("user_id") == active_uid else "▶ "
+        lines.append(f"{marker}{mention} — {filled}/{CHALLENGE_BOARD_CELLS} · {format_time(elapsed)}")
+    return lines
+
+
+def build_challenge_live_embed(match: dict, guild: discord.Guild | None) -> discord.Embed:
+    tier = difficulty_label(match.get("difficulty"))
+    if match.get("status") == "finished":
+        title = "Challenge ended"
+        footer = "Race over."
+    else:
+        title = f"Live challenge — {tier}"
+        footer = "Fastest clean solve wins · /watch to spectate"
+    embed = paper_embed(title)
+    embed.description = "\n".join(challenge_standings_lines(match, guild)) or "No players."
+    active = challenge_active_player(match)
+    if active and match.get("status") != "finished":
+        _slot, player = active
+        embed.add_field(
+            name="Now playing",
+            value=f"{challenge_player_mention(guild, player)} is on the board.",
+            inline=False,
+        )
+    embed.set_footer(text=footer)
+    return embed
+
+
+def build_challenge_watch_view(match: dict, bot_ref: "SudokuBot") -> "ChallengeWatchView":
+    view = ChallengeWatchView(match["_id"], bot_ref)
+    if match.get("status") != "finished":
+        view.rebuild_player_buttons(match)
+    else:
+        for child in view.children:
+            child.disabled = True  # type: ignore[attr-defined]
+    return view
+
+
+async def update_challenge_live_message(bot_ref: "SudokuBot", match_id: str) -> None:
+    match = await match_store.get_match(match_id)
+    if not match or not match.get("live_message_id"):
+        return
+    channel = await resolve_channel(bot_ref, match.get("channel_id"))
+    if channel is None:
+        return
+    guild = bot_ref.get_guild(int(match.get("guild_id") or 0))
+    try:
+        msg = await channel.fetch_message(int(match["live_message_id"]))
+    except (discord.HTTPException, discord.NotFound):
+        return
+    embed = build_challenge_live_embed(match, guild)
+    finished = match.get("status") == "finished"
+    view = None if finished else build_challenge_watch_view(match, bot_ref)
+    try:
+        await msg.edit(embed=embed, view=view)
+        if view is not None:
+            view.message = msg
+            bot_ref.add_view(view)
+    except discord.HTTPException as exc:
+        print(f"update_challenge_live_message failed for {match_id}: {exc}")
+
+
+def schedule_challenge_live_update(match_id: str, *, immediate: bool = False) -> None:
+    if immediate:
+        asyncio.create_task(update_challenge_live_message(bot, match_id))
+        return
+    existing = _challenge_live_tasks.get(match_id)
+    if existing and not existing.done():
+        existing.cancel()
+
+    async def _debounced() -> None:
+        try:
+            await asyncio.sleep(CHALLENGE_LIVE_DEBOUNCE_SEC)
+            await update_challenge_live_message(bot, match_id)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if _challenge_live_tasks.get(match_id) is asyncio.current_task():
+                _challenge_live_tasks.pop(match_id, None)
+
+    _challenge_live_tasks[match_id] = asyncio.create_task(_debounced())
+
+
+async def post_challenge_live_panel(
+    bot_ref: "SudokuBot",
+    home: discord.TextChannel,
+    match: dict,
+    guild: discord.Guild,
+) -> None:
+    match_id = match["_id"]
+    embed = build_challenge_live_embed(match, guild)
+    view = build_challenge_watch_view(match, bot_ref)
+    try:
+        msg = await home.send(embed=embed, view=view, silent=True)
+        view.message = msg
+        bot_ref.add_view(view)
+        await match_store.update_match(match_id, {"live_message_id": msg.id})
+    except discord.HTTPException as exc:
+        print(f"post_challenge_live_panel failed for {match_id}: {exc}")
+
+
+async def restore_challenge_watch_views(bot_ref: "SudokuBot") -> None:
+    try:
+        active = await match_store.list_matches(status="active")
+    except Exception as exc:  # noqa: BLE001
+        print(f"restore_challenge_watch_views list failed: {exc}")
+        return
+    restored = 0
+    for match in active:
+        if not match.get("live_message_id"):
+            continue
+        view = build_challenge_watch_view(match, bot_ref)
+        bot_ref.add_view(view)
+        restored += 1
+    if restored:
+        print(f"Restored {restored} challenge watch panel(s).")
+
+
+class ChallengeWatchView(discord.ui.View):
+    def __init__(self, match_id: str, bot_ref: "SudokuBot"):
+        super().__init__(timeout=None)
+        self.match_id = match_id
+        self.bot = bot_ref
+        self.message: discord.Message | None = None
+
+    def rebuild_player_buttons(self, match: dict) -> None:
+        self.clear_items()
+        refresh = discord.ui.Button(
+            label="Refresh",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"watch:{self.match_id}:refresh",
+            row=0,
+        )
+        refresh.callback = self._on_refresh
+        self.add_item(refresh)
+
+        row = 1
+        for slot, player in match_player_entries(match):
+            if player.get("forfeit"):
+                continue
+            name = str(player.get("name") or "Player")[:20]
+            btn = discord.ui.Button(
+                label=f"View {name}",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"watch:{self.match_id}:board:{slot}",
+                row=row,
+            )
+            btn.callback = self._make_board_cb(slot)
+            self.add_item(btn)
+            row = min(row + 1, 4)
+
+    async def _on_refresh(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await update_challenge_live_message(self.bot, self.match_id)
+        await interaction.followup.send("Live board updated.", ephemeral=True)
+
+    def _make_board_cb(self, slot: str):
+        async def _cb(interaction: discord.Interaction) -> None:
+            await self._show_player_board(interaction, slot)
+
+        return _cb
+
+    async def _show_player_board(self, interaction: discord.Interaction, slot: str) -> None:
+        match = await match_store.get_match(self.match_id)
+        if not match:
+            await interaction.response.send_message("Match not found.", ephemeral=True)
+            return
+        player = match.get(slot)
+        if not isinstance(player, dict):
+            await interaction.response.send_message("Player not found.", ephemeral=True)
+            return
+        if player.get("forfeit"):
+            await interaction.response.send_message("That player quit.", ephemeral=True)
+            return
+        board = normalize_board(
+            player.get("current_board") or match.get("board_template") or []
+        )
+        given = match.get("given") or []
+        name = str(player.get("name") or "Player")
+        status = "finished" if player.get("finished_time") else "racing"
+        image = render_board(board, given, difficulty=match.get("difficulty"))
+        file = board_to_file(image)
+        await interaction.response.send_message(
+            f"**{name}** — {status} · spectator view (read-only)",
+            file=file,
+            ephemeral=True,
+        )
 
 
 class ChallengeInviteView(discord.ui.View):
@@ -4602,6 +4858,7 @@ async def on_ready():
         rotate_status.start()
     await bot.change_presence(activity=STATUS_ROTATION[0])
     await restore_persisted_sessions(bot)
+    await restore_challenge_watch_views(bot)
 
 
 @bot.tree.command(
@@ -4762,7 +5019,8 @@ async def help_cmd(interaction: discord.Interaction):
         value=(
             "`/play` — **opens the game window** (Activity)\n"
             "`/daily` — one pineapple puzzle a day\n"
-            "`/challenge` — race your pals on private boards"
+            "`/challenge` — race your pals on private boards\n"
+            "`/watch` — spectate active challenge races"
         ),
         inline=False,
     )
@@ -4941,6 +5199,59 @@ async def challenge_cmd(
         view=view,
     )
     view.message = await interaction.original_response()
+
+
+@bot.tree.command(
+    name="watch",
+    description="Spectate active challenge races — live standings and player boards",
+)
+async def watch_cmd(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+    try:
+        active = await match_store.list_matches(status="active")
+    except Exception as exc:  # noqa: BLE001
+        await interaction.response.send_message(
+            f"Couldn't list matches ({exc}).",
+            ephemeral=True,
+        )
+        return
+
+    guild_matches = [m for m in active if m.get("guild_id") == interaction.guild.id]
+    if not guild_matches:
+        await interaction.response.send_message(
+            "No active challenges right now. Start one with `/challenge`.",
+            ephemeral=True,
+        )
+        return
+
+    if len(guild_matches) == 1:
+        match = guild_matches[0]
+        embed = build_challenge_live_embed(match, interaction.guild)
+        view = build_challenge_watch_view(match, bot)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        return
+
+    lines: list[str] = []
+    for match in guild_matches:
+        roster = ", ".join(
+            challenge_player_mention(interaction.guild, player)
+            for _slot, player in match_player_entries(match)
+        )
+        tier = difficulty_label(match.get("difficulty"))
+        short_id = str(match.get("_id", ""))[:8]
+        channel = await resolve_channel(bot, match.get("channel_id"))
+        where = f"<#{channel.id}>" if isinstance(channel, discord.TextChannel) else "channel"
+        lines.append(f"`{short_id}` · **{tier}** in {where} — {roster}")
+
+    embed = paper_embed("Active challenges")
+    embed.description = (
+        "\n".join(lines)
+        + "\n\nOpen the **Live challenge** panel in those channels, or run `/watch` "
+        "when only one race is active."
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="daily", description="Play today's daily Sudoku (same level, unique board)")
