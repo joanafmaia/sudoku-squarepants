@@ -18,7 +18,7 @@ function makeCell(value = 0, pencilMarks = []) {
 }
 
 export function cellValue(board, r, c) {
-  return board[r][c].value | 0;
+  return board?.[r]?.[c]?.value | 0;
 }
 
 export function setCellValue(board, r, c, value) {

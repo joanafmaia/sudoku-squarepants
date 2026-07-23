@@ -144,7 +144,6 @@ export function startThcokuGame(canvas) {
     state.status = `A gerar (${difficultyLabel(key)})…`;
     state.won = false;
     state.bubbles = [];
-    draw();
     const puzzle = makePuzzle(key);
     state.board = puzzle.board;
     state.given = puzzle.given;
@@ -283,6 +282,8 @@ export function startThcokuGame(canvas) {
   }
 
   function draw() {
+    if (!state.board?.length || !state.given?.length) return;
+
     const now = Date.now();
     let shakeX = 0;
     if (now < state.shakeUntil) {
