@@ -68,8 +68,8 @@ function ensureControls(shell) {
       ${[1, 2, 3, 4, 5, 6, 7, 8, 9]
         .map((n) => `<button type="button" class="ctrl-digit" data-digit="${n}">${n}</button>`)
         .join("")}
-      <button type="button" class="ctrl-clear" data-action="clear">Apagar</button>
     </div>
+    <button type="button" class="ctrl-clear" data-action="clear">Apagar</button>
     <div class="ctrl-actions" role="group" aria-label="Ações">
       <button type="button" data-action="new">Novo</button>
       <button type="button" data-action="diff" id="ctrl-diff">Medium</button>

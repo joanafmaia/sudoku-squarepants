@@ -147,22 +147,19 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  box-sizing: border-box;
 }
 
 .ctrl-pad {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.ctrl-pad .ctrl-clear {
-  grid-column: span 2;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .ctrl-actions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
+  gap: 8px;
 }
 
 #game-controls button {
@@ -173,19 +170,28 @@ body {
   color: var(--header);
   font-family: inherit;
   font-weight: 700;
-  font-size: 1.05rem;
-  min-height: 44px;
+  font-size: 1.1rem;
+  min-height: 48px;
+  width: 100%;
+  margin: 0;
+  padding: 0 8px;
   cursor: pointer;
   touch-action: manipulation;
+  box-sizing: border-box;
 }
 
 #game-controls .ctrl-digit {
-  font-size: 1.25rem;
+  font-size: 1.35rem;
 }
 
-#game-controls .ctrl-clear,
+#game-controls .ctrl-clear {
+  background: var(--gold);
+  min-height: 46px;
+}
+
 #game-controls .ctrl-actions button {
   background: var(--gold);
+  font-size: 0.95rem;
 }
 
 #game-controls button.is-active {
