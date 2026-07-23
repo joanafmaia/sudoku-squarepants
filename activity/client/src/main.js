@@ -236,8 +236,8 @@ function endWatchOnExit() {
   }
 }
 
-function flushSessionOnExit() {
-  // Discord "Sair" tears down the Activity fast — save board + end watch announcement.
+function flushSessionOnExit({ endWatch = false } = {}) {
+  // Save board progress; only remove the watch announcement on real close (not tab hide).
   const snap = currentSessionSnap();
   if (snap) {
     writeLocalSession(snap);
@@ -261,7 +261,9 @@ function flushSessionOnExit() {
       }
     }
   }
-  endWatchOnExit();
+  if (endWatch) {
+    endWatchOnExit();
+  }
 }
 
 function startAutosave() {
