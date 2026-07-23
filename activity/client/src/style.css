@@ -153,18 +153,22 @@ body {
 
 #app {
   min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 12px;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 12px calc(12px + env(safe-area-inset-bottom, 0px));
   animation: fade-in 0.4s ease;
+  box-sizing: border-box;
 }
 
 #canvas {
   display: block;
-  max-width: min(100vw - 16px, 720px);
-  max-height: min(62vh, 780px);
-  width: auto;
+  width: 100%;
   height: auto;
+  max-width: 100%;
+  max-height: min(52vh, 780px);
   border-radius: 18px;
   box-shadow:
     0 16px 40px rgba(15, 118, 110, 0.22),
@@ -177,9 +181,11 @@ body {
   position: relative;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   gap: 10px;
-  width: min(100vw - 16px, 720px);
+  width: min(100%, 420px);
+  margin: 0 auto;
+  box-sizing: border-box;
 }
 
 #game-hint {
@@ -201,10 +207,12 @@ body {
 
 #game-controls {
   width: 100%;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
   box-sizing: border-box;
+  align-self: stretch;
 }
 
 .ctrl-pad {
@@ -287,13 +295,12 @@ body {
 
 /* Mobile / Activity narrow: stack (board on top, pad below) */
 @media (max-width: 859px) {
-  #canvas {
-    max-width: min(100vw - 12px, 720px);
-    max-height: min(52vh, 780px);
+  #game-shell {
+    width: min(100%, 420px);
   }
 
-  #game-shell {
-    width: min(100vw - 12px, 720px);
+  #canvas {
+    max-height: min(50vh, 640px);
   }
 }
 
@@ -301,7 +308,6 @@ body {
 @media (min-width: 860px) {
   #app {
     padding: 16px 20px;
-    align-content: center;
   }
 
   #game-shell {
@@ -310,21 +316,22 @@ body {
     justify-content: center;
     gap: 18px;
     width: min(96vw, 1080px);
+    max-width: min(96vw, 1080px);
     max-height: min(92vh, 820px);
   }
 
   #canvas {
     flex: 0 1 auto;
+    width: auto;
     max-width: min(62vw, 720px);
     max-height: min(88vh, 780px);
-    width: auto;
-    height: auto;
   }
 
   #game-controls {
     width: min(260px, 28vw);
     max-width: 280px;
     flex: 0 0 auto;
+    align-self: center;
     gap: 10px;
     padding: 12px;
     background: rgba(255, 248, 220, 0.72);

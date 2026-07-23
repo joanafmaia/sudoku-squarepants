@@ -214,24 +214,45 @@ export function startThcokuGame(canvas, options = {}) {
     const ox = BOARD_ORIGIN.x;
     const oy = BOARD_ORIGIN.y;
     const slots = [];
+    // Keep pins clear of the blue water — sit on cream badges beside / under the board
     for (let i = 0; i < 9; i++) {
-      slots.push({ x: 10, y: oy + i * CELL + CELL / 2 });
-      slots.push({ x: WIDTH - 10, y: oy + i * CELL + CELL / 2 });
+      slots.push({ x: 26, y: oy + i * CELL + CELL / 2 });
+      slots.push({ x: WIDTH - 26, y: oy + i * CELL + CELL / 2 });
     }
     for (let i = 0; i < 9; i++) {
-      slots.push({ x: ox + i * CELL + CELL / 2, y: oy + BOARD_SIZE + 18 });
+      slots.push({ x: ox + i * CELL + CELL / 2, y: oy + BOARD_SIZE + 22 });
     }
     for (let i = slots.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
       [slots[i], slots[j]] = [slots[j], slots[i]];
     }
-    ctx.font = "28px Apple Color Emoji, Segoe UI Emoji, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    for (let i = 0; i < Math.min(pins.length, slots.length); i++) {
-      const emoji = pins[i];
+    const unique = [];
+    const seen = new Set();
+    for (const p of pins) {
+      if (!seen.has(p)) {
+        seen.add(p);
+        unique.push(p);
+      }
+    }
+    for (let i = 0; i < Math.min(unique.length, slots.length); i++) {
+      const emoji = unique[i];
       const slot = slots[i];
-      ctx.fillText(emoji, slot.x, slot.y);
+      // Soft circular backing so pins read on the lagoon
+      ctx.beginPath();
+      ctx.arc(slot.x, slot.y, 18, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255, 248, 220, 0.95)";
+      ctx.fill();
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = RGB.gold;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(slot.x - 4, slot.y - 5, 5, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.45)";
+      ctx.fill();
+      ctx.font = "26px Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(emoji, slot.x, slot.y + 1);
     }
   }
 
@@ -373,6 +394,13 @@ export function startThcokuGame(canvas, options = {}) {
       state.flashUntil = Date.now() + 200;
       draw();
       ensureAnim();
+      if (typeof options.onProgress === "function") {
+        try {
+          options.onProgress();
+        } catch (err) {
+          console.warn("[Thcoku] onProgress", err);
+        }
+      }
       return;
     }
     setCellValue(state.board, r, c, digit);
@@ -407,6 +435,13 @@ export function startThcokuGame(canvas, options = {}) {
     }
     draw();
     ensureAnim();
+    if (typeof options.onProgress === "function") {
+      try {
+        options.onProgress();
+      } catch (err) {
+        console.warn("[Thcoku] onProgress", err);
+      }
+    }
   }
 
   function cellAt(x, y) {

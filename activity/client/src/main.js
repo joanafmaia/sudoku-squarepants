@@ -21,6 +21,7 @@ let gameStarted = false;
 let gameApi = null;
 let autosaveTimer = null;
 let saving = false;
+let exitHooksBound = false;
 
 function setStatus(message) {
   if (statusEl) statusEl.textContent = message;
@@ -30,12 +31,52 @@ function guildId() {
   return window.__DISCORD_SDK__?.guildId || "0";
 }
 
+function userId() {
+  return window.__DISCORD_AUTH__?.user?.id || "local";
+}
+
+function localSessionKey() {
+  return `thcoku_session_v1:${guildId()}:${userId()}`;
+}
+
 function playerName() {
   return (
     window.__DISCORD_AUTH__?.user?.global_name ||
     window.__DISCORD_AUTH__?.user?.username ||
     undefined
   );
+}
+
+function writeLocalSession(snap) {
+  if (!snap) return;
+  try {
+    localStorage.setItem(
+      localSessionKey(),
+      JSON.stringify({ ...snap, saved_at: Date.now() })
+    );
+  } catch (err) {
+    console.warn("[Thcoku] local session write failed", err);
+  }
+}
+
+function readLocalSession() {
+  try {
+    const raw = localStorage.getItem(localSessionKey());
+    if (!raw) return null;
+    const session = JSON.parse(raw);
+    if (!session?.board || !session?.given || !session?.solution) return null;
+    return session;
+  } catch {
+    return null;
+  }
+}
+
+function clearLocalSession() {
+  try {
+    localStorage.removeItem(localSessionKey());
+  } catch {
+    /* ignore */
+  }
 }
 
 function startGameOnce(cosmetics = null, gameOptions = {}) {
@@ -51,6 +92,10 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
       autoStart: gameOptions.autoStart !== false,
       onNewGame: () => {
         clearSavedSession();
+      },
+      onProgress: () => {
+        // Persist immediately so Discord "Exit" cannot race the async flush.
+        saveSessionNow({ keepalive: false, force: true });
       },
     });
     if (gameHintEl) gameHintEl.hidden = true;
@@ -82,22 +127,33 @@ async function loadCosmetics() {
 }
 
 async function loadSavedSession() {
-  if (!window.__DISCORD_ACCESS_TOKEN__) return null;
-  try {
-    const res = await apiFetch(`/api/activity/session?guild_id=${encodeURIComponent(guildId())}`);
-    if (!res || !res.ok) return null;
-    const data = await res.json();
-    const session = data?.session;
-    if (!session?.board || !session?.given || !session?.solution) return null;
-    if ((session.filled || 0) <= 0) return null;
-    return session;
-  } catch (err) {
-    console.warn("[Thcoku] session load failed", err);
-    return null;
+  let remote = null;
+  if (window.__DISCORD_ACCESS_TOKEN__) {
+    try {
+      const res = await apiFetch(`/api/activity/session?guild_id=${encodeURIComponent(guildId())}`);
+      if (res && res.ok) {
+        const data = await res.json();
+        const session = data?.session;
+        if (session?.board && session?.given && session?.solution) {
+          remote = session;
+        }
+      }
+    } catch (err) {
+      console.warn("[Thcoku] session load failed", err);
+    }
   }
+  const local = readLocalSession();
+  // Prefer the freshest progress (remote filled/elapsed vs local).
+  if (remote && local) {
+    const rScore = (Number(remote.filled) || 0) * 10000 + (Number(remote.elapsed) || 0);
+    const lScore = (Number(local.filled) || 0) * 10000 + (Number(local.elapsed) || 0);
+    return lScore > rScore ? local : remote;
+  }
+  return remote || local;
 }
 
 async function clearSavedSession() {
+  clearLocalSession();
   if (!window.__DISCORD_ACCESS_TOKEN__) return;
   const gid = encodeURIComponent(guildId());
   try {
@@ -112,10 +168,13 @@ async function clearSavedSession() {
   }
 }
 
-async function saveSessionNow() {
-  if (!window.__DISCORD_ACCESS_TOKEN__ || !gameApi?.getSnapshot || saving) return;
+async function saveSessionNow({ keepalive = false, force = false } = {}) {
+  if (!gameApi?.getSnapshot) return;
   const snap = gameApi.getSnapshot();
   if (!snap) return;
+  writeLocalSession(snap);
+  if (!window.__DISCORD_ACCESS_TOKEN__) return;
+  if (saving && !force && !keepalive) return;
   saving = true;
   try {
     await apiFetch("/api/activity/session", {
@@ -125,28 +184,61 @@ async function saveSessionNow() {
         guild_id: guildId(),
         name: playerName(),
       }),
+      keepalive,
     });
   } catch (err) {
     console.warn("[Thcoku] session save failed", err);
   } finally {
-    saving = false;
+    if (!keepalive) saving = false;
+    else saving = false;
+  }
+}
+
+function flushSessionOnExit() {
+  // Discord "Sair" tears down the Activity fast — localStorage + keepalive fetch.
+  if (!gameApi?.getSnapshot) return;
+  const snap = gameApi.getSnapshot();
+  if (!snap) return;
+  writeLocalSession(snap);
+  if (!window.__DISCORD_ACCESS_TOKEN__) return;
+  const body = JSON.stringify({
+    ...snap,
+    guild_id: guildId(),
+    name: playerName(),
+  });
+  // Fire-and-forget; do not await (page is dying).
+  for (const url of apiUrlCandidates("/api/activity/session")) {
+    try {
+      fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${window.__DISCORD_ACCESS_TOKEN__}`,
+        },
+        body,
+        keepalive: true,
+      });
+      break;
+    } catch {
+      /* try next candidate */
+    }
   }
 }
 
 function startAutosave() {
   stopAutosave();
-  if (!window.__DISCORD_ACCESS_TOKEN__) return;
   autosaveTimer = setInterval(() => {
     saveSessionNow();
-  }, 12000);
-  const flush = () => {
-    saveSessionNow();
-  };
+  }, 8000);
+  if (exitHooksBound) return;
+  exitHooksBound = true;
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") flush();
+    if (document.visibilityState === "hidden") flushSessionOnExit();
   });
-  window.addEventListener("pagehide", flush);
-  window.addEventListener("beforeunload", flush);
+  window.addEventListener("pagehide", flushSessionOnExit);
+  window.addEventListener("beforeunload", flushSessionOnExit);
+  // Discord Embedded App may freeze the frame without a full unload.
+  document.addEventListener("freeze", flushSessionOnExit);
 }
 
 function stopAutosave() {
@@ -200,11 +292,6 @@ async function beginPlay({ resumeSession = null } = {}) {
 
 async function showGame() {
   if (bootEl) bootEl.hidden = true;
-
-  if (!window.__DISCORD_ACCESS_TOKEN__) {
-    startGameOnce(null, { autoStart: true });
-    return;
-  }
 
   if (gameHintEl) {
     gameHintEl.hidden = false;
