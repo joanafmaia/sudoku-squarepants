@@ -188,6 +188,8 @@ export function startThcokuGame(canvas, options = {}) {
     shakeUntil: 0,
     raf: 0,
     winZoom: 1,
+    readOnly: false,
+    spectatorName: null,
   };
 
   const diffBtn = controls.querySelector("#ctrl-diff");
@@ -203,6 +205,10 @@ export function startThcokuGame(canvas, options = {}) {
   }
 
   function headerTitleLine() {
+    if (state.spectatorName) {
+      const tier = difficultyLabel(DIFF_KEYS[state.diffIndex]);
+      return `~ ${tier} ~  👀 ${state.spectatorName}`;
+    }
     const badge = titleBadge();
     const tier = difficultyLabel(DIFF_KEYS[state.diffIndex]);
     if (!badge) return `~ ${tier} ~`;
@@ -339,6 +345,18 @@ export function startThcokuGame(canvas, options = {}) {
     draw();
   }
 
+  function setReadOnly(enabled) {
+    state.readOnly = Boolean(enabled);
+    const controls = document.getElementById("game-controls");
+    if (controls) controls.style.visibility = enabled ? "hidden" : "";
+    draw();
+  }
+
+  function setSpectatorName(name) {
+    state.spectatorName = name || null;
+    draw();
+  }
+
   function syncControls() {
     if (diffBtn) diffBtn.textContent = difficultyLabel(DIFF_KEYS[state.diffIndex]);
     if (pencilBtn) {
@@ -408,7 +426,7 @@ export function startThcokuGame(canvas, options = {}) {
   }
 
   function place(digit) {
-    if (state.won) return;
+    if (state.readOnly || state.won) return;
     const [r, c] = state.selected;
     if (state.given[r][c]) {
       state.status = "Fixed clue — barnacles!";
@@ -481,6 +499,7 @@ export function startThcokuGame(canvas, options = {}) {
   }
 
   function handleBoardPointer(x, y) {
+    if (state.readOnly) return;
     const cell = cellAt(x, y);
     if (!cell) return;
     if (state.won && Date.now() - state.winAt > 800) {
@@ -841,6 +860,7 @@ export function startThcokuGame(canvas, options = {}) {
   });
 
   window.addEventListener("keydown", (evt) => {
+    if (state.readOnly) return;
     if (evt.key >= "1" && evt.key <= "9") place(Number(evt.key));
     else if (evt.key === "0" || evt.key === "Backspace" || evt.key === "Delete") place(0);
     else if (evt.key === "p" || evt.key === "P") {
@@ -870,5 +890,5 @@ export function startThcokuGame(canvas, options = {}) {
     draw();
   }
   startAmbientLoop();
-  return { newGame, place, draw, setCosmetics, getSnapshot, loadSnapshot };
+  return { newGame, place, draw, setCosmetics, getSnapshot, loadSnapshot, setReadOnly, setSpectatorName };
 }

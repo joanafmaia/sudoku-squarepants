@@ -293,6 +293,202 @@ body {
   animation: toast-in 0.35s ease;
 }
 
+/* ─── Watch mode ─────────────────────────────────────────────────────────── */
+
+#watch-fab {
+  position: fixed;
+  bottom: 20px;
+  right: 16px;
+  z-index: 30;
+  appearance: none;
+  border: 2px solid var(--header);
+  border-radius: 999px;
+  background: var(--sand);
+  color: var(--header);
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 0.95rem;
+  padding: 8px 16px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(15, 118, 110, 0.28);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  touch-action: manipulation;
+  transition: transform 0.1s ease;
+}
+
+#watch-fab:active {
+  transform: translateY(1px);
+}
+
+.watch-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  background: var(--header);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.watch-badge[hidden] {
+  display: none !important;
+}
+
+#watch-panel {
+  position: fixed;
+  bottom: 66px;
+  right: 16px;
+  z-index: 35;
+  width: min(300px, calc(100vw - 32px));
+  background: var(--sand);
+  border: 2px solid rgba(245, 158, 11, 0.6);
+  border-radius: 18px;
+  box-shadow: 0 12px 32px rgba(15, 118, 110, 0.22);
+  overflow: hidden;
+  animation: fade-in 0.22s ease;
+}
+
+#watch-panel[hidden] {
+  display: none !important;
+}
+
+.watch-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--header);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.watch-panel-header button {
+  appearance: none;
+  border: none;
+  background: none;
+  font-size: 1rem;
+  cursor: pointer;
+  color: var(--header);
+  padding: 2px 6px;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+.watch-panel-header button:hover {
+  background: rgba(15, 118, 110, 0.1);
+}
+
+#watch-player-list {
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.watch-player-btn {
+  appearance: none;
+  border: 1.5px solid rgba(245, 158, 11, 0.45);
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fffef5 0%, #fff8dc 100%);
+  color: var(--header);
+  font-family: inherit;
+  cursor: pointer;
+  padding: 8px 12px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  transition: background 0.12s ease;
+  touch-action: manipulation;
+}
+
+.watch-player-btn:hover {
+  background: linear-gradient(180deg, #fde68a 0%, #fcd34d 100%);
+}
+
+.watch-player-btn:active {
+  transform: translateY(1px);
+}
+
+.watch-player-name {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.watch-player-meta {
+  font-size: 0.78rem;
+  opacity: 0.75;
+}
+
+.watch-empty {
+  margin: 8px 4px;
+  font-size: 0.88rem;
+  color: var(--header);
+  opacity: 0.65;
+  text-align: center;
+}
+
+#watch-banner {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  background: var(--header);
+  color: #fff;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  box-shadow: 0 6px 20px rgba(15, 118, 110, 0.35);
+  animation: fade-in 0.3s ease;
+  max-width: calc(100vw - 32px);
+}
+
+#watch-banner[hidden] {
+  display: none !important;
+}
+
+#watch-banner strong {
+  color: var(--gold);
+}
+
+#watch-stop-btn {
+  appearance: none;
+  border: 1.5px solid rgba(255, 255, 255, 0.55);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 0.82rem;
+  padding: 4px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  touch-action: manipulation;
+  transition: background 0.12s ease;
+}
+
+#watch-stop-btn:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+
 /* Mobile / Activity narrow: stack (board on top, pad below) */
 @media (max-width: 859px) {
   #game-shell {

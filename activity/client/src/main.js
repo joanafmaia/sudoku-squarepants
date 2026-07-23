@@ -23,6 +23,15 @@ let autosaveTimer = null;
 let saving = false;
 let exitHooksBound = false;
 
+// Watch mode state
+let watchState = {
+  active: false,
+  userId: null,
+  name: null,
+  pollTimer: null,
+};
+let playersRefreshTimer = null;
+
 function setStatus(message) {
   if (statusEl) statusEl.textContent = message;
 }
@@ -307,10 +316,15 @@ async function showGame() {
       await clearSavedSession();
       await beginPlay({ resumeSession: null });
     }
-    return;
+  } else {
+    await beginPlay({ resumeSession: null });
   }
 
-  await beginPlay({ resumeSession: null });
+  // Build watch UI only when authenticated (has guild context)
+  if (window.__DISCORD_ACCESS_TOKEN__) {
+    buildWatchUI();
+    startPlayersPolling();
+  }
 }
 
 /** When Activities map `/api` → host, Discord strips `/api`, so `/api/token` becomes `/token`. */
@@ -506,6 +520,279 @@ async function setupDiscordSdk() {
   setStatus(`Signed in as ${name}. Loading game…`);
   finishBoot(auth, access_token, { inDiscord: true });
 }
+
+// ─── Watch mode ───────────────────────────────────────────────────────────────
+
+function watchBannerEl() {
+  return document.getElementById("watch-banner");
+}
+
+function watchPanelEl() {
+  return document.getElementById("watch-panel");
+}
+
+function watchPlayerListEl() {
+  return document.getElementById("watch-player-list");
+}
+
+function watchBadgeEl() {
+  return document.getElementById("watch-badge");
+}
+
+async function fetchActivePlayers() {
+  if (!window.__DISCORD_ACCESS_TOKEN__) return [];
+  try {
+    const res = await apiFetch(
+      `/api/activity/players?guild_id=${encodeURIComponent(guildId())}`
+    );
+    if (!res || !res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data?.players) ? data.players : [];
+  } catch {
+    return [];
+  }
+}
+
+async function fetchWatchedSession(userId) {
+  try {
+    const res = await apiFetch(
+      `/api/activity/session?guild_id=${encodeURIComponent(guildId())}&watch_user_id=${encodeURIComponent(userId)}`
+    );
+    if (!res || !res.ok) return null;
+    const data = await res.json();
+    return data?.session || null;
+  } catch {
+    return null;
+  }
+}
+
+function stopWatching() {
+  if (watchState.pollTimer) {
+    clearInterval(watchState.pollTimer);
+    watchState.pollTimer = null;
+  }
+  watchState.active = false;
+  watchState.userId = null;
+  watchState.name = null;
+
+  if (gameApi?.setReadOnly) gameApi.setReadOnly(false);
+  if (gameApi?.setSpectatorName) gameApi.setSpectatorName(null);
+
+  const banner = watchBannerEl();
+  if (banner) banner.hidden = true;
+
+  // Restore autosave
+  startAutosave();
+}
+
+async function startWatching(player) {
+  if (watchState.active) stopWatching();
+
+  watchState.active = true;
+  watchState.userId = player.user_id;
+  watchState.name = player.name;
+
+  // Stop own autosave while watching
+  stopAutosave();
+
+  if (gameApi?.setReadOnly) gameApi.setReadOnly(true);
+  if (gameApi?.setSpectatorName) gameApi.setSpectatorName(player.name);
+
+  // Show banner
+  const banner = watchBannerEl();
+  const bannerName = document.getElementById("watch-banner-name");
+  if (banner) {
+    if (bannerName) bannerName.textContent = player.name;
+    banner.hidden = false;
+  }
+
+  // Close player panel
+  const panel = watchPanelEl();
+  if (panel) panel.hidden = true;
+
+  // Load snapshot immediately
+  const session = await fetchWatchedSession(player.user_id);
+  if (session && gameApi?.loadSnapshot) {
+    gameApi.loadSnapshot(session);
+    if (gameApi?.setReadOnly) gameApi.setReadOnly(true);
+    if (gameApi?.setSpectatorName) gameApi.setSpectatorName(player.name);
+  }
+
+  // Poll every 4 seconds
+  watchState.pollTimer = setInterval(async () => {
+    if (!watchState.active) return;
+    const snap = await fetchWatchedSession(watchState.userId);
+    if (!snap) {
+      // Player finished or left — stop watching
+      const leftName = watchState.name || "Player";
+      stopWatching();
+      if (gameHintEl) {
+        gameHintEl.hidden = false;
+        gameHintEl.textContent = `${leftName} saiu do jogo.`;
+        setTimeout(() => {
+          if (gameHintEl) gameHintEl.hidden = true;
+        }, 3500);
+      }
+      return;
+    }
+    if (gameApi?.loadSnapshot) {
+      const currentName = watchState.name;
+      gameApi.loadSnapshot(snap);
+      if (gameApi?.setReadOnly) gameApi.setReadOnly(true);
+      if (gameApi?.setSpectatorName) gameApi.setSpectatorName(currentName);
+    }
+  }, 4000);
+}
+
+function renderPlayerList(players) {
+  const list = watchPlayerListEl();
+  if (!list) return;
+  list.innerHTML = "";
+
+  const myId = userId();
+
+  if (!players.length) {
+    const empty = document.createElement("p");
+    empty.className = "watch-empty";
+    empty.textContent = "Nenhum jogador activo agora.";
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const p of players) {
+    if (String(p.user_id) === String(myId)) continue; // skip self
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "watch-player-btn";
+    const filled = p.filled ?? "?";
+    const diff = difficultyLabel(p.difficulty || "medium");
+    const t = formatTime(p.elapsed || 0);
+    btn.innerHTML = `
+      <span class="watch-player-name">${escapeHtml(p.name)}</span>
+      <span class="watch-player-meta">${escapeHtml(diff)} · ${filled}/81 · ${t}</span>
+    `;
+    btn.addEventListener("click", () => startWatching(p));
+    list.appendChild(btn);
+  }
+
+  // If all entries were self, show empty
+  if (!list.childElementCount) {
+    const empty = document.createElement("p");
+    empty.className = "watch-empty";
+    empty.textContent = "Nenhum outro jogador activo.";
+    list.appendChild(empty);
+  }
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+async function refreshPlayersPanel() {
+  const players = await fetchActivePlayers();
+  renderPlayerList(players);
+  // Update badge count (exclude self)
+  const myId = userId();
+  const count = players.filter((p) => String(p.user_id) !== String(myId)).length;
+  const badge = watchBadgeEl();
+  if (badge) {
+    badge.textContent = count > 0 ? String(count) : "";
+    badge.hidden = count === 0;
+  }
+  return players;
+}
+
+function buildWatchUI() {
+  if (document.getElementById("watch-fab")) return;
+
+  // Floating action button
+  const fab = document.createElement("button");
+  fab.id = "watch-fab";
+  fab.type = "button";
+  fab.title = "Ver quem está a jogar";
+  fab.setAttribute("aria-label", "Ver jogadores activos");
+  fab.innerHTML = `👀 <span id="watch-badge" hidden class="watch-badge">0</span>`;
+  document.body.appendChild(fab);
+
+  // Watch panel (dropdown)
+  const panel = document.createElement("div");
+  panel.id = "watch-panel";
+  panel.hidden = true;
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-label", "Jogadores activos");
+  panel.innerHTML = `
+    <div class="watch-panel-header">
+      <span>👀 A jogar agora</span>
+      <button type="button" id="watch-panel-close" aria-label="Fechar">✕</button>
+    </div>
+    <div id="watch-player-list"></div>
+  `;
+  document.body.appendChild(panel);
+
+  // Watch banner (shown while watching)
+  const banner = document.createElement("div");
+  banner.id = "watch-banner";
+  banner.hidden = true;
+  banner.setAttribute("role", "status");
+  banner.innerHTML = `
+    <span>👀 A ver: <strong id="watch-banner-name"></strong></span>
+    <button type="button" id="watch-stop-btn">Jogar</button>
+  `;
+  document.body.appendChild(banner);
+
+  // FAB click: toggle panel
+  fab.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const p = watchPanelEl();
+    if (!p) return;
+    if (p.hidden) {
+      await refreshPlayersPanel();
+      p.hidden = false;
+    } else {
+      p.hidden = true;
+    }
+  });
+
+  // Panel close
+  document.getElementById("watch-panel-close")?.addEventListener("click", () => {
+    const p = watchPanelEl();
+    if (p) p.hidden = true;
+  });
+
+  // Close panel when clicking outside
+  document.addEventListener("click", (e) => {
+    const p = watchPanelEl();
+    const f = document.getElementById("watch-fab");
+    if (p && !p.hidden && !p.contains(e.target) && e.target !== f && !f?.contains(e.target)) {
+      p.hidden = true;
+    }
+  });
+
+  // Stop watching button
+  document.getElementById("watch-stop-btn")?.addEventListener("click", () => {
+    stopWatching();
+  });
+}
+
+function startPlayersPolling() {
+  if (playersRefreshTimer) return;
+  // Refresh list every 15 s so badge stays fresh
+  playersRefreshTimer = setInterval(async () => {
+    if (watchState.active) return;
+    await refreshPlayersPanel();
+  }, 15000);
+
+  // First fetch
+  setTimeout(async () => {
+    await refreshPlayersPanel();
+  }, 2000);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 
 setupDiscordSdk().catch((err) => {
   console.error(err);

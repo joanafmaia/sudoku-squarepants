@@ -88,6 +88,12 @@ class MatchStore:
     async def delete_activity_session(self, session_id: str) -> None:
         raise NotImplementedError
 
+    async def list_activity_sessions(
+        self, guild_id: str, active_within_seconds: int = 300
+    ) -> list[dict]:
+        """Return public summaries of players active in the last N seconds."""
+        return []
+
 
 class MemoryMatchStore(MatchStore):
     def __init__(self) -> None:
@@ -156,6 +162,27 @@ class MemoryMatchStore(MatchStore):
 
     async def delete_activity_session(self, session_id: str) -> None:
         self._activity.pop(session_id, None)
+
+    async def list_activity_sessions(
+        self, guild_id: str, active_within_seconds: int = 300
+    ) -> list[dict]:
+        cutoff = time.time() - active_within_seconds
+        results = []
+        for doc in self._activity.values():
+            if str(doc.get("guild_id")) != str(guild_id):
+                continue
+            if (doc.get("updated_at") or 0) < cutoff:
+                continue
+            results.append({
+                "user_id": str(doc.get("user_id", "")),
+                "name": doc.get("name") or "Unknown",
+                "difficulty": doc.get("difficulty") or "medium",
+                "filled": int(doc.get("filled") or 0),
+                "elapsed": int(doc.get("elapsed") or 0),
+                "updated_at": doc.get("updated_at"),
+            })
+        results.sort(key=lambda r: r.get("updated_at") or 0, reverse=True)
+        return results
 
     def _daily_key(self, guild_id: int, user_id: int, day: str) -> str:
         return f"{guild_id}:{day}:{user_id}"
@@ -296,6 +323,29 @@ class MongoMatchStore(MatchStore):
         if self._activity is None:
             await self.connect()
         await self._activity.delete_one({"_id": session_id})
+
+    async def list_activity_sessions(
+        self, guild_id: str, active_within_seconds: int = 300
+    ) -> list[dict]:
+        if self._activity is None:
+            await self.connect()
+        cutoff = time.time() - active_within_seconds
+        cursor = self._activity.find(
+            {"guild_id": str(guild_id), "updated_at": {"$gte": cutoff}},
+            sort=[("updated_at", -1)],
+        )
+        docs = await cursor.to_list(length=50)
+        return [
+            {
+                "user_id": str(doc.get("user_id", "")),
+                "name": doc.get("name") or "Unknown",
+                "difficulty": doc.get("difficulty") or "medium",
+                "filled": int(doc.get("filled") or 0),
+                "elapsed": int(doc.get("elapsed") or 0),
+                "updated_at": doc.get("updated_at"),
+            }
+            for doc in docs
+        ]
 
     async def try_claim_daily_win(
         self,

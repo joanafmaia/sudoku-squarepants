@@ -459,6 +459,40 @@ async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict
     }
 
 
+async def _watch_activity_session(bot: Any, *, guild_id: str, watch_user_id: str) -> dict:
+    """Load another player's board for spectating — solution is never sent."""
+    from challenge_store import match_store
+
+    doc = await match_store.get_activity_session(
+        _activity_session_id(guild_id, watch_user_id)
+    )
+    if not doc:
+        return {"ok": True, "session": None}
+    return {
+        "ok": True,
+        "session": {
+            "name": doc.get("name") or "Unknown",
+            "difficulty": doc.get("difficulty") or "medium",
+            "diff_index": int(doc.get("diff_index") or 0),
+            "elapsed": int(doc.get("elapsed") or 0),
+            "board": doc.get("board"),
+            "given": doc.get("given"),
+            # Solution is intentionally omitted from spectator view.
+            "solution": None,
+            "filled": int(doc.get("filled") or 0),
+            "updated_at": doc.get("updated_at"),
+        },
+    }
+
+
+async def _list_activity_players(bot: Any, *, guild_id: str) -> dict:
+    """Return public summaries of players currently active in this guild."""
+    from challenge_store import match_store
+
+    players = await match_store.list_activity_sessions(guild_id, active_within_seconds=300)
+    return {"ok": True, "players": players}
+
+
 async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict:
     from challenge_store import match_store
 
@@ -605,6 +639,10 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
 
             if path in ("/api/activity/session", "/activity/session"):
                 self._activity_session_get()
+                return
+
+            if path in ("/api/activity/players", "/activity/players"):
+                self._activity_players()
                 return
 
             proxied = _proxy_cdn(path)
@@ -760,10 +798,32 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 return
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             guild_id = (qs.get("guild_id") or ["0"])[0]
+            watch_user_id = (qs.get("watch_user_id") or [None])[0]
             try:
-                result = _run_coro(bot, _load_activity_session(bot, user=user, guild_id=str(guild_id)))
+                if watch_user_id:
+                    result = _run_coro(
+                        bot,
+                        _watch_activity_session(bot, guild_id=str(guild_id), watch_user_id=str(watch_user_id)),
+                    )
+                else:
+                    result = _run_coro(bot, _load_activity_session(bot, user=user, guild_id=str(guild_id)))
             except Exception as exc:  # noqa: BLE001
                 self._send_json(500, {"error": "session_load_failed", "message": str(exc)})
+                return
+            self._send_json(200, result)
+
+        def _activity_players(self) -> None:
+            bot = bot_getter()
+            user = _discord_user_from_bearer(self.headers.get("Authorization"), bot=bot)
+            if not user or not user.get("id"):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            guild_id = (qs.get("guild_id") or ["0"])[0]
+            try:
+                result = _run_coro(bot, _list_activity_players(bot, guild_id=str(guild_id)))
+            except Exception as exc:  # noqa: BLE001
+                self._send_json(500, {"error": "players_failed", "message": str(exc)})
                 return
             self._send_json(200, result)
 
