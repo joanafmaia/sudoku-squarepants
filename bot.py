@@ -259,6 +259,8 @@ ACTIVITY_WATCH_MAX_AGE_SEC = 180
 ACTIVITY_WATCH_END_GRACE_SEC = 20
 ACTIVITY_LIVE_REFRESH_SEC = 3.5
 ACTIVITY_LIVE_SPECTATOR_TIMEOUT_SEC = 900
+WATCH_LIST_MAX_AGE_SEC = 7200
+WATCH_RESTORE_MAX_AGE_SEC = 86400
 CHALLENGE_BOARD_CELLS = 81
 match_store = create_match_store()
 
@@ -593,6 +595,11 @@ async def persist_game(key: tuple, game: dict) -> None:
         await match_store.upsert_active_game(payload)
     except Exception as exc:  # noqa: BLE001 — persistence must not break play
         print(f"persist_game failed: {exc}")
+    if snapshot.get("mode") == "daily":
+        try:
+            await sync_daily_watch_session(key, snapshot)
+        except Exception as exc:  # noqa: BLE001
+            print(f"sync_daily_watch_session failed: {exc}")
 
 
 async def drop_persisted_game(key: tuple) -> None:
@@ -604,6 +611,13 @@ async def drop_persisted_game(key: tuple) -> None:
 
 async def remove_game(key: tuple) -> dict | None:
     game = games.pop(key, None)
+    if game and game.get("mode") == "daily":
+        try:
+            gid = int(game.get("guild_id") or key[0])
+            uid = int(game.get("owner_id") or key[1])
+            await clear_activity_session(bot, daily_watch_session_id(gid, uid))
+        except Exception as exc:  # noqa: BLE001
+            print(f"clear_daily_watch failed: {exc}")
     await drop_persisted_game(key)
     return game
 
@@ -2944,6 +2958,115 @@ def build_activity_watch_view(
     return view
 
 
+def daily_watch_session_id(guild_id: int, user_id: int) -> str:
+    return f"daily:{guild_id}:{user_id}"
+
+
+def parse_watch_session_ids(session_id: str) -> tuple[int, int]:
+    parts = str(session_id).split(":")
+    guild_id = int(parts[1]) if len(parts) >= 3 else 0
+    user_id = int(parts[2]) if len(parts) >= 3 else 0
+    return guild_id, user_id
+
+
+def game_filled_count(game: dict) -> int:
+    board = game.get("board") or []
+    total = 0
+    for r in range(9):
+        for c in range(9):
+            cell = board[r][c]
+            value = cell.get("value") if isinstance(cell, dict) else int(cell or 0)
+            if value:
+                total += 1
+    return total
+
+
+def game_elapsed_sec(game: dict) -> int:
+    return max(0, int(time.time() - float(game.get("started_at") or time.time())))
+
+
+async def sync_daily_watch_session(key: tuple, game: dict) -> None:
+    """Mirror in-progress /daily boards into the shared watch session store."""
+    if game.get("mode") != "daily":
+        return
+    guild_id = int(game.get("guild_id") or key[0])
+    user_id = int(game.get("owner_id") or key[1])
+    board = game.get("board")
+    given = game.get("given")
+    solution = game.get("solution")
+    if not board or not given or not solution:
+        return
+    session_id = daily_watch_session_id(guild_id, user_id)
+    doc = {
+        "_id": session_id,
+        "session_kind": "daily",
+        "guild_id": str(guild_id),
+        "user_id": str(user_id),
+        "difficulty": game.get("difficulty") or "medium",
+        "elapsed": game_elapsed_sec(game),
+        "board": board,
+        "given": given,
+        "solution": solution,
+        "filled": game_filled_count(game),
+        "name": game.get("owner_name") or "Player",
+        "channel_id": str(game.get("channel_id")) if game.get("channel_id") else None,
+        "daily_date": game.get("daily_date"),
+        "last_move_at": time.time(),
+    }
+    existing = await match_store.get_activity_session(session_id)
+    if existing:
+        for watch_key in ("watch_notified", "watch_message_id", "watch_channel_id", "watch_posted_at"):
+            if existing.get(watch_key) is not None:
+                doc[watch_key] = existing[watch_key]
+    await match_store.upsert_activity_session(doc)
+
+
+async def notify_daily_play_started(
+    bot_ref: "SudokuBot",
+    interaction: discord.Interaction,
+) -> None:
+    if interaction.guild is None:
+        return
+    session_id = daily_watch_session_id(interaction.guild.id, interaction.user.id)
+    watch_channel_id = ACTIVITY_WATCH_CHANNEL_ID
+    if not watch_channel_id and isinstance(interaction.channel, discord.abc.GuildChannel):
+        watch_channel_id = int(interaction.channel.id)
+    print(
+        f"daily watch notify for {session_id} channel={watch_channel_id or 'unset'}"
+    )
+    existing = await match_store.get_activity_session(session_id)
+    if existing:
+        await delete_activity_watch_message(bot_ref, existing, session_id=session_id)
+        await match_store.merge_activity_session(
+            session_id,
+            {
+                "watch_notified": False,
+                "watch_message_id": None,
+            },
+        )
+    day = utc_today()
+    await notify_activity_play_started(
+        bot_ref,
+        session_id,
+        fallback_user=interaction.user,
+        force=True,
+        watch_channel_id=watch_channel_id or None,
+        announcement=(
+            f"{interaction.user.mention} is doing today's **daily** (`{day}`) — watch live here."
+        ),
+    )
+
+
+async def _notify_daily_play_started_safe(
+    bot_ref: "SudokuBot",
+    interaction: discord.Interaction,
+) -> None:
+    try:
+        await notify_daily_play_started(bot_ref, interaction)
+    except Exception as exc:  # noqa: BLE001
+        print(f"notify_daily_play_started failed: {type(exc).__name__}: {exc}")
+
+
 async def activity_watch_is_live(
     bot_ref: "SudokuBot",
     session: dict | None,
@@ -2972,8 +3095,9 @@ async def notify_activity_play_started(
     fallback_user: discord.abc.User | None = None,
     force: bool = False,
     watch_channel_id: int | None = None,
+    announcement: str | None = None,
 ) -> None:
-    """Post a one-time watch invite when someone starts /play (no live updates)."""
+    """Post a one-time watch invite when someone starts /play or /daily."""
     channel_id = int(watch_channel_id or ACTIVITY_WATCH_CHANNEL_ID or 0)
     if not channel_id:
         print(f"activity watch notify skipped for {session_id}: no watch channel configured")
@@ -3015,9 +3139,18 @@ async def notify_activity_play_started(
         else:
             return
 
+        if announcement is None:
+            if str(session_id).startswith("daily:"):
+                day = (session or {}).get("daily_date") or utc_today()
+                announcement = (
+                    f"{mention} is doing today's **daily** (`{day}`) — watch live here."
+                )
+            else:
+                announcement = f"{mention} is playing — you can watch here."
+
         view = ActivityPlayWatchView(session_id, bot_ref)
         msg = await channel.send(
-            content=f"{mention} is playing — you can watch here.",
+            content=announcement,
             view=view,
         )
         view.message = msg
@@ -3159,7 +3292,7 @@ async def restore_activity_play_watch_views(bot_ref: "SudokuBot") -> None:
         try:
             sessions = await match_store.list_activity_sessions(
                 gid,
-                max_age_sec=ACTIVITY_WATCH_MAX_AGE_SEC,
+                max_age_sec=WATCH_RESTORE_MAX_AGE_SEC,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"restore_activity_play_watch_views list failed for {gid}: {exc}")
@@ -3213,10 +3346,17 @@ def build_activity_spectator_payload(session: dict) -> tuple[str, discord.File] 
         status = "puzzle complete"
     else:
         status = "live — updates every few seconds"
-    content = (
-        f"**{name}** — {tier} · {filled}/{CHALLENGE_BOARD_CELLS} · "
-        f"{format_time(elapsed)} · {status}"
-    )
+    if session.get("session_kind") == "daily":
+        day = session.get("daily_date") or "today"
+        content = (
+            f"**{name}** — Daily `{day}` · {tier} · {filled}/{CHALLENGE_BOARD_CELLS} · "
+            f"{format_time(elapsed)} · {status}"
+        )
+    else:
+        content = (
+            f"**{name}** — {tier} · {filled}/{CHALLENGE_BOARD_CELLS} · "
+            f"{format_time(elapsed)} · {status}"
+        )
     return content, file
 
 
@@ -5389,6 +5529,11 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
             continue
 
         games[key] = game
+        if game.get("mode") == "daily":
+            try:
+                await sync_daily_watch_session(key, game)
+            except Exception as exc:  # noqa: BLE001
+                print(f"sync_daily_watch_session on restore failed: {exc}")
         try:
             msg = await channel.fetch_message(game["message_id"])
             view = SudokuView(key, bot)
@@ -5614,7 +5759,7 @@ async def help_cmd(interaction: discord.Interaction):
             "`/play` — **opens the game window** (Activity)\n"
             "`/daily` — one pineapple puzzle a day\n"
             "`/challenge` — race your pals on private boards\n"
-            "`/watch` — spectate active `/play` games and challenge races"
+            "`/watch` — spectate active `/play`, `/daily`, and challenge races"
         ),
         inline=False,
     )
@@ -5797,7 +5942,7 @@ async def challenge_cmd(
 
 @bot.tree.command(
     name="watch",
-    description="Spectate active /play games and challenge races",
+    description="Spectate active /play, /daily, and challenge races",
 )
 async def watch_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -5821,7 +5966,7 @@ async def watch_cmd(interaction: discord.Interaction):
     try:
         activity_sessions = await match_store.list_activity_sessions(
             guild_id,
-            max_age_sec=ACTIVITY_WATCH_MAX_AGE_SEC,
+            max_age_sec=WATCH_LIST_MAX_AGE_SEC,
         )
     except Exception as exc:  # noqa: BLE001
         await interaction.response.send_message(
@@ -5832,7 +5977,7 @@ async def watch_cmd(interaction: discord.Interaction):
 
     if not guild_matches and not activity_sessions:
         await interaction.response.send_message(
-            "No active games right now. Start `/play` or `/challenge`.",
+            "No active games right now. Start `/play`, `/daily`, or `/challenge`.",
             ephemeral=True,
         )
         return
@@ -5997,6 +6142,7 @@ async def daily_cmd(interaction: discord.Interaction):
     )
     try:
         await start_panel(interaction, sk, games[sk], silent=False)
+        asyncio.create_task(_notify_daily_play_started_safe(bot, interaction))
     except Exception:
         await remove_game(sk)
         daily["results"].pop(str(user_id), None)
