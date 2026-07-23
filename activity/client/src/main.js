@@ -285,7 +285,7 @@ function startAutosave() {
   stopAutosave();
   autosaveTimer = setInterval(() => {
     saveSessionNow();
-  }, 8000);
+  }, 4000);
   if (exitHooksBound) return;
   exitHooksBound = true;
   document.addEventListener("visibilitychange", () => {
