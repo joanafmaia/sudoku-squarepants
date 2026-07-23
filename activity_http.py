@@ -453,6 +453,10 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
             if existing.get(key) is not None:
                 doc[key] = existing[key]
     await match_store.upsert_activity_session(doc)
+    print(
+        f"activity session save user={uid} guild={guild_id} filled={filled} "
+        f"notify={'skip' if already_notified else 'yes'}"
+    )
     if not already_notified:
         try:
             from bot import notify_activity_play_started

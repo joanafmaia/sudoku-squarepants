@@ -95,6 +95,12 @@ class MatchStore:
         self, guild_id: int, *, max_age_sec: int = 180
     ) -> list[dict]:
         raise NotImplementedError
+
+    async def merge_activity_session(self, session_id: str, fields: dict) -> None:
+        raise NotImplementedError
+
+
+class MemoryMatchStore(MatchStore):
     def __init__(self) -> None:
         self._docs: dict[str, dict] = {}
         self._daily: dict[str, dict] = {}
@@ -184,6 +190,17 @@ class MatchStore:
             out.append(_clone(doc))
         out.sort(key=lambda d: float(d.get("last_move_at") or d.get("updated_at") or 0), reverse=True)
         return out
+
+    async def merge_activity_session(self, session_id: str, fields: dict) -> None:
+        doc = self._activity.get(session_id)
+        if doc:
+            doc.update(fields)
+            doc["updated_at"] = time.time()
+        else:
+            payload = _clone(fields)
+            payload["_id"] = session_id
+            payload["updated_at"] = time.time()
+            self._activity[session_id] = payload
 
     def _daily_key(self, guild_id: int, user_id: int, day: str) -> str:
         return f"{guild_id}:{day}:{user_id}"
@@ -350,6 +367,17 @@ class MongoMatchStore(MatchStore):
             reverse=True,
         )
         return docs
+
+    async def merge_activity_session(self, session_id: str, fields: dict) -> None:
+        if self._activity is None:
+            await self.connect()
+        payload = _clone(fields)
+        payload["updated_at"] = time.time()
+        await self._activity.update_one(
+            {"_id": session_id},
+            {"$set": payload, "$setOnInsert": {"_id": session_id}},
+            upsert=True,
+        )
 
     async def try_claim_daily_win(
         self,

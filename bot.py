@@ -2931,7 +2931,12 @@ def build_activity_watch_view(
     return view
 
 
-async def notify_activity_play_started(bot_ref: "SudokuBot", session_id: str) -> None:
+async def notify_activity_play_started(
+    bot_ref: "SudokuBot",
+    session_id: str,
+    *,
+    fallback_user: discord.abc.User | None = None,
+) -> None:
     """Post a one-time watch invite when someone starts /play (no live updates)."""
     if not ACTIVITY_WATCH_CHANNEL_ID:
         return
@@ -2939,13 +2944,13 @@ async def notify_activity_play_started(bot_ref: "SudokuBot", session_id: str) ->
         return
 
     session = await match_store.get_activity_session(session_id)
-    if not session or session.get("watch_notified"):
+    if session and session.get("watch_notified"):
         return
 
     _activity_notify_inflight.add(session_id)
     try:
         session = await match_store.get_activity_session(session_id)
-        if not session or session.get("watch_notified"):
+        if session and session.get("watch_notified"):
             return
 
         channel = await resolve_channel(bot_ref, ACTIVITY_WATCH_CHANNEL_ID)
@@ -2953,20 +2958,35 @@ async def notify_activity_play_started(bot_ref: "SudokuBot", session_id: str) ->
             print(f"activity watch channel {ACTIVITY_WATCH_CHANNEL_ID} not found")
             return
 
-        guild_id = int(session.get("guild_id") or 0)
+        parts = str(session_id).split(":")
+        guild_id = int(parts[1]) if len(parts) >= 3 else 0
+        user_id = int(parts[2]) if len(parts) >= 3 else 0
         guild = bot_ref.get_guild(guild_id)
-        mention = activity_session_mention(guild, session)
-        view = ActivityPlayWatchView(session_id, bot_ref)
+        if fallback_user is not None:
+            mention = fallback_user.mention
+            player_name = getattr(fallback_user, "display_name", fallback_user.name)
+        elif session:
+            mention = activity_session_mention(guild, session)
+            player_name = str(session.get("name") or "Player")
+        elif user_id:
+            mention = f"<@{user_id}>"
+            player_name = "Player"
+        else:
+            return
 
+        view = ActivityPlayWatchView(session_id, bot_ref)
         msg = await channel.send(
             content=f"{mention} is playing — you can watch here.",
             view=view,
         )
         view.message = msg
         bot_ref.add_view(view)
-        await match_store.update_activity_session(
+        await match_store.merge_activity_session(
             session_id,
             {
+                "guild_id": str(guild_id),
+                "user_id": str(user_id),
+                "name": player_name,
                 "watch_notified": True,
                 "watch_message_id": msg.id,
                 "watch_channel_id": str(ACTIVITY_WATCH_CHANNEL_ID),
@@ -2979,6 +2999,20 @@ async def notify_activity_play_started(bot_ref: "SudokuBot", session_id: str) ->
         print(f"notify_activity_play_started error for {session_id}: {exc}")
     finally:
         _activity_notify_inflight.discard(session_id)
+
+
+async def notify_activity_play_from_launch(
+    bot_ref: "SudokuBot",
+    interaction: discord.Interaction,
+) -> None:
+    if interaction.guild is None:
+        return
+    session_id = f"activity:{interaction.guild.id}:{interaction.user.id}"
+    await notify_activity_play_started(
+        bot_ref,
+        session_id,
+        fallback_user=interaction.user,
+    )
 
 
 async def delete_activity_watch_message(
@@ -3064,8 +3098,15 @@ class ActivityPlayWatchView(discord.ui.View):
                 ephemeral=True,
             )
             return
-        board = normalize_board(session.get("board") or [])
+        board_raw = session.get("board")
         given = session.get("given") or []
+        if not board_raw or not given:
+            await interaction.response.send_message(
+                "Board is still loading — try again in a few seconds.",
+                ephemeral=True,
+            )
+            return
+        board = normalize_board(board_raw)
         name = str(session.get("name") or "Player")
         filled = int(session.get("filled") or 0)
         tier = difficulty_label(session.get("difficulty"))
@@ -5247,6 +5288,8 @@ async def _launch_activity_window(interaction: discord.Interaction) -> None:
             f"guild={getattr(interaction.guild, 'id', None)} "
             f"channel={getattr(interaction.channel, 'id', None)}"
         )
+        if interaction.guild is not None:
+            asyncio.create_task(notify_activity_play_from_launch(bot, interaction))
         return
     except Exception as exc:  # noqa: BLE001 — always acknowledge the interaction
         print(f"launch_activity failed: {type(exc).__name__}: {exc}")
