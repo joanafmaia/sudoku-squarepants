@@ -22,6 +22,8 @@ let gameApi = null;
 let autosaveTimer = null;
 let saving = false;
 let exitHooksBound = false;
+let sessionOpenedAt = 0;
+const WATCH_END_MIN_MS = 25000;
 
 function setStatus(message) {
   if (statusEl) statusEl.textContent = message;
@@ -262,6 +264,10 @@ function flushSessionOnExit({ endWatch = false } = {}) {
     }
   }
   if (endWatch) {
+    const ageMs = Date.now() - sessionOpenedAt;
+    if (sessionOpenedAt && ageMs < WATCH_END_MIN_MS) {
+      return;
+    }
     endWatchOnExit();
   }
 }
@@ -274,12 +280,16 @@ function startAutosave() {
   if (exitHooksBound) return;
   exitHooksBound = true;
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") flushSessionOnExit();
+    if (document.visibilityState === "hidden") {
+      flushSessionOnExit({ endWatch: false });
+    }
   });
-  window.addEventListener("pagehide", flushSessionOnExit);
-  window.addEventListener("beforeunload", flushSessionOnExit);
+  window.addEventListener("pagehide", (event) => {
+    flushSessionOnExit({ endWatch: !event.persisted });
+  });
+  window.addEventListener("beforeunload", () => flushSessionOnExit({ endWatch: true }));
   // Discord Embedded App may freeze the frame without a full unload.
-  document.addEventListener("freeze", flushSessionOnExit);
+  document.addEventListener("freeze", () => flushSessionOnExit({ endWatch: true }));
 }
 
 function stopAutosave() {
@@ -318,6 +328,7 @@ function askResume(session) {
 }
 
 async function beginPlay({ resumeSession = null } = {}) {
+  sessionOpenedAt = Date.now();
   const cosmetics = await loadCosmetics();
   if (resumeSession) {
     startGameOnce(cosmetics, { autoStart: false });

@@ -437,7 +437,6 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         return {"ok": True, "cleared": True}
 
     existing = await match_store.get_activity_session(session_id)
-    already_notified = bool(existing and existing.get("watch_notified"))
 
     doc = {
         "_id": session_id,
@@ -457,16 +456,16 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         "channel_id": str(channel_id_raw) if channel_id_raw else None,
         "last_move_at": time.time(),
     }
-    if existing:
-        for key in ("watch_notified", "watch_message_id", "watch_channel_id"):
-            if existing.get(key) is not None:
-                doc[key] = existing[key]
     await match_store.upsert_activity_session(doc)
+    current = await match_store.get_activity_session(session_id)
+    watch_live = bool(
+        current and current.get("watch_notified") and current.get("watch_message_id")
+    )
     print(
         f"activity session save user={uid} guild={guild_id} filled={filled} "
-        f"notify={'skip' if already_notified else 'yes'}"
+        f"notify={'skip' if watch_live else 'yes'}"
     )
-    if not already_notified:
+    if not watch_live:
         try:
             from bot import notify_activity_play_started
 
