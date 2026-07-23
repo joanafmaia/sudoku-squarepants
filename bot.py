@@ -2085,23 +2085,74 @@ async def sync_challenge_board(game: dict) -> None:
     await persist_game(key, game)
 
 
+def challenge_home_channel(
+    channel: discord.abc.Messageable | None,
+) -> discord.TextChannel | None:
+    """Text channel where challenge threads should be created (parent if inside a thread)."""
+    if isinstance(channel, discord.TextChannel):
+        return channel
+    if isinstance(channel, discord.Thread):
+        parent = channel.parent
+        if isinstance(parent, discord.TextChannel):
+            return parent
+    return None
+
+
+async def resolve_channel(
+    bot: "SudokuBot",
+    channel_id: int | None,
+) -> discord.abc.Messageable | None:
+    """Cache lookup, then API fetch — private threads often miss cache after restart."""
+    if not channel_id:
+        return None
+    channel = bot.get_channel(int(channel_id))
+    if channel is not None:
+        return channel
+    try:
+        return await bot.fetch_channel(int(channel_id))
+    except (discord.HTTPException, discord.NotFound, discord.Forbidden):
+        return None
+
+
 async def open_private_match_channel(
     channel: discord.TextChannel,
     user: discord.abc.User,
     title: str,
 ) -> discord.abc.Messageable:
-    """Private thread for one player; falls back to DM if threads are unavailable."""
+    """Private board destination: private thread → public thread → DM."""
+    name = title[:100]
     try:
         thread = await channel.create_thread(
-            name=title[:100],
+            name=name,
             type=discord.ChannelType.private_thread,
             invitable=False,
             auto_archive_duration=60,
         )
-        await thread.add_user(user)
+        try:
+            await thread.add_user(user)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"add_user to private thread failed for {getattr(user, 'id', user)}: {exc}")
         return thread
-    except (discord.Forbidden, discord.HTTPException):
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        print(f"private thread failed for {getattr(user, 'id', user)}: {exc}")
+
+    try:
+        thread = await channel.create_thread(
+            name=name,
+            type=discord.ChannelType.public_thread,
+            auto_archive_duration=60,
+        )
+        return thread
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        print(f"public thread failed for {getattr(user, 'id', user)}: {exc}")
+
+    try:
         return await user.create_dm()
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        raise RuntimeError(
+            f"Can't open a private board for <@{getattr(user, 'id', 0)}> — "
+            "need **Create Private/Public Threads** here, or open DMs from server members."
+        ) from exc
 
 
 async def post_game_panel(
@@ -2115,6 +2166,24 @@ async def post_game_panel(
     view.message = msg
     game["message_id"] = msg.id
     return msg
+
+
+async def abort_challenge_launch(match_id: str, player_ids: list[int]) -> None:
+    """Clear partial sessions if challenge start fails mid-way."""
+    for uid in player_ids:
+        await remove_game(challenge_game_key(match_id, uid))
+    try:
+        await match_store.update_match(
+            match_id,
+            {
+                "status": "finished",
+                "settle_reason": "launch failed",
+                "winner_id": None,
+                "winner_name": None,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"abort_challenge_launch update failed: {exc}")
 
 
 def challenge_ready_to_settle(match: dict) -> bool:
@@ -2192,8 +2261,9 @@ async def settle_challenge_match(
         await remove_game(key)
 
     guild = bot.get_guild(guild_id)
-    channel = bot.get_channel(match["channel_id"])
+    channel = await resolve_channel(bot, match.get("channel_id"))
     if not isinstance(channel, discord.TextChannel):
+        print(f"settle_challenge_match: origin channel missing for match {match.get('_id')}")
         return
 
     def mention(uid: int | None) -> str:
@@ -2386,9 +2456,17 @@ async def launch_challenge_match(
 
     Returns True on success. On failure, sends an ephemeral followup when possible.
     """
+    match_id: str | None = None
+    player_ids: list[int] = []
     try:
         assert interaction.guild is not None
-        assert isinstance(interaction.channel, discord.TextChannel)
+        home = challenge_home_channel(interaction.channel)
+        if home is None:
+            await interaction.followup.send(
+                "Use this in a server text channel (or its thread).",
+                ephemeral=True,
+            )
+            return False
         if len(players) < 2:
             await interaction.followup.send("Need at least 2 players to start.", ephemeral=True)
             return False
@@ -2399,7 +2477,7 @@ async def launch_challenge_match(
         player_names = [m.display_name for m in players]
         doc = new_match_document(
             guild_id=interaction.guild.id,
-            channel_id=interaction.channel.id,
+            channel_id=home.id,
             player_ids=player_ids,
             board=board,
             given=given,
@@ -2415,9 +2493,10 @@ async def launch_challenge_match(
 
         names = " · ".join(m.display_name for m in players)
         destinations: list[tuple[str, discord.Member, discord.abc.Messageable]] = []
+        # Open every destination first — avoid half-started matches
         for slot, member in zip(slots, players):
             dest = await open_private_match_channel(
-                interaction.channel,
+                home,
                 member,
                 f"sudoku-{len(players)}p-{member.display_name}"[:90],
             )
@@ -2440,7 +2519,7 @@ async def launch_challenge_match(
                 owner_id=member.id,
                 owner_name=member.display_name,
                 owner_title=equipped_title_id(pstats),
-                channel_id=getattr(dest, "id", interaction.channel.id),
+                channel_id=getattr(dest, "id", home.id),
                 guild_id=interaction.guild.id,
                 match_id=match_id,
                 player_slot=slot,
@@ -2448,12 +2527,18 @@ async def launch_challenge_match(
                 started_at=start_time,
                 pin_emojis=owned_pin_emojis(pstats),
             )
-            await dest.send(
-                f"{member.mention} Speedrun ({len(players)} players) · **{tier}**\n"
-                f"Field: {names} — go!"
-            )
-            await post_game_panel(dest, key, games[key])
-            await persist_game(key, games[key])
+            try:
+                await dest.send(
+                    f"{member.mention} Speedrun ({len(players)} players) · **{tier}**\n"
+                    f"Field: {names} — go!"
+                )
+                await post_game_panel(dest, key, games[key])
+                await persist_game(key, games[key])
+            except discord.HTTPException as exc:
+                raise RuntimeError(
+                    f"Couldn't deliver board to {member.mention} ({exc}). "
+                    "Open DMs from server members or grant thread permissions."
+                ) from exc
 
         await interaction.followup.send(
             f"Challenge started ({len(players)}): {roster} · **{tier}**. "
@@ -2462,6 +2547,8 @@ async def launch_challenge_match(
         return True
     except Exception as exc:  # noqa: BLE001
         print(f"launch_challenge_match failed: {exc}")
+        if match_id is not None:
+            await abort_challenge_launch(match_id, player_ids)
         try:
             if interaction.response.is_done():
                 await interaction.followup.send(
@@ -2560,7 +2647,7 @@ class ChallengeInviteView(discord.ui.View):
                     pass
 
         guild = interaction.guild
-        if guild is None or not isinstance(interaction.channel, discord.TextChannel):
+        if guild is None or challenge_home_channel(interaction.channel) is None:
             await _abort("Use this lobby in a server text channel.")
             return
 
@@ -2784,7 +2871,7 @@ class OpenChallengeLobbyView(discord.ui.View):
             )
             return
         guild = interaction.guild
-        if guild is None or not isinstance(interaction.channel, discord.TextChannel):
+        if guild is None or challenge_home_channel(interaction.channel) is None:
             await interaction.response.send_message("Invalid channel.", ephemeral=True)
             return
 
@@ -2937,13 +3024,13 @@ class ConfirmQuitView(discord.ui.View):
         *,
         embed: discord.Embed,
     ) -> None:
-        channel = self.bot.get_channel(game.get("channel_id"))
+        channel = await resolve_channel(self.bot, game.get("channel_id"))
         if not game.get("message_id") or channel is None:
             return
         try:
             msg = await channel.fetch_message(game["message_id"])
             await msg.edit(content=None, embed=embed, view=None, attachments=[])
-        except discord.HTTPException:
+        except (discord.HTTPException, AttributeError):
             pass
 
     @discord.ui.button(label="Quit", style=discord.ButtonStyle.danger)
@@ -4353,6 +4440,7 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
         return
 
     restored = 0
+    dropped = 0
     for doc in docs:
         key = deserialize_game_key(doc.get("game_key") or doc.get("_id", ""))
         raw = doc.get("game")
@@ -4381,11 +4469,27 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
         except (TypeError, ValueError):
             game.setdefault("pin_emojis", [])
 
-        games[key] = game
-
-        channel = bot.get_channel(game.get("channel_id"))
+        channel = await resolve_channel(bot, game.get("channel_id"))
         if channel is None or not game.get("message_id"):
+            # Dead panel (deleted thread / lost DM) — don't block /challenge forever
+            print(
+                f"Dropping unrecoverable session {serialize_game_key(key)} "
+                f"(channel={game.get('channel_id')})"
+            )
+            if game.get("mode") == "challenge" and game.get("match_id") and game.get("player_slot"):
+                try:
+                    await match_store.update_player(
+                        game["match_id"],
+                        game["player_slot"],
+                        {"forfeit": True, "finished_time": None},
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"forfeit dropped challenge session failed: {exc}")
+            await drop_persisted_game(key)
+            dropped += 1
             continue
+
+        games[key] = game
         try:
             msg = await channel.fetch_message(game["message_id"])
             view = SudokuView(key, bot)
@@ -4398,9 +4502,9 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
             )
             view.message = msg
             restored += 1
-        except discord.HTTPException:
-            # Keep in memory; player can still /quit
-            pass
+        except discord.HTTPException as exc:
+            # Keep in memory so /quit still works; player may Refresh later
+            print(f"reattach panel failed for {serialize_game_key(key)}: {exc}")
 
     # Abandon challenge matches with no live sessions left
     try:
@@ -4419,12 +4523,23 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
         )
         if any_live:
             continue
-        await match_store.update_match(
-            mid,
-            {"status": "finished", "settle_reason": "bot restart — abandoned", "winner_id": None},
-        )
+        # Refresh match after any forfeit marks from dropped sessions
+        try:
+            fresh = await match_store.get_match(mid)
+        except Exception:
+            fresh = match
+        if fresh and challenge_ready_to_settle(fresh):
+            await settle_challenge_match(bot, fresh, reason="restart — no live boards")
+        else:
+            await match_store.update_match(
+                mid,
+                {"status": "finished", "settle_reason": "bot restart — abandoned", "winner_id": None},
+            )
 
-    print(f"Restored {restored} active game panel(s); {len(games)} session(s) in memory.")
+    print(
+        f"Restored {restored} active game panel(s); dropped {dropped} unrecoverable; "
+        f"{len(games)} session(s) in memory."
+    )
 
 
 @bot.event
@@ -4676,8 +4791,11 @@ async def challenge_cmd(
     open_lobby: bool = False,
     difficulty: app_commands.Choice[str] | None = None,
 ):
-    if interaction.guild is None or not isinstance(interaction.channel, discord.TextChannel):
-        await interaction.response.send_message("Use this in a server text channel.", ephemeral=True)
+    if interaction.guild is None or challenge_home_channel(interaction.channel) is None:
+        await interaction.response.send_message(
+            "Use this in a server text channel (or its thread).",
+            ephemeral=True,
+        )
         return
 
     left = challenge_cooldown_remaining(interaction.user.id)
