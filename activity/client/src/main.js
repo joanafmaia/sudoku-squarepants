@@ -2,12 +2,27 @@
  * Discord Embedded App SDK bootstrap for Thcoku.
  * Initializes Discord session, wires Mongo APIs, then starts PyScript.
  */
-import { DiscordSDK } from "@discord/embedded-app-sdk";
+import { DiscordSDK, patchUrlMappings } from "@discord/embedded-app-sdk";
 
-// Rewrite absolute CDN URLs to same-origin paths. Render proxies:
-//   /pyscript/*  → pyscript.net
-//   /jsdelivr/*  → cdn.jsdelivr.net
-// Works with only Discord URL Mapping `/` → sudoku-squarepants.onrender.com
+// Discord CSP: map CDN hosts (must match Developer Portal URL Mappings).
+try {
+  patchUrlMappings(
+    [
+      { prefix: "/pyscript", target: "pyscript.net" },
+      { prefix: "/jsdelivr", target: "cdn.jsdelivr.net" },
+    ],
+    {
+      patchFetch: true,
+      patchWebSocket: true,
+      patchXhr: true,
+      patchSrcAttributes: true,
+    }
+  );
+} catch (err) {
+  console.warn("[Thcoku] patchUrlMappings skipped", err);
+}
+
+// Fallback rewrite if a library bypasses the SDK patches.
 (function patchCdnToSameOrigin() {
   const rewrite = (value) =>
     String(value)

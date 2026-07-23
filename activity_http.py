@@ -22,18 +22,32 @@ from typing import Any, Callable
 
 BotGetter = Callable[[], Any]
 
+CORS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS, HEAD",
+}
+
 CDN_PREFIXES = {
     "/pyscript/": "https://pyscript.net/",
     "/jsdelivr/": "https://cdn.jsdelivr.net/",
 }
 
+_CDN_CACHE_DIR = Path(os.getenv("CDN_CACHE_DIR") or "/tmp/thcoku-cdn-cache")
+
 
 def _proxy_cdn(path: str) -> tuple[int, bytes, str] | None:
-    """Fetch PyScript / Pyodide assets via our host so Discord `/` mapping is enough."""
+    """Fetch PyScript / Pyodide via disk-cached proxy (avoids re-download + OOM)."""
     for prefix, origin in CDN_PREFIXES.items():
         if not path.startswith(prefix):
             continue
-        url = origin + path[len(prefix) :]
+        rel = path[len(prefix) :]
+        url = origin + rel
+        cache_path = _CDN_CACHE_DIR / prefix.strip("/").replace("/", "_") / rel
+        if cache_path.is_file() and cache_path.stat().st_size > 0:
+            ctype, _ = mimetypes.guess_type(str(cache_path))
+            return 200, cache_path.read_bytes(), ctype or "application/octet-stream"
+
         req = urllib.request.Request(
             url,
             headers={
@@ -46,9 +60,14 @@ def _proxy_cdn(path: str) -> tuple[int, bytes, str] | None:
             method="GET",
         )
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=90) as resp:
                 data = resp.read()
                 ctype = resp.headers.get("Content-Type") or mimetypes.guess_type(path)[0]
+                try:
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    cache_path.write_bytes(data)
+                except OSError as exc:
+                    print(f"CDN cache write failed: {exc}")
                 return 200, data, ctype or "application/octet-stream"
         except urllib.error.HTTPError as exc:
             raw = exc.read()
@@ -190,7 +209,7 @@ async def _exchange_token_async(code: str) -> tuple[int, dict]:
     return last
 
 
-def _discord_user_from_bearer(auth_header: str | None) -> dict | None:
+def _discord_user_from_bearer(auth_header: str | None, bot: Any | None = None) -> dict | None:
     if not auth_header:
         return None
     match = auth_header.strip()
@@ -199,14 +218,27 @@ def _discord_user_from_bearer(auth_header: str | None) -> dict | None:
     token = match[7:].strip()
     if not token:
         return None
-    req = urllib.request.Request(
-        "https://discord.com/api/users/@me",
-        headers={"Authorization": f"Bearer {token}"},
-    )
+
+    async def _fetch() -> dict | None:
+        import aiohttp
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "DiscordBot (https://github.com/Rapptz/discord.py 2.7.1) Python/3.12 aiohttp/3.14",
+        }
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get("https://discord.com/api/v10/users/@me", headers=headers) as resp:
+                if resp.status >= 400:
+                    return None
+                return await resp.json()
+
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode())
-    except Exception:
+        if bot is not None and getattr(bot, "loop", None) and bot.loop.is_running():
+            return _run_coro(bot, _fetch(), timeout=20.0)
+        return asyncio.run(_fetch())
+    except Exception as exc:  # noqa: BLE001
+        print(f"discord @me failed: {exc}")
         return None
 
 
@@ -454,7 +486,8 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
             self._send_json(200, {"top": top, "guild_id": guild_id, "updated": True})
 
         def _activity_win(self) -> None:
-            user = _discord_user_from_bearer(self.headers.get("Authorization"))
+            bot = bot_getter()
+            user = _discord_user_from_bearer(self.headers.get("Authorization"), bot=bot)
             if not user or not user.get("id"):
                 self._send_json(401, {"error": "unauthorized"})
                 return
@@ -463,13 +496,15 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
             except Exception:
                 self._send_json(400, {"error": "invalid_json"})
                 return
-            bot = bot_getter()
             try:
                 result = _run_coro(bot, _apply_activity_win(bot, user=user, body=body))
             except Exception as exc:  # noqa: BLE001
                 self._send_json(500, {"error": "win_failed", "message": str(exc)})
                 return
             self._send_json(200, result)
+
+        def do_HEAD(self) -> None:  # noqa: N802
+            self.do_GET()
 
         def log_message(self, format: str, *args) -> None:  # noqa: A003
             return

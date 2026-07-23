@@ -22,5 +22,7 @@ services:
         sync: false
       - key: DISCORD_CLIENT_SECRET
         sync: false
+      - key: DISCORD_OAUTH_REDIRECT_URI
+        value: "https://127.0.0.1"
       - key: ACTIVITY_STATIC_DIR
         value: /app/activity_dist

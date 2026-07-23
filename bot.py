@@ -4715,16 +4715,17 @@ async def _launch_activity_window(interaction: discord.Interaction) -> None:
                 "A app ainda **não tem Activities/EMBEDDED** ligado.\n"
                 "No [Developer Portal](https://discord.com/developers/applications):\n"
                 "1. Escolhe a app **Thcoku**\n"
-                "2. **Activities → URL Mappings**: `/` → `thcoku.netlify.app` "
+                "2. **Activities → URL Mappings**: `/` → `sudoku-squarepants.onrender.com` "
                 "(sem `https://`)\n"
-                "3. **Activities → Settings** → ativa **Enable Activities**\n"
-                "4. Reinicia o Discord e tenta `/play` outra vez"
+                "3. Também `/pyscript` → `pyscript.net` e `/jsdelivr` → `cdn.jsdelivr.net`\n"
+                "4. **Activities → Settings** → ativa **Enable Activities**\n"
+                "5. Reinicia o Discord e tenta `/play` outra vez"
             )
         else:
             tip = (
                 "Não consegui abrir a janela da Activity.\n"
                 "Confirma **Activities → Enable** e URL Mapping `/` → "
-                "`thcoku.netlify.app`.\n"
+                "`sudoku-squarepants.onrender.com`.\n"
                 "Ou inicia a Activity num **canal de voz** (ícone Actividades)."
             )
     try:

@@ -65,8 +65,8 @@ One **Docker** Web Service builds the Activity and runs the bot.
    - **Activities → URL Mappings** (sem `https://`):
      - `/` → `YOUR-SERVICE.onrender.com`
      - `/api` → `YOUR-SERVICE.onrender.com`
-     - (opcional) `/pyscript` → `YOUR-SERVICE.onrender.com` — o Render faz proxy para `pyscript.net`
-     - (opcional) `/jsdelivr` → `YOUR-SERVICE.onrender.com` — proxy para Pyodide
+     - `/pyscript` → `pyscript.net` _(obrigatório para o tabuleiro)_
+     - `/jsdelivr` → `cdn.jsdelivr.net` _(Pyodide — obrigatório)_
    - **Activities → Settings** → Enable Activities
 7. Suspend **Netlify** and **Fly** when Render is stable (one token / one host).
 
