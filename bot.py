@@ -4663,6 +4663,30 @@ async def testboard_pin_autocomplete(
     return _catalog_autocomplete(current, SHOP_PINS)
 
 
+@bot.tree.command(
+    name="thcoku",
+    description="Open the Thcoku game window in this channel (Activity, like Wordle)",
+)
+async def thcoku_cmd(interaction: discord.Interaction):
+    """Launch the Embedded App Activity in the current text/voice channel."""
+    try:
+        await interaction.response.launch_activity()
+    except discord.HTTPException as exc:
+        # launch_activity is the interaction response — if it failed, try a fallback message
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                "Couldn't open the Activity window. Check Developer Portal → "
+                "Activities is enabled, and URL Mappings point to thcoku.netlify.app.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                "Couldn't open the Activity window. Check Developer Portal → "
+                f"Activities is enabled.\n`{exc}`",
+                ephemeral=True,
+            )
+
+
 @bot.tree.command(name="help", description="I'm ready! How to play Bikini Bottom Sudoku")
 async def help_cmd(interaction: discord.Interaction):
     tiers = " · ".join(
@@ -4678,7 +4702,8 @@ async def help_cmd(interaction: discord.Interaction):
     embed.add_field(
         name=f"{BUBBLE} Play",
         value=(
-            "`/play` — solo puzzle (**I'm ready!**)\n"
+            "`/thcoku` — **opens the game window** here (Activity)\n"
+            "`/play` — classic chat board (buttons + image)\n"
             "`/daily` — one pineapple puzzle a day\n"
             "`/challenge` — race your pals on private boards"
         ),
@@ -4722,7 +4747,7 @@ async def help_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="play", description="Start a solo 9×9 Sudoku")
+@bot.tree.command(name="play", description="Classic chat Sudoku (image + buttons). For the game window use /thcoku")
 @app_commands.describe(difficulty="Puzzle difficulty")
 @app_commands.choices(difficulty=DIFFICULTY_CHOICES)
 async def play_cmd(
