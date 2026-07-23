@@ -3360,10 +3360,23 @@ def build_activity_spectator_payload(session: dict) -> tuple[str, discord.File] 
     return content, file
 
 
+async def get_watch_session_for_spectator(session_id: str) -> dict | None:
+    """Load the watch session, falling back to any board saved for the same player."""
+    session = await match_store.get_activity_session(session_id)
+    if session and build_activity_spectator_payload(session) is not None:
+        return session
+    parts = str(session_id).split(":")
+    if len(parts) >= 3:
+        alt = await match_store.find_activity_session_by_user_id(parts[2])
+        if alt and build_activity_spectator_payload(alt) is not None:
+            return alt
+    return session
+
+
 async def wait_for_activity_board(session_id: str, *, attempts: int = 10) -> dict | None:
     session: dict | None = None
     for attempt in range(attempts):
-        session = await match_store.get_activity_session(session_id)
+        session = await get_watch_session_for_spectator(session_id)
         if not session:
             return None
         if build_activity_spectator_payload(session) is not None:
@@ -3443,7 +3456,7 @@ class ActivityPlayLiveSpectatorView(discord.ui.View):
     async def _refresh_message(self, *, force: bool = False) -> bool:
         if self.message is None or self._closed:
             return False
-        session = await match_store.get_activity_session(self.session_id)
+        session = await get_watch_session_for_spectator(self.session_id)
         if not session:
             self._stop_polling()
             try:

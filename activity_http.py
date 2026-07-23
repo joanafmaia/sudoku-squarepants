@@ -395,14 +395,33 @@ def _activity_session_id(guild_id: str | int, user_id: str | int) -> str:
     return f"activity:{guild_id}:{user_id}"
 
 
+def _activity_session_id(guild_id: str | int, user_id: str | int) -> str:
+    return f"activity:{guild_id}:{user_id}"
+
+
+async def _resolve_activity_guild_id(guild_id: str | int, user_id: str | int) -> str:
+    gid = str(guild_id if guild_id is not None else "0")
+    if gid not in ("", "0"):
+        return gid
+    from challenge_store import match_store
+
+    recent = await match_store.find_activity_session_by_user_id(user_id)
+    if recent and recent.get("guild_id") and str(recent["guild_id"]) not in ("", "0"):
+        return str(recent["guild_id"])
+    return gid
+
+
 async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
     from challenge_store import match_store
 
-    guild_id = str(body.get("guild_id") if body.get("guild_id") is not None else "0")
+    uid = int(user["id"])
+    guild_id = await _resolve_activity_guild_id(
+        body.get("guild_id") if body.get("guild_id") is not None else "0",
+        uid,
+    )
     if body.get("clear") or body.get("action") == "clear":
         return await _delete_activity_session(bot, user=user, guild_id=guild_id)
 
-    uid = int(user["id"])
     session_id = _activity_session_id(guild_id, uid)
     if body.get("end_watch"):
         try:
@@ -417,8 +436,16 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
     given = _normalize_activity_given(body.get("given"), board)
     solution = body.get("solution")
     if board is None or given is None:
+        print(
+            f"activity session save invalid_board user={uid} guild={guild_id} "
+            f"raw_guild={body.get('guild_id')}"
+        )
         return {"ok": False, "error": "invalid_board"}
     if not isinstance(solution, list) or len(solution) != 9:
+        print(
+            f"activity session save invalid_solution user={uid} guild={guild_id} "
+            f"solution_type={type(solution).__name__}"
+        )
         return {"ok": False, "error": "invalid_solution"}
 
     difficulty = body.get("difficulty") or "medium"
@@ -457,6 +484,11 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         "last_move_at": time.time(),
     }
     await match_store.upsert_activity_session(doc)
+    wrong_id = _activity_session_id("0", uid)
+    if wrong_id != session_id:
+        wrong = await match_store.get_activity_session(wrong_id)
+        if wrong:
+            await match_store.delete_activity_session(wrong_id)
     current = await match_store.get_activity_session(session_id)
     watch_live = bool(
         current and current.get("watch_notified") and current.get("watch_message_id")
@@ -479,7 +511,10 @@ async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict
     from challenge_store import match_store
 
     uid = int(user["id"])
-    doc = await match_store.get_activity_session(_activity_session_id(guild_id, uid))
+    resolved_guild = await _resolve_activity_guild_id(guild_id, uid)
+    doc = await match_store.get_activity_session(_activity_session_id(resolved_guild, uid))
+    if not doc:
+        doc = await match_store.find_activity_session_by_user_id(uid)
     if not doc:
         return {"ok": True, "session": None}
     return {

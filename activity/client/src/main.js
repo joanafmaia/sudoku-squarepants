@@ -30,7 +30,31 @@ function setStatus(message) {
 }
 
 function guildId() {
-  return window.__DISCORD_SDK__?.guildId || "0";
+  const id = window.__DISCORD_SDK__?.guildId;
+  if (id == null || id === "") return "0";
+  return String(id);
+}
+
+async function resolveGuildId(maxWaitMs = 8000) {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    const id = window.__DISCORD_SDK__?.guildId;
+    if (id != null && id !== "" && String(id) !== "0") {
+      return String(id);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return guildId();
+}
+
+async function buildSessionPayload(snap) {
+  const gid = await resolveGuildId();
+  return {
+    ...snap,
+    guild_id: gid,
+    channel_id: channelId(),
+    name: playerName(),
+  };
 }
 
 function userId() {
@@ -200,16 +224,20 @@ async function saveSessionNow({ keepalive = false, force = false, snap = null } 
   if (saving && !force && !keepalive) return;
   saving = true;
   try {
-    await apiFetch("/api/activity/session", {
+    const payload = await buildSessionPayload(snap);
+    const res = await apiFetch("/api/activity/session", {
       method: "POST",
-      body: JSON.stringify(sessionPayload(snap)),
+      body: JSON.stringify(payload),
       keepalive,
     });
+    if (!res?.ok) {
+      const data = await res.json().catch(() => ({}));
+      console.warn("[Thcoku] session save failed", res?.status, data.error || data);
+    }
   } catch (err) {
     console.warn("[Thcoku] session save failed", err);
   } finally {
-    if (!keepalive) saving = false;
-    else saving = false;
+    saving = false;
   }
 }
 

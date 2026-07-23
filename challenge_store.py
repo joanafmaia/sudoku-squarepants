@@ -99,6 +99,9 @@ class MatchStore:
     async def merge_activity_session(self, session_id: str, fields: dict) -> None:
         raise NotImplementedError
 
+    async def find_activity_session_by_user_id(self, user_id: str | int) -> dict | None:
+        raise NotImplementedError
+
 
 class MemoryMatchStore(MatchStore):
     def __init__(self) -> None:
@@ -206,6 +209,24 @@ class MemoryMatchStore(MatchStore):
             payload["_id"] = session_id
             payload["updated_at"] = time.time()
             self._activity[session_id] = payload
+
+    async def find_activity_session_by_user_id(self, user_id: str | int) -> dict | None:
+        uid = str(user_id)
+        best: dict | None = None
+        best_ts = 0.0
+        for doc in self._activity.values():
+            if str(doc.get("user_id")) != uid:
+                continue
+            ts = float(
+                doc.get("last_move_at")
+                or doc.get("updated_at")
+                or doc.get("watch_posted_at")
+                or 0
+            )
+            if ts >= best_ts:
+                best_ts = ts
+                best = doc
+        return _clone(best) if best else None
 
     def _daily_key(self, guild_id: int, user_id: int, day: str) -> str:
         return f"{guild_id}:{day}:{user_id}"
@@ -388,6 +409,16 @@ class MongoMatchStore(MatchStore):
             {"$set": payload, "$setOnInsert": {"_id": session_id}},
             upsert=True,
         )
+
+    async def find_activity_session_by_user_id(self, user_id: str | int) -> dict | None:
+        if self._activity is None:
+            await self.connect()
+        cursor = self._activity.find({"user_id": str(user_id)}).sort("updated_at", -1).limit(5)
+        docs = await cursor.to_list(length=5)
+        for doc in docs:
+            if doc.get("board") and doc.get("given"):
+                return doc
+        return docs[0] if docs else None
 
     async def try_claim_daily_win(
         self,
