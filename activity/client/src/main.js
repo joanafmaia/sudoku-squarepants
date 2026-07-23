@@ -181,9 +181,11 @@ async function clearSavedSession() {
   }
 }
 
-async function saveSessionNow({ keepalive = false, force = false } = {}) {
-  if (!gameApi?.getSnapshot) return;
-  const snap = gameApi.getSnapshot();
+async function saveSessionNow({ keepalive = false, force = false, snap = null } = {}) {
+  if (!snap) {
+    if (!gameApi?.getSnapshot) return;
+    snap = gameApi.getSnapshot();
+  }
   if (!snap) return;
   writeLocalSession(snap);
   if (!window.__DISCORD_ACCESS_TOKEN__) return;
@@ -281,6 +283,13 @@ function askResume(session) {
   });
 }
 
+async function reportSessionActive() {
+  if (!window.__DISCORD_ACCESS_TOKEN__ || !gameApi) return;
+  const snap = gameApi.getStartSnapshot?.() || gameApi.getSnapshot?.();
+  if (!snap) return;
+  await saveSessionNow({ force: true, snap });
+}
+
 async function beginPlay({ resumeSession = null } = {}) {
   const cosmetics = await loadCosmetics();
   if (resumeSession) {
@@ -293,6 +302,7 @@ async function beginPlay({ resumeSession = null } = {}) {
   }
   if (cosmetics && gameApi?.setCosmetics) gameApi.setCosmetics(cosmetics);
   startAutosave();
+  await reportSessionActive();
 }
 
 async function showGame() {

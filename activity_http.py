@@ -455,11 +455,11 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
     await match_store.upsert_activity_session(doc)
     if not already_notified:
         try:
-            from bot import schedule_activity_play_notify
+            from bot import notify_activity_play_started
 
-            schedule_activity_play_notify(session_id)
+            await notify_activity_play_started(bot, session_id)
         except Exception as exc:  # noqa: BLE001
-            print(f"activity play notify schedule failed: {exc}")
+            print(f"activity play notify failed: {exc}")
     return {"ok": True, "filled": filled, "elapsed": elapsed}
 
 

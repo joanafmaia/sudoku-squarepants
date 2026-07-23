@@ -298,6 +298,16 @@ export function startThcokuGame(canvas, options = {}) {
       }
     }
     if (userMoves <= 0) return null;
+    return snapshotPayload();
+  }
+
+  function getStartSnapshot() {
+    /** Board state for watch notify as soon as /play opens (before any moves). */
+    if (!state.board?.length || state.won) return null;
+    return snapshotPayload();
+  }
+
+  function snapshotPayload() {
     return {
       difficulty: state.difficulty,
       diff_index: state.diffIndex,
@@ -870,5 +880,5 @@ export function startThcokuGame(canvas, options = {}) {
     draw();
   }
   startAmbientLoop();
-  return { newGame, place, draw, setCosmetics, getSnapshot, loadSnapshot };
+  return { newGame, place, draw, setCosmetics, getSnapshot, getStartSnapshot, loadSnapshot };
 }

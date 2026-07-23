@@ -2972,8 +2972,11 @@ async def notify_activity_play_started(bot_ref: "SudokuBot", session_id: str) ->
                 "watch_channel_id": str(ACTIVITY_WATCH_CHANNEL_ID),
             },
         )
+        print(f"activity watch posted for {session_id} in {ACTIVITY_WATCH_CHANNEL_ID}")
     except discord.HTTPException as exc:
         print(f"notify_activity_play_started failed for {session_id}: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"notify_activity_play_started error for {session_id}: {exc}")
     finally:
         _activity_notify_inflight.discard(session_id)
 
