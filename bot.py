@@ -56,8 +56,18 @@ CHALLENGE_COOLDOWN_SEC = 60
 INVITE_TIMEOUT_SEC = 5 * 60
 DAILY_EPOCH = datetime(2024, 1, 1, tzinfo=timezone.utc).date()
 # Optional: set to your server ID for instant slash-command updates (global sync can lag).
-DISCORD_GUILD_ID = int(os.getenv("DISCORD_GUILD_ID", "0") or 0)
-ACTIVITY_WATCH_CHANNEL_ID = int(os.getenv("ACTIVITY_WATCH_CHANNEL_ID", "1527293243434209300") or 0)
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+DISCORD_GUILD_ID = _env_int("DISCORD_GUILD_ID", 0)
+ACTIVITY_WATCH_CHANNEL_ID = _env_int("ACTIVITY_WATCH_CHANNEL_ID", 1527293243434209300)
 
 # Fixed weekly difficulty for /daily (Monday=0 … Sunday=6)
 DAILY_WEEKDAY_DIFFICULTY = {
@@ -2959,26 +2969,32 @@ async def notify_activity_play_started(
     *,
     fallback_user: discord.abc.User | None = None,
     force: bool = False,
+    watch_channel_id: int | None = None,
 ) -> None:
     """Post a one-time watch invite when someone starts /play (no live updates)."""
-    if not ACTIVITY_WATCH_CHANNEL_ID:
+    channel_id = int(watch_channel_id or ACTIVITY_WATCH_CHANNEL_ID or 0)
+    if not channel_id:
+        print(f"activity watch notify skipped for {session_id}: no watch channel configured")
         return
     if session_id in _activity_notify_inflight:
+        print(f"activity watch notify skipped for {session_id}: already in flight")
         return
 
     session = await match_store.get_activity_session(session_id)
     if not force and await activity_watch_is_live(bot_ref, session):
+        print(f"activity watch notify skipped for {session_id}: announcement already live")
         return
 
     _activity_notify_inflight.add(session_id)
     try:
         session = await match_store.get_activity_session(session_id)
         if not force and await activity_watch_is_live(bot_ref, session):
+            print(f"activity watch notify skipped for {session_id}: announcement already live")
             return
 
-        channel = await resolve_channel(bot_ref, ACTIVITY_WATCH_CHANNEL_ID)
+        channel = await resolve_channel(bot_ref, channel_id)
         if channel is None:
-            print(f"activity watch channel {ACTIVITY_WATCH_CHANNEL_ID} not found")
+            print(f"activity watch channel {channel_id} not found for {session_id}")
             return
 
         parts = str(session_id).split(":")
@@ -3012,11 +3028,11 @@ async def notify_activity_play_started(
                 "name": player_name,
                 "watch_notified": True,
                 "watch_message_id": msg.id,
-                "watch_channel_id": str(ACTIVITY_WATCH_CHANNEL_ID),
+                "watch_channel_id": str(channel_id),
                 "watch_posted_at": time.time(),
             },
         )
-        print(f"activity watch posted for {session_id} in {ACTIVITY_WATCH_CHANNEL_ID}")
+        print(f"activity watch posted for {session_id} in {channel_id}")
     except discord.HTTPException as exc:
         print(f"notify_activity_play_started failed for {session_id}: {exc}")
     except Exception as exc:  # noqa: BLE001
@@ -3032,9 +3048,16 @@ async def notify_activity_play_from_launch(
     if interaction.guild is None:
         return
     session_id = f"activity:{interaction.guild.id}:{interaction.user.id}"
+    watch_channel_id = ACTIVITY_WATCH_CHANNEL_ID
+    if not watch_channel_id and isinstance(interaction.channel, discord.abc.GuildChannel):
+        watch_channel_id = int(interaction.channel.id)
+    print(
+        f"activity watch launch notify for {session_id} "
+        f"channel={watch_channel_id or 'unset'}"
+    )
     existing = await match_store.get_activity_session(session_id)
     if existing:
-        await delete_activity_watch_message(bot_ref, existing)
+        await delete_activity_watch_message(bot_ref, existing, session_id=session_id)
         await match_store.merge_activity_session(
             session_id,
             {
@@ -3047,17 +3070,31 @@ async def notify_activity_play_from_launch(
         session_id,
         fallback_user=interaction.user,
         force=True,
+        watch_channel_id=watch_channel_id or None,
     )
+
+
+async def _notify_activity_play_from_launch_safe(
+    bot_ref: "SudokuBot",
+    interaction: discord.Interaction,
+) -> None:
+    try:
+        await notify_activity_play_from_launch(bot_ref, interaction)
+    except Exception as exc:  # noqa: BLE001
+        print(f"notify_activity_play_from_launch failed: {type(exc).__name__}: {exc}")
 
 
 async def delete_activity_watch_message(
     bot_ref: "SudokuBot",
     session: dict,
+    *,
+    session_id: str | None = None,
 ) -> None:
     """Remove the channel watch announcement when the /play session ends."""
     raw_msg = session.get("watch_message_id")
     if not raw_msg:
         return
+    sid = session_id or session.get("_id")
     channel_id = session.get("watch_channel_id") or ACTIVITY_WATCH_CHANNEL_ID
     channel = await resolve_channel(bot_ref, int(channel_id))
     if channel is None:
@@ -3067,6 +3104,15 @@ async def delete_activity_watch_message(
         await msg.delete()
     except discord.HTTPException as exc:
         print(f"delete_activity_watch_message failed: {exc}")
+        if sid and (getattr(exc, "code", None) == 10008 or exc.status == 404):
+            await match_store.merge_activity_session(
+                str(sid),
+                {
+                    "watch_message_id": None,
+                    "watch_notified": False,
+                },
+            )
+            print(f"cleared stale activity watch message id for {sid}")
 
 
 async def end_activity_watch(bot_ref: "SudokuBot", session_id: str) -> None:
@@ -5238,6 +5284,7 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    print(f"Activity watch channel id: {ACTIVITY_WATCH_CHANNEL_ID or 'unset'}")
     if not rotate_status.is_running():
         rotate_status.start()
     await bot.change_presence(activity=STATUS_ROTATION[0])
@@ -5349,7 +5396,7 @@ async def _launch_activity_window(interaction: discord.Interaction) -> None:
             f"channel={getattr(interaction.channel, 'id', None)}"
         )
         if interaction.guild is not None:
-            asyncio.create_task(notify_activity_play_from_launch(bot, interaction))
+            asyncio.create_task(_notify_activity_play_from_launch_safe(bot, interaction))
         return
     except Exception as exc:  # noqa: BLE001 — always acknowledge the interaction
         print(f"launch_activity failed: {type(exc).__name__}: {exc}")
