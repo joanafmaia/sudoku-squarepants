@@ -5,14 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Thcoku — Discord Activity</title>
     <link rel="stylesheet" href="/src/style.css" />
-    <!-- Absolute CDN URLs: Vite must not bundle these; Discord rewrites via patchUrlMappings. -->
+    <!-- Served via Render CDN proxy (/pyscript → pyscript.net). Vite must treat as external. -->
     <link
       rel="stylesheet"
-      href="https://pyscript.net/releases/2026.7.2/core.css"
+      href="/pyscript/releases/2026.7.2/core.css"
     />
     <script
       type="module"
-      src="https://pyscript.net/releases/2026.7.2/core.js"
+      src="/pyscript/releases/2026.7.2/core.js"
+      data-external="true"
     ></script>
   </head>
   <body>
@@ -23,8 +24,10 @@
 
     <main id="app">
       <div class="layout">
-        <canvas id="canvas"></canvas>
-        <!-- Static tag: Discord CSP blocks createElement('script'). -->
+        <div id="game-shell">
+          <canvas id="canvas" width="720" height="980"></canvas>
+          <p id="game-hint">A carregar o Sudoku (Pyodide)…</p>
+        </div>
         <script
           type="py-game"
           src="/game/main.py"

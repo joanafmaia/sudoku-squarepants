@@ -1,8 +1,31 @@
 import { defineConfig } from "vite";
 
-// https://vitejs.dev/config/
+function externalCdnPlugin() {
+  return {
+    name: "thcoku-external-cdn",
+    enforce: "pre",
+    resolveId(id) {
+      if (
+        id.startsWith("/pyscript/") ||
+        id.startsWith("/jsdelivr/") ||
+        id.includes("pyscript.net") ||
+        id.includes("cdn.jsdelivr.net")
+      ) {
+        return { id, external: true };
+      }
+      return null;
+    },
+  };
+}
+
 export default defineConfig({
   envDir: "../",
+  plugins: [externalCdnPlugin()],
+  build: {
+    rollupOptions: {
+      external: [/\/pyscript\//, /\/jsdelivr\//, /pyscript\.net/, /cdn\.jsdelivr\.net/],
+    },
+  },
   server: {
     port: 5173,
     proxy: {
@@ -12,7 +35,6 @@ export default defineConfig({
         secure: false,
         ws: true,
       },
-      // Local stand-ins for Discord Activity URL Mappings
       "/pyscript": {
         target: "https://pyscript.net",
         changeOrigin: true,
@@ -25,20 +47,7 @@ export default defineConfig({
         secure: true,
         rewrite: (path) => path.replace(/^\/jsdelivr/, ""),
       },
-      "/gfonts": {
-        target: "https://fonts.googleapis.com",
-        changeOrigin: true,
-        secure: true,
-        rewrite: (path) => path.replace(/^\/gfonts/, ""),
-      },
-      "/gstatic": {
-        target: "https://fonts.gstatic.com",
-        changeOrigin: true,
-        secure: true,
-        rewrite: (path) => path.replace(/^\/gstatic/, ""),
-      },
     },
-    // Useful when tunneling (cloudflared / ngrok) into Discord Activity URL Mapping
     hmr: {
       clientPort: 443,
     },

@@ -22,11 +22,41 @@ from typing import Any, Callable
 
 BotGetter = Callable[[], Any]
 
-CORS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+CDN_PREFIXES = {
+    "/pyscript/": "https://pyscript.net/",
+    "/jsdelivr/": "https://cdn.jsdelivr.net/",
 }
+
+
+def _proxy_cdn(path: str) -> tuple[int, bytes, str] | None:
+    """Fetch PyScript / Pyodide assets via our host so Discord `/` mapping is enough."""
+    for prefix, origin in CDN_PREFIXES.items():
+        if not path.startswith(prefix):
+            continue
+        url = origin + path[len(prefix) :]
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept": "*/*",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = resp.read()
+                ctype = resp.headers.get("Content-Type") or mimetypes.guess_type(path)[0]
+                return 200, data, ctype or "application/octet-stream"
+        except urllib.error.HTTPError as exc:
+            raw = exc.read()
+            return int(exc.code), raw, "text/plain; charset=utf-8"
+        except Exception as exc:  # noqa: BLE001
+            print(f"CDN proxy failed {url}: {exc}")
+            return 502, f"cdn_proxy_failed: {exc}".encode(), "text/plain; charset=utf-8"
+    return None
 
 
 def _static_root() -> Path | None:
@@ -331,7 +361,9 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 self._send_json(403, {"error": "forbidden"})
                 return True
             if not target.is_file():
-                # SPA fallback
+                # SPA fallback only for navigations — never for asset-like paths.
+                if "." in Path(rel).name:
+                    return False
                 index = root / "index.html"
                 if index.is_file() and self.command == "GET":
                     data = index.read_bytes()
@@ -356,11 +388,16 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 self._leaderboard()
                 return
 
+            proxied = _proxy_cdn(path)
+            if proxied is not None:
+                status, body, ctype = proxied
+                self._send(status, body, ctype)
+                return
+
             if self._serve_static(path):
                 return
 
             if path == "/":
-                # No Activity build yet — keep a tiny status page.
                 self._health()
                 return
 

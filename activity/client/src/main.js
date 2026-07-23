@@ -2,27 +2,37 @@
  * Discord Embedded App SDK bootstrap for Thcoku.
  * Initializes Discord session, wires Mongo APIs, then starts PyScript.
  */
-import { DiscordSDK, patchUrlMappings } from "@discord/embedded-app-sdk";
+import { DiscordSDK } from "@discord/embedded-app-sdk";
 
-// Rewrite absolute CDN URLs → Discord proxy prefixes (must match Developer Portal mappings).
-try {
-  patchUrlMappings(
-    [
-      { prefix: "/pyscript", target: "pyscript.net" },
-      { prefix: "/jsdelivr", target: "cdn.jsdelivr.net" },
-      { prefix: "/gfonts", target: "fonts.googleapis.com" },
-      { prefix: "/gstatic", target: "fonts.gstatic.com" },
-    ],
-    {
-      patchFetch: true,
-      patchWebSocket: true,
-      patchXhr: true,
-      patchSrcAttributes: true,
+// Rewrite absolute CDN URLs to same-origin paths. Render proxies:
+//   /pyscript/*  → pyscript.net
+//   /jsdelivr/*  → cdn.jsdelivr.net
+// Works with only Discord URL Mapping `/` → sudoku-squarepants.onrender.com
+(function patchCdnToSameOrigin() {
+  const rewrite = (value) =>
+    String(value)
+      .replace(/^https?:\/\/pyscript\.net/gi, "/pyscript")
+      .replace(/^https?:\/\/cdn\.jsdelivr\.net/gi, "/jsdelivr");
+
+  const origFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    if (typeof input === "string") {
+      return origFetch(rewrite(input), init);
     }
-  );
-} catch (err) {
-  console.warn("[Thcoku] patchUrlMappings skipped", err);
-}
+    if (input instanceof Request) {
+      const url = rewrite(input.url);
+      if (url !== input.url) {
+        return origFetch(new Request(url, input), init);
+      }
+    }
+    return origFetch(input, init);
+  };
+
+  const XHROpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function patchedOpen(method, url, ...rest) {
+    return XHROpen.call(this, method, rewrite(url), ...rest);
+  };
+})();
 
 const CLIENT_ID = import.meta.env.VITE_DISCORD_CLIENT_ID;
 const bootEl = document.getElementById("boot");
@@ -30,6 +40,7 @@ const statusEl = document.getElementById("boot-status");
 const appEl = document.getElementById("app");
 const lbListEl = document.getElementById("lb-list");
 const winToastEl = document.getElementById("win-toast");
+const gameHintEl = document.getElementById("game-hint");
 
 function setStatus(message) {
   if (statusEl) statusEl.textContent = message;
@@ -37,7 +48,35 @@ function setStatus(message) {
 
 function showGame() {
   if (bootEl) bootEl.hidden = true;
+  // If PyGame never paints, surface a hint after a while.
+  window.setTimeout(() => {
+    const canvas = document.getElementById("canvas");
+    if (!canvas || !gameHintEl) return;
+    // PyGame usually resizes/draws; if hint still visible, runtime failed to boot.
+    if (!gameHintEl.hidden && canvas.width > 0) {
+      gameHintEl.textContent =
+        "Sudoku ainda a carregar… Se ficar vazio, confirma URL Mapping /pyscript e /jsdelivr → sudoku-squarepants.onrender.com";
+    }
+  }, 20000);
 }
+
+// Hide hint once the canvas has been drawn by pygame (heuristic).
+window.setInterval(() => {
+  if (!gameHintEl || gameHintEl.hidden) return;
+  const canvas = document.getElementById("canvas");
+  if (!canvas) return;
+  try {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const pixel = ctx.getImageData(10, 10, 1, 1).data;
+    // Sand empty canvas is near-white; drawn board has stronger teal/blue pixels.
+    if (pixel[1] < 200 || pixel[2] < 200) {
+      gameHintEl.hidden = true;
+    }
+  } catch {
+    /* tainted canvas / not ready */
+  }
+}, 1000);
 
 function apiUrl(path) {
   // Discord Activity iframe uses the mapped proxy; local Vite uses /api via proxy or Netlify.
