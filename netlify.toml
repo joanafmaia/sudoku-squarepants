@@ -8,8 +8,15 @@
   NODE_VERSION = "20"
 
 # OAuth code → access_token
+# Paths with /api/* (browser / root URL mapping) AND bare /* (Discord /api URL mapping strips the prefix)
 [[redirects]]
   from = "/api/token"
+  to = "/.netlify/functions/token"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/token"
   to = "/.netlify/functions/token"
   status = 200
   force = true
@@ -21,9 +28,21 @@
   status = 200
   force = true
 
+[[redirects]]
+  from = "/leaderboard"
+  to = "/.netlify/functions/leaderboard"
+  status = 200
+  force = true
+
 # Activity solo win → XP / sponges in Mongo
 [[redirects]]
   from = "/api/activity/win"
+  to = "/.netlify/functions/activity-win"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/activity/win"
   to = "/.netlify/functions/activity-win"
   status = 200
   force = true

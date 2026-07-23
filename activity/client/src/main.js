@@ -29,6 +29,28 @@ function apiUrl(path) {
   return clean;
 }
 
+/** When Activities map `/api` → host, Discord strips `/api`, so `/api/token` becomes `/token`. */
+function apiUrlCandidates(path) {
+  const clean = path.startsWith("/") ? path : `/${path}`;
+  const urls = [];
+  const push = (u) => {
+    if (u && !urls.includes(u)) urls.push(u);
+  };
+  // Inside the Activity iframe (auth may still be pending during token exchange).
+  const inFrame = Boolean(window.__DISCORD_IN_CLIENT__ || window.__DISCORD_SDK__);
+  if (inFrame) {
+    push(`/.proxy${clean}`);
+    if (clean.startsWith("/api/")) {
+      push(`/.proxy${clean.slice(4)}`); // /api/token → /.proxy/token
+    }
+  }
+  push(clean);
+  if (clean.startsWith("/api/")) {
+    push(clean.slice(4)); // /api/token → /token
+  }
+  return urls;
+}
+
 async function apiFetch(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   const token = window.__DISCORD_ACCESS_TOKEN__;
@@ -38,7 +60,12 @@ async function apiFetch(path, options = {}) {
   if (options.body && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
-  return fetch(apiUrl(path), { ...options, headers });
+  let last = null;
+  for (const url of apiUrlCandidates(path)) {
+    last = await fetch(url, { ...options, headers });
+    if (last.status !== 404) return last;
+  }
+  return last;
 }
 
 function formatTime(seconds) {
@@ -178,20 +205,20 @@ function withTimeout(promise, ms, label) {
 }
 
 async function exchangeToken(code) {
-  let response = await fetch("/.proxy/api/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code }),
-  });
-  if (!response.ok) {
-    response = await fetch("/api/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code }),
-    });
+  const body = JSON.stringify({ code });
+  const headers = { "Content-Type": "application/json" };
+  let response = null;
+  for (const url of [
+    "/.proxy/api/token",
+    "/.proxy/token", // Discord /api URL mapping strips the /api prefix
+    "/api/token",
+    "/token",
+  ]) {
+    response = await fetch(url, { method: "POST", headers, body });
+    if (response.status !== 404) break;
   }
-  if (!response.ok) {
-    throw new Error(`Token exchange failed (${response.status})`);
+  if (!response || !response.ok) {
+    throw new Error(`Token exchange failed (${response?.status ?? "network"})`);
   }
   const { access_token } = await response.json();
   return access_token;
@@ -239,7 +266,9 @@ document.getElementById("lb-refresh")?.addEventListener("click", () => {
 
 setupDiscordSdk().catch((err) => {
   console.error(err);
-  launchLocal(
-    `Falha no Discord SDK: ${err?.message ?? err}. A abrir o jogo na mesma…`
-  );
+  const raw = String(err?.message ?? err);
+  const tip = /redirect_uri/i.test(raw)
+    ? 'No Developer Portal → OAuth2 → Redirects, adiciona https://127.0.0.1 e grava. Depois reinicia a Activity.'
+    : raw;
+  launchLocal(`Falha no Discord SDK: ${tip} A abrir o jogo na mesma…`);
 });

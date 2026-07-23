@@ -1,0 +1,22 @@
+# Bot Discord no Render (plano Free + UptimeRobot a pingar /health).
+# Dashboard: New → Blueprint → conectar este repo, ou criar Web Service manualmente.
+services:
+  - type: web
+    name: sudoku-squarepants
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -u bot.py
+    healthCheckPath: /health
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DB
+        value: sudoku
+      - key: DISCORD_GUILD_ID
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.12.8"

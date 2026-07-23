@@ -6,19 +6,19 @@ Interactive 9×9 Sudoku for Discord — slash-command bot **and** a Discord Acti
 
 | Piece | Host | Role |
 |---|---|---|
-| `bot.py` | **Fly.io** | Slash commands (`/play`, `/daily`, `/challenge`, …) |
+| `bot.py` | **Render** (Free + UptimeRobot) | Slash commands (`/play`, `/daily`, `/challenge`, …) |
 | Activity (`activity/`) | **Netlify** | In-Discord web game (PyScript + Pygame-CE) |
 | Backup | **MongoDB Atlas** | Leaderboard / challenges / dailies / sessions — shared by bot + Activity |
 
 ```
-Discord slash  →  Fly.io (bot.py)  ─┐
-                                    ├→  MongoDB Atlas
+Discord slash  →  Render (bot.py)   ─┐
+                                     ├→  MongoDB Atlas
 Discord Activity → Netlify (web+fn) ─┘
 ```
 
 ## Features
 
-- **`/play`** — solo puzzle with difficulty tiers
+- **`/play`** — opens the Discord Activity window (like Wordle); classic board → `/classic`
 - **`/daily`** — same difficulty each day, unique puzzle per player (anti-copy; weekday schedule)
 - **`/challenge`** — private speedrun (invite players or open Join lobby, 2–5 players)
 - Bikini Bottom UI — bubbly Fredoka digits, lagoon board, emoji border pins
@@ -26,7 +26,7 @@ Discord Activity → Netlify (web+fn) ─┘
 - **`/shop`** — Titles (header flair) & Pins (border emojis only)
 - **`/leaderboard`** — XP, today's daily, shop whales
 - **Discord Activity** — play in-client; wins write XP/sponges to the same Mongo leaderboard
-- HTTP `/health` for Fly.io health checks
+- HTTP `/health` — Render health checks + UptimeRobot keep-alive
 
 ## Setup (local bot)
 
@@ -42,24 +42,31 @@ cp .env.example .env
 python bot.py
 ```
 
-## Deploy bot on Fly.io
+## Deploy bot on Render (Free)
 
-1. Install the [Fly CLI](https://fly.io/docs/hands-on/install-flyctl/) and run `fly auth login`
-2. From the repo root (first time):
+1. Push this repo to GitHub, then in [Render](https://dashboard.render.com) → **New** → **Blueprint** (uses [`render.yaml`](render.yaml))  
+   **or** **Web Service** pointing at the repo root:
+   - **Build:** `pip install -r requirements.txt`
+   - **Start:** `python -u bot.py`
+   - **Health Check Path:** `/health`
+   - **Instance type:** Free
+2. Environment variables:
 
-```bash
-fly launch --no-deploy
-# confirm app name matches fly.toml (sudoku-squarepants) or edit fly.toml
-fly secrets set DISCORD_TOKEN=... MONGODB_URI=... MONGODB_DB=sudoku
-# optional:
-# fly secrets set DISCORD_GUILD_ID=your_server_id
-fly deploy
-```
+| Variable | Required | Description |
+|---|---|---|
+| `DISCORD_TOKEN` | yes | Bot token |
+| `MONGODB_URI` | recommended | Atlas URI |
+| `MONGODB_DB` | no | Default `sudoku` |
+| `DISCORD_GUILD_ID` | no | Server ID for instant slash sync |
+| `PORT` | no | Render sets this automatically |
 
-3. Check health: `https://<app>.fly.dev/health` should return `ok`, and the bot should appear online in Discord.
-4. Turn off the old Render service once Fly is healthy.
+3. After deploy, open `https://YOUR-SERVICE.onrender.com/health` — should return `ok ready=True …`.
+4. **UptimeRobot (importante no Free):** cria um monitor **HTTP(s)** a cada **5 minutos** para  
+   `https://YOUR-SERVICE.onrender.com/health`  
+   Sem isto, o Render Free desliga após ~15 min sem tráfego e o bot fica offline (`Esta interação falhou`).
+5. Quando o Render estiver estável, podes pausar/apagar o serviço antigo no Fly.io.
 
-`fly.toml` keeps `min_machines_running = 1` and `auto_stop_machines = "off"` so the Discord gateway stays connected.
+`[`render.yaml`](render.yaml)` já define health check e `python -u bot.py`.
 
 ## Deploy Activity on Netlify
 
@@ -71,19 +78,23 @@ fly deploy
 |---|---|---|
 | `VITE_DISCORD_CLIENT_ID` | Build + Functions | OAuth2 application client ID |
 | `DISCORD_CLIENT_SECRET` | Functions | OAuth2 client secret (never expose to the browser) |
-| `MONGODB_URI` | Functions | Same Atlas URI as Fly |
-| `MONGODB_DB` | Functions | Same DB name as Fly (e.g. `sudoku`) |
+| `MONGODB_URI` | Functions | Same Atlas URI as the bot |
+| `MONGODB_DB` | Functions | Same DB name (e.g. `sudoku`) |
 
-4. In Discord Developer Portal → your app → **Activities** → URL Mapping:
-   - `/` → `https://YOUR-SITE.netlify.app`
-   - `/api` → `https://YOUR-SITE.netlify.app`
-5. Atlas **Network Access**: allow Fly + Netlify (often `0.0.0.0/0` for serverless).
+4. In Discord Developer Portal → your app → **OAuth2** → **Redirects**:
+   - add `https://127.0.0.1` (placeholder required by the Embedded App SDK) → **Save**
+5. In Discord Developer Portal → **Activities** → URL Mapping (sem `https://`):
+   - `/` → `YOUR-SITE.netlify.app`
+   - `/api` → `YOUR-SITE.netlify.app`  
+     (com o mapeamento `/api`, o Discord remove o prefixo: `/.proxy/api/token` chega como `/token`)
+6. **Activities → Settings** → Enable Activities
+7. Atlas **Network Access**: allow Render + Netlify (often `0.0.0.0/0` for serverless).
 
 Activity APIs:
 
-- `POST /api/token` — OAuth code → access_token
-- `GET /api/leaderboard` — top XP (optional `?guild_id=` / `?limit=`)
-- `POST /api/activity/win` — award solo Activity win (`Authorization: Bearer <access_token>`)
+- `POST /api/token` (also `/token`) — OAuth code → access_token
+- `GET /api/leaderboard` (also `/leaderboard`) — top XP
+- `POST /api/activity/win` (also `/activity/win`) — award solo Activity win
 
 ### Local Activity preview
 
@@ -97,7 +108,7 @@ cd activity/client && npm install && npm run dev
 
 Copy [`activity/.env.example`](activity/.env.example) → `activity/.env` with `VITE_DISCORD_CLIENT_ID` (and secret for the local server).
 
-## Environment (bot / Fly)
+## Environment (bot)
 
 | Variable | Required | Description |
 |---|---|---|
@@ -105,10 +116,14 @@ Copy [`activity/.env.example`](activity/.env.example) → `activity/.env` with `
 | `DISCORD_GUILD_ID` | no | Server ID for instant slash sync (`0` = global only) |
 | `MONGODB_URI` | recommended | Atlas URI (in-memory fallback if unset) |
 | `MONGODB_DB` | no | Database name (default `sudoku`) |
-| `PORT` | no | Health HTTP port (Fly sets / defaults to `8080`) |
+| `PORT` | no | Health HTTP port (Render / Fly set this) |
 
 Never commit `.env` — it is gitignored.
 
+## Optional: Fly.io
+
+[`fly.toml`](fly.toml) still works if you prefer always-on without UptimeRobot (`fly deploy -a sudoku-squarepants`). Com Render Free + UptimeRobot não precisas do Fly.
+
 ## Commands
 
-`/help` · `/play` · `/daily` · `/challenge` · `/shop` · `/quit` · `/leaderboard` · `/stats` · `/testboard`
+`/help` · `/play` · `/thcoku` · `/classic` · `/daily` · `/challenge` · `/shop` · `/quit` · `/leaderboard` · `/stats` · `/testboard`

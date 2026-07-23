@@ -4304,11 +4304,15 @@ class KrustyShopView(discord.ui.View):
 # ---------------------------------------------------------------------------
 
 def start_health_server_early() -> None:
-    """Bind :8080 immediately so Fly smoke checks pass before Discord login."""
+    """Bind :PORT immediately so platform health checks pass during Discord login."""
     import threading
+    import time
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
     port = int(os.getenv("PORT", "8080") or 8080)
+    started_at = time.monotonic()
+    # Allow cold start / Discord login before reporting unhealthy.
+    ready_grace_s = float(os.getenv("HEALTH_READY_GRACE_S", "90") or 90)
 
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -4324,8 +4328,12 @@ def start_health_server_early() -> None:
                     user = str(bot.user)
             except Exception:
                 pass
-            body = f"ok ready={ready} user={user}".encode()
-            self.send_response(200)
+            # After grace, not-ready means Discord never connected — fail the check
+            # so Render/Fly restart instead of looking "live" while offline in Discord.
+            aged_out = (time.monotonic() - started_at) >= ready_grace_s
+            status = 200 if ready or not aged_out else 503
+            body = f"{'ok' if status == 200 else 'not_ready'} ready={ready} user={user}".encode()
+            self.send_response(status)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -4358,22 +4366,40 @@ class SudokuBot(commands.Bot):
         if DISCORD_GUILD_ID:
             guild = discord.Object(id=DISCORD_GUILD_ID)
             self.tree.copy_global_to(guild=guild)
+            guild_ok = False
             try:
                 guild_synced = await self.tree.sync(guild=guild)
                 print(f"Synced {len(guild_synced)} slash command(s) to guild {DISCORD_GUILD_ID}.")
-            except app_commands.CommandSyncFailure as exc:
+                guild_ok = True
+            except (app_commands.CommandSyncFailure, discord.Forbidden, discord.HTTPException) as exc:
+                # 50001 Missing Access = bot not in that guild, or wrong DISCORD_GUILD_ID
                 print(f"Guild command sync failed (continuing): {exc}")
-            # Wipe globals so the main server only lists the guild copy once.
-            try:
-                await self.http.bulk_upsert_global_commands(self.application_id, [])
-                print("Cleared global slash commands to remove duplicates.")
-            except Exception as exc:  # noqa: BLE001
-                print(f"Clear global commands failed: {exc}")
+                print(
+                    "Hint: confirma DISCORD_GUILD_ID e que o bot está nesse servidor "
+                    "(re-convida com scope applications.commands)."
+                )
+            if guild_ok:
+                # Wipe globals so the main server only lists the guild copy once.
+                try:
+                    cleared = await self.http.bulk_upsert_global_commands(self.application_id, [])
+                    print(
+                        f"Cleared global slash commands to remove duplicates "
+                        f"(now {len(cleared or [])} global)."
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"Clear global commands failed: {exc}")
+            else:
+                # Fallback so /commands still exist while guild access is fixed.
+                try:
+                    synced = await self.tree.sync()
+                    print(f"Fallback: synced {len(synced)} global slash command(s).")
+                except (app_commands.CommandSyncFailure, discord.HTTPException) as exc:
+                    print(f"Global command sync failed (continuing): {exc}")
         else:
             try:
                 synced = await self.tree.sync()
                 print(f"Synced {len(synced)} global slash command(s).")
-            except app_commands.CommandSyncFailure as exc:
+            except (app_commands.CommandSyncFailure, discord.HTTPException) as exc:
                 print(f"Global command sync failed (continuing): {exc}")
 
     def _log_slash_payload_limits(self) -> None:
@@ -4684,22 +4710,39 @@ async def _launch_activity_window(interaction: discord.Interaction) -> None:
     """Open the Embedded App Activity (Wordle-style game window)."""
     try:
         await interaction.response.launch_activity()
+        print(
+            f"launch_activity ok user={interaction.user} "
+            f"guild={getattr(interaction.guild, 'id', None)} "
+            f"channel={getattr(interaction.channel, 'id', None)}"
+        )
         return
     except Exception as exc:  # noqa: BLE001 — always acknowledge the interaction
-        print(f"launch_activity failed: {exc}")
-    tip = (
-        "Não consegui abrir a janela da Activity.\n"
-        "Confirma no Developer Portal: **Activities → Enable**, "
-        "URL Mapping `/` → `thcoku.netlify.app`.\n"
-        "Ou inicia a Activity num **canal de voz** (ícone Actividades)."
-    )
+        print(f"launch_activity failed: {type(exc).__name__}: {exc}")
+        code = getattr(exc, "code", None)
+        if code == 50234:
+            tip = (
+                "A app ainda **não tem Activities/EMBEDDED** ligado.\n"
+                "No [Developer Portal](https://discord.com/developers/applications):\n"
+                "1. Escolhe a app **Thcoku**\n"
+                "2. **Activities → URL Mappings**: `/` → `thcoku.netlify.app` "
+                "(sem `https://`)\n"
+                "3. **Activities → Settings** → ativa **Enable Activities**\n"
+                "4. Reinicia o Discord e tenta `/play` outra vez"
+            )
+        else:
+            tip = (
+                "Não consegui abrir a janela da Activity.\n"
+                "Confirma **Activities → Enable** e URL Mapping `/` → "
+                "`thcoku.netlify.app`.\n"
+                "Ou inicia a Activity num **canal de voz** (ícone Actividades)."
+            )
     try:
         if interaction.response.is_done():
             await interaction.followup.send(tip, ephemeral=True)
         else:
             await interaction.response.send_message(tip, ephemeral=True)
-    except discord.HTTPException:
-        pass
+    except discord.HTTPException as send_exc:
+        print(f"launch_activity fallback reply failed: {send_exc}")
 
 
 @bot.tree.command(
