@@ -2,52 +2,12 @@
  * Discord Embedded App SDK bootstrap for Thcoku.
  * Initializes Discord session, wires Mongo APIs, then starts PyScript.
  */
-import { DiscordSDK, patchUrlMappings } from "@discord/embedded-app-sdk";
+import { DiscordSDK } from "@discord/embedded-app-sdk";
+import "./cdn-patch.js";
+import { loadPyScript } from "./load-pyscript.js";
 
-// Discord CSP: map CDN hosts (must match Developer Portal URL Mappings).
-try {
-  patchUrlMappings(
-    [
-      { prefix: "/pyscript", target: "pyscript.net" },
-      { prefix: "/jsdelivr", target: "cdn.jsdelivr.net" },
-    ],
-    {
-      patchFetch: true,
-      patchWebSocket: true,
-      patchXhr: true,
-      patchSrcAttributes: true,
-    }
-  );
-} catch (err) {
-  console.warn("[Thcoku] patchUrlMappings skipped", err);
-}
-
-// Fallback rewrite if a library bypasses the SDK patches.
-(function patchCdnToSameOrigin() {
-  const rewrite = (value) =>
-    String(value)
-      .replace(/^https?:\/\/pyscript\.net/gi, "/pyscript")
-      .replace(/^https?:\/\/cdn\.jsdelivr\.net/gi, "/jsdelivr");
-
-  const origFetch = window.fetch.bind(window);
-  window.fetch = (input, init) => {
-    if (typeof input === "string") {
-      return origFetch(rewrite(input), init);
-    }
-    if (input instanceof Request) {
-      const url = rewrite(input.url);
-      if (url !== input.url) {
-        return origFetch(new Request(url, input), init);
-      }
-    }
-    return origFetch(input, init);
-  };
-
-  const XHROpen = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function patchedOpen(method, url, ...rest) {
-    return XHROpen.call(this, method, rewrite(url), ...rest);
-  };
-})();
+// Patch CDN first, then load PyScript (otherwise Pyodide is blocked by Discord CSP).
+loadPyScript();
 
 const CLIENT_ID = import.meta.env.VITE_DISCORD_CLIENT_ID;
 const bootEl = document.getElementById("boot");
@@ -70,12 +30,12 @@ function showGame() {
     // PyGame usually resizes/draws; if hint still visible, runtime failed to boot.
     if (!gameHintEl.hidden && canvas.width > 0) {
       gameHintEl.textContent =
-        "Sudoku ainda a carregar… Se ficar vazio, confirma URL Mapping /pyscript e /jsdelivr → sudoku-squarepants.onrender.com";
+        "Sudoku ainda a carregar… Confirma no Portal: /pyscript → pyscript.net e /jsdelivr → cdn.jsdelivr.net, depois reinicia o Discord.";
     }
   }, 20000);
 }
 
-// Hide hint once the canvas has been drawn by pygame (heuristic).
+// Hide hint only after pygame has actually painted (opaque non-black pixels).
 window.setInterval(() => {
   if (!gameHintEl || gameHintEl.hidden) return;
   const canvas = document.getElementById("canvas");
@@ -83,9 +43,9 @@ window.setInterval(() => {
   try {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    const pixel = ctx.getImageData(10, 10, 1, 1).data;
-    // Sand empty canvas is near-white; drawn board has stronger teal/blue pixels.
-    if (pixel[1] < 200 || pixel[2] < 200) {
+    const pixel = ctx.getImageData(24, 24, 1, 1).data;
+    const painted = pixel[3] > 200 && (pixel[0] + pixel[1] + pixel[2]) > 80;
+    if (painted) {
       gameHintEl.hidden = true;
     }
   } catch {
