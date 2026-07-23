@@ -1,2 +1,15 @@
-fly.toml
-.venv
+.git
+.env
+activity/.env
+**/__pycache__/
+**/*.pyc
+.venv/
+venv/
+node_modules/
+activity/client/node_modules/
+activity/server/node_modules/
+activity/client/dist/
+leaderboard.json
+testboard_*.png
+*.md
+.netlify/

@@ -261,7 +261,7 @@ def save_data(data: dict) -> None:
     except OSError as exc:
         # Don't lose the in-memory award if the disk write fails (e.g. ephemeral FS hiccup)
         print(f"save_data failed: {exc}")
-    # Mirror to Mongo so Render redeploys keep sponges / stats
+    # Mirror to Mongo so Fly.io restarts keep sponges / stats
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -4306,11 +4306,14 @@ class KrustyShopView(discord.ui.View):
 async def _health(_request) -> "web.Response":
     from aiohttp import web
 
-    return web.Response(text="ok")
+    # Always 200 so Fly health checks stay green while Discord connects.
+    ready = bool(bot.is_ready()) if "bot" in globals() else False
+    user = str(bot.user) if ready and getattr(bot, "user", None) else "-"
+    return web.Response(text=f"ok ready={ready} user={user}")
 
 
 async def start_health_server(bot: "SudokuBot") -> None:
-    """HTTP keep-alive for Render + UptimeRobot (PORT is set by Render)."""
+    """HTTP health endpoint for Fly.io (and local checks). PORT defaults to 8080."""
     from aiohttp import web
 
     port = int(os.getenv("PORT", "8080") or 8080)

@@ -21,8 +21,18 @@
     </div>
 
     <main id="app" hidden>
-      <canvas id="canvas"></canvas>
-      <!-- PyScript starts after Discord SDK ready (see main.js) -->
+      <div class="layout">
+        <canvas id="canvas"></canvas>
+        <aside id="sidebar" aria-label="Leaderboard">
+          <div class="sidebar-head">
+            <h2>Top XP</h2>
+            <button type="button" id="lb-refresh">Atualizar</button>
+          </div>
+          <ol id="lb-list">A carregar…</ol>
+          <p class="sidebar-note">Mesmo Mongo Atlas que o bot (Fly.io).</p>
+        </aside>
+      </div>
+      <div id="win-toast" hidden></div>
     </main>
 
     <script type="module" src="/src/main.js"></script>

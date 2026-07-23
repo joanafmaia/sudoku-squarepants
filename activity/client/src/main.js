@@ -1,6 +1,6 @@
 /**
  * Discord Embedded App SDK bootstrap for Thcoku.
- * Initializes the Discord session as soon as the page loads, then starts PyScript.
+ * Initializes Discord session, wires Mongo APIs, then starts PyScript.
  */
 import { DiscordSDK } from "@discord/embedded-app-sdk";
 
@@ -8,6 +8,8 @@ const CLIENT_ID = import.meta.env.VITE_DISCORD_CLIENT_ID;
 const bootEl = document.getElementById("boot");
 const statusEl = document.getElementById("boot-status");
 const appEl = document.getElementById("app");
+const lbListEl = document.getElementById("lb-list");
+const winToastEl = document.getElementById("win-toast");
 
 function setStatus(message) {
   if (statusEl) statusEl.textContent = message;
@@ -17,6 +19,123 @@ function showGame() {
   if (bootEl) bootEl.hidden = true;
   if (appEl) appEl.hidden = false;
 }
+
+function apiUrl(path) {
+  // Discord Activity iframe uses the mapped proxy; local Vite uses /api via proxy or Netlify.
+  const clean = path.startsWith("/") ? path : `/${path}`;
+  if (window.__DISCORD_IN_CLIENT__) {
+    return `/.proxy${clean}`;
+  }
+  return clean;
+}
+
+async function apiFetch(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  const token = window.__DISCORD_ACCESS_TOKEN__;
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  if (options.body && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
+  return fetch(apiUrl(path), { ...options, headers });
+}
+
+function formatTime(seconds) {
+  const s = Math.max(0, Math.floor(Number(seconds) || 0));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${String(r).padStart(2, "0")}`;
+}
+
+async function refreshLeaderboard() {
+  if (!lbListEl) return;
+  lbListEl.textContent = "A carregar…";
+  try {
+    const guildId = window.__DISCORD_SDK__?.guildId;
+    const qs = guildId ? `?guild_id=${encodeURIComponent(guildId)}&limit=10` : "?limit=10";
+    const res = await apiFetch(`/api/leaderboard${qs}`);
+    if (!res.ok) {
+      lbListEl.textContent = "Leaderboard indisponível";
+      return;
+    }
+    const payload = await res.json();
+    const top = payload.top || [];
+    if (!top.length) {
+      lbListEl.textContent = "Ainda sem XP — resolve um puzzle!";
+      return;
+    }
+    lbListEl.innerHTML = top
+      .map(
+        (row, i) =>
+          `<li><span class="rank">#${i + 1}</span> <strong>${escapeHtml(
+            row.name
+          )}</strong> · ${row.xp} XP · ${row.wins} wins</li>`
+      )
+      .join("");
+  } catch (err) {
+    console.error(err);
+    lbListEl.textContent = "Falha ao ler Mongo";
+  }
+}
+
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function showWinToast(message) {
+  if (!winToastEl) return;
+  winToastEl.hidden = false;
+  winToastEl.textContent = message;
+  clearTimeout(showWinToast._t);
+  showWinToast._t = setTimeout(() => {
+    winToastEl.hidden = true;
+  }, 6000);
+}
+
+/** Called from PyScript/Pygame after a solved board. */
+window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed) {
+  if (!window.__DISCORD_ACCESS_TOKEN__) {
+    showWinToast("Vitória local (sem Discord auth — XP não gravado).");
+    return null;
+  }
+  try {
+    const res = await apiFetch("/api/activity/win", {
+      method: "POST",
+      body: JSON.stringify({
+        difficulty,
+        elapsed: Math.floor(Number(elapsed) || 0),
+        guild_id: window.__DISCORD_SDK__?.guildId ?? "0",
+        name:
+          window.__DISCORD_AUTH__?.user?.global_name ||
+          window.__DISCORD_AUTH__?.user?.username ||
+          undefined,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showWinToast(`Vitória OK, mas Mongo falhou (${data.error || res.status}).`);
+      return null;
+    }
+    showWinToast(
+      `+${data.xp} XP · +${data.coins} sponges · streak ${data.streak} · ${formatTime(
+        elapsed
+      )}`
+    );
+    refreshLeaderboard();
+    return data;
+  } catch (err) {
+    console.error(err);
+    showWinToast("Vitória OK, mas não foi possível gravar no Mongo.");
+    return null;
+  }
+};
+
+window.thcokuRefreshLeaderboard = refreshLeaderboard;
 
 function startPyGame() {
   if (document.querySelector('script[type="py-game"]')) return;
@@ -29,13 +148,20 @@ function startPyGame() {
   appEl.appendChild(script);
 }
 
-function launchLocal(reason) {
-  console.info("[Thcoku]", reason);
-  window.__DISCORD_AUTH__ = null;
-  window.__DISCORD_SDK__ = null;
-  setStatus(reason);
+function finishBoot(auth, accessToken, { inDiscord }) {
+  window.__DISCORD_AUTH__ = auth;
+  window.__DISCORD_ACCESS_TOKEN__ = accessToken || null;
+  window.__DISCORD_IN_CLIENT__ = Boolean(inDiscord);
   showGame();
   startPyGame();
+  refreshLeaderboard();
+}
+
+function launchLocal(reason) {
+  console.info("[Thcoku]", reason);
+  window.__DISCORD_SDK__ = null;
+  setStatus(reason);
+  finishBoot(null, null, { inDiscord: false });
 }
 
 function withTimeout(promise, ms, label) {
@@ -47,10 +173,26 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
-/**
- * Full OAuth handshake when running inside Discord.
- * Outside Discord (local browser preview), we skip authorize and just load the game.
- */
+async function exchangeToken(code) {
+  let response = await fetch("/.proxy/api/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  if (!response.ok) {
+    response = await fetch("/api/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+  }
+  if (!response.ok) {
+    throw new Error(`Token exchange failed (${response.status})`);
+  }
+  const { access_token } = await response.json();
+  return access_token;
+}
+
 async function setupDiscordSdk() {
   if (!CLIENT_ID || CLIENT_ID === "YOUR_DISCORD_CLIENT_ID_HERE") {
     launchLocal("VITE_DISCORD_CLIENT_ID em falta — modo local.");
@@ -63,10 +205,8 @@ async function setupDiscordSdk() {
   setStatus("A aguardar handshake do Discord…");
   try {
     await withTimeout(discordSdk.ready(), 4000, "discordSdk.ready()");
-  } catch (err) {
-    launchLocal(
-      "Sem frame Discord (pré-visualização local). A carregar o jogo…"
-    );
+  } catch {
+    launchLocal("Sem frame Discord (pré-visualização local). A carregar o jogo…");
     return;
   }
 
@@ -80,43 +220,18 @@ async function setupDiscordSdk() {
   });
 
   setStatus("A trocar o código por token…");
-  // Inside Discord Activities, API calls go through the /.proxy/ path.
-  const response = await fetch("/.proxy/api/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code }),
-  });
-
-  if (!response.ok) {
-    // Fallback for local tunnel setups that map /api without /.proxy
-    const fallback = await fetch("/api/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code }),
-    });
-    if (!fallback.ok) {
-      throw new Error(`Token exchange failed (${response.status})`);
-    }
-    const { access_token } = await fallback.json();
-    const auth = await discordSdk.commands.authenticate({ access_token });
-    window.__DISCORD_AUTH__ = auth;
-    setStatus(`Ligado como ${auth?.user?.username ?? "jogador"}. A carregar…`);
-    showGame();
-    startPyGame();
-    return;
-  }
-
-  const { access_token } = await response.json();
+  const access_token = await exchangeToken(code);
 
   setStatus("A autenticar sessão…");
   const auth = await discordSdk.commands.authenticate({ access_token });
-  window.__DISCORD_AUTH__ = auth;
-
   const name = auth?.user?.username ?? "jogador";
   setStatus(`Ligado como ${name}. A carregar o jogo…`);
-  showGame();
-  startPyGame();
+  finishBoot(auth, access_token, { inDiscord: true });
 }
+
+document.getElementById("lb-refresh")?.addEventListener("click", () => {
+  refreshLeaderboard();
+});
 
 setupDiscordSdk().catch((err) => {
   console.error(err);

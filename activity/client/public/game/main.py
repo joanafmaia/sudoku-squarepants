@@ -136,8 +136,21 @@ class ThcokuGame:
             self.won = True
             elapsed = int(time.time() - self.started_at)
             self.status = f"Resolvido em {elapsed // 60:02d}:{elapsed % 60:02d}!"
+            self._report_win(elapsed)
         else:
             self.status = "Ok" if digit else "Apagado"
+
+    def _report_win(self, elapsed: int) -> None:
+        """Ask the JS bridge to persist XP/sponges to Mongo via Netlify."""
+        try:
+            from js import window  # type: ignore
+
+            difficulty = DIFF_KEYS[self.diff_index]
+            report = getattr(window, "thcokuReportWin", None)
+            if report is not None:
+                report(difficulty, elapsed)
+        except Exception:
+            pass
 
     def handle_click(self, pos: tuple[int, int]) -> None:
         cell = self.cell_at(pos)
