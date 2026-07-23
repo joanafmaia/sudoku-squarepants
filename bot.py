@@ -4303,28 +4303,40 @@ class KrustyShopView(discord.ui.View):
 # Bot
 # ---------------------------------------------------------------------------
 
-async def _health(_request) -> "web.Response":
-    from aiohttp import web
-
-    # Always 200 so Fly health checks stay green while Discord connects.
-    ready = bool(bot.is_ready()) if "bot" in globals() else False
-    user = str(bot.user) if ready and getattr(bot, "user", None) else "-"
-    return web.Response(text=f"ok ready={ready} user={user}")
-
-
-async def start_health_server(bot: "SudokuBot") -> None:
-    """HTTP health endpoint for Fly.io (and local checks). PORT defaults to 8080."""
-    from aiohttp import web
+def start_health_server_early() -> None:
+    """Bind :8080 immediately so Fly smoke checks pass before Discord login."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
 
     port = int(os.getenv("PORT", "8080") or 8080)
-    app = web.Application()
-    app.router.add_get("/", _health)
-    app.router.add_get("/health", _health)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    bot._health_runner = runner  # type: ignore[attr-defined]
+
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path.split("?", 1)[0] not in ("/", "/health"):
+                self.send_response(404)
+                self.end_headers()
+                return
+            ready = False
+            user = "-"
+            try:
+                ready = bool(bot.is_ready())
+                if ready and bot.user is not None:
+                    user = str(bot.user)
+            except Exception:
+                pass
+            body = f"ok ready={ready} user={user}".encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args) -> None:  # noqa: A003
+            return
+
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, name="health-http", daemon=True)
+    thread.start()
     print(f"Health server listening on 0.0.0.0:{port} (/ and /health)")
 
 
@@ -4332,10 +4344,8 @@ class SudokuBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents, help_command=None)
         self.data = load_data()
-        self._health_runner = None
 
     async def setup_hook(self) -> None:
-        await start_health_server(self)
         await match_store.connect()
         kind = type(match_store).__name__
         print(f"Challenge match store: {kind}")
@@ -4343,7 +4353,6 @@ class SudokuBot(commands.Bot):
 
         print("Slash tree: testboard uses autocomplete (no static pin choices).")
         # Global sync can take minutes; guild sync is instant for that server.
-        # Never let a bad slash payload take the whole process down on Render.
         self._log_slash_payload_limits()
         if DISCORD_GUILD_ID:
             guild = discord.Object(id=DISCORD_GUILD_ID)
@@ -5323,4 +5332,5 @@ if __name__ == "__main__":
         raise SystemExit(
             "Missing DISCORD_TOKEN. Put it in .env:\n  DISCORD_TOKEN=seu_token_aqui"
         )
+    start_health_server_early()
     bot.run(token)
