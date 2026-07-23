@@ -218,7 +218,23 @@ async function exchangeToken(code) {
     if (response.status !== 404) break;
   }
   if (!response || !response.ok) {
-    throw new Error(`Token exchange failed (${response?.status ?? "network"})`);
+    let detail = "";
+    try {
+      const errBody = await response.clone().json();
+      detail =
+        errBody.error_description ||
+        errBody.error ||
+        errBody.message ||
+        "";
+    } catch {
+      /* ignore */
+    }
+    const status = response?.status ?? "network";
+    throw new Error(
+      detail
+        ? `Token exchange failed (${status}: ${detail})`
+        : `Token exchange failed (${status})`
+    );
   }
   const { access_token } = await response.json();
   return access_token;

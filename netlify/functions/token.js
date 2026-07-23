@@ -44,6 +44,7 @@ export async function handler(event) {
       client_secret: clientSecret,
       grant_type: "authorization_code",
       code,
+      redirect_uri: process.env.DISCORD_OAUTH_REDIRECT_URI || "https://127.0.0.1",
     }),
   });
 

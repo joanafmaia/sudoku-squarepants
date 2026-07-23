@@ -75,12 +75,17 @@ def _exchange_token(code: str) -> tuple[int, dict]:
     client_secret = _client_secret()
     if not client_id or not client_secret:
         return 500, {"error": "server_misconfigured"}
+    # Must match OAuth2 → Redirects in the Developer Portal (Activity placeholder).
+    redirect_uri = (
+        os.getenv("DISCORD_OAUTH_REDIRECT_URI") or "https://127.0.0.1"
+    ).strip()
     body = urllib.parse.urlencode(
         {
             "client_id": client_id,
             "client_secret": client_secret,
             "grant_type": "authorization_code",
             "code": code,
+            "redirect_uri": redirect_uri,
         }
     ).encode()
     req = urllib.request.Request(
@@ -92,14 +97,20 @@ def _exchange_token(code: str) -> tuple[int, dict]:
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
             data = json.loads(resp.read().decode())
-            return 200, {"access_token": data.get("access_token")}
+            token = data.get("access_token")
+            if not token:
+                return 502, {"error": "no_access_token", "discord": data}
+            return 200, {"access_token": token}
     except urllib.error.HTTPError as exc:
+        raw = exc.read().decode(errors="replace")
         try:
-            data = json.loads(exc.read().decode())
+            data = json.loads(raw)
         except Exception:
-            data = {"error": "token_exchange_failed", "status": exc.code}
+            data = {"error": "token_exchange_failed", "status": exc.code, "body": raw[:300]}
+        print(f"oauth token exchange HTTP {exc.code}: {data}")
         return int(exc.code), data
     except Exception as exc:  # noqa: BLE001
+        print(f"oauth token exchange failed: {exc}")
         return 502, {"error": "token_exchange_failed", "message": str(exc)}
 
 
