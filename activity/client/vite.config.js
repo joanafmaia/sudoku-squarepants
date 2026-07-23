@@ -1,31 +1,36 @@
 import { defineConfig } from "vite";
 
-function externalCdnPlugin() {
+const PYSCRIPT_CSS = "/pyscript/releases/2026.7.2/core.css";
+const PYSCRIPT_JS = "/pyscript/releases/2026.7.2/core.js";
+
+function injectPyscriptPlugin() {
   return {
-    name: "thcoku-external-cdn",
-    enforce: "pre",
-    resolveId(id) {
-      if (
-        id.startsWith("/pyscript/") ||
-        id.startsWith("/jsdelivr/") ||
-        id.includes("pyscript.net") ||
-        id.includes("cdn.jsdelivr.net")
-      ) {
-        return { id, external: true };
+    name: "thcoku-inject-pyscript",
+    transformIndexHtml(html) {
+      // Ensure CDN tags survive the build (Vite may strip unresolved module scripts).
+      const tags = [];
+      if (!html.includes(PYSCRIPT_CSS)) {
+        tags.push({
+          tag: "link",
+          attrs: { rel: "stylesheet", href: PYSCRIPT_CSS },
+          injectTo: "head",
+        });
       }
-      return null;
+      if (!html.includes(PYSCRIPT_JS)) {
+        tags.push({
+          tag: "script",
+          attrs: { type: "module", src: PYSCRIPT_JS, crossorigin: "" },
+          injectTo: "head",
+        });
+      }
+      return { html, tags };
     },
   };
 }
 
 export default defineConfig({
   envDir: "../",
-  plugins: [externalCdnPlugin()],
-  build: {
-    rollupOptions: {
-      external: [/\/pyscript\//, /\/jsdelivr\//, /pyscript\.net/, /cdn\.jsdelivr\.net/],
-    },
-  },
+  plugins: [injectPyscriptPlugin()],
   server: {
     port: 5173,
     proxy: {
