@@ -6205,6 +6205,10 @@ async def daily_cmd(interaction: discord.Interaction):
         return
 
     guild_id, user_id = interaction.guild.id, interaction.user.id
+    daily = get_guild_daily(bot.data, guild_id)
+    day = daily["date"]
+    uid = str(user_id)
+
     if find_challenge_game_for_user(user_id):
         await interaction.response.send_message(
             "Finish your speedrun challenge first.",
@@ -6218,16 +6222,36 @@ async def daily_cmd(interaction: discord.Interaction):
             await interaction.response.defer()
             await close_solved_session(bot, sk, existing, interaction.user, guild_id)
             # Fall through — allow a new daily only if today's slot is free
+        elif existing.get("mode") == "daily":
+            # Migrate old chat-based daily to Activity!
+            session_id = f"activity:{guild_id}:{user_id}"
+            doc = {
+                "_id": session_id,
+                "guild_id": str(guild_id),
+                "user_id": str(user_id),
+                "difficulty": existing.get("difficulty") or "medium",
+                "elapsed": int(time.time() - float(existing.get("started_at") or time.time())),
+                "board": existing.get("board"),
+                "given": existing.get("given"),
+                "solution": existing.get("solution"),
+                "filled": game_filled_count(existing),
+                "name": interaction.user.display_name,
+                "channel_id": str(interaction.channel_id),
+                "session_kind": "daily",
+                "daily_date": existing.get("daily_date") or day,
+                "started_at": existing.get("started_at") or time.time(),
+                "last_move_at": time.time(),
+            }
+            await match_store.upsert_activity_session(doc)
+            await remove_game(sk)
+            await _launch_activity_window(interaction)
+            return
         else:
             await interaction.response.send_message(
                 f"Finish your **{existing['mode']}** game first (**Quit** / `/quit`).",
                 ephemeral=True,
             )
             return
-
-    daily = get_guild_daily(bot.data, guild_id)
-    day = daily["date"]
-    uid = str(user_id)
 
     async def _deny_already_done(detail: str) -> None:
         await reply_ephemeral(
