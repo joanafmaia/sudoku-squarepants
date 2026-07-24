@@ -961,6 +961,8 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
             try:
                 result = _run_coro(bot, _apply_activity_win(bot, user=user, body=body))
             except Exception as exc:  # noqa: BLE001
+                import traceback
+                traceback.print_exc()
                 self._send_json(500, {"error": "win_failed", "message": str(exc)})
                 return
             self._send_json(200, result)
