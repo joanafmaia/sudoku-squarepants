@@ -556,17 +556,26 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
     elapsed = max(0, int(body.get("elapsed") or 0))
     channel_id_raw = body.get("channel_id")
     filled = sum(1 for r in range(9) for c in range(9) if board[r][c]["value"])
-    # Don't keep fully solved boards as "continue"
-    if filled >= 81:
-        try:
-            from bot import clear_activity_session
-
-            await clear_activity_session(bot, session_id)
-        except Exception as exc:  # noqa: BLE001
-            print(f"activity session clear on solve failed: {exc}")
-        return {"ok": True, "cleared": True}
 
     existing = await match_store.get_activity_session(session_id)
+    session_kind = "play"
+    daily_date = None
+    started_at = time.time()
+    if existing:
+        session_kind = existing.get("session_kind") or "play"
+        daily_date = existing.get("daily_date")
+        started_at = existing.get("started_at") or time.time()
+
+    # Don't keep fully solved boards as "continue" (except for daily/challenge where win API handles it)
+    if filled >= 81:
+        if session_kind not in ("daily", "challenge"):
+            try:
+                from bot import clear_activity_session
+
+                await clear_activity_session(bot, session_id)
+            except Exception as exc:  # noqa: BLE001
+                print(f"activity session clear on solve failed: {exc}")
+            return {"ok": True, "cleared": True}
 
     doc = {
         "_id": session_id,
@@ -584,6 +593,9 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         or user.get("username")
         or "Unknown",
         "channel_id": str(channel_id_raw) if channel_id_raw else None,
+        "session_kind": session_kind,
+        "daily_date": daily_date,
+        "started_at": started_at,
         "last_move_at": time.time(),
     }
     await match_store.upsert_activity_session(doc)
