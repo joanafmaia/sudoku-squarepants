@@ -114,7 +114,6 @@ function ensureControls(shell) {
         .map((n) => `<button type="button" class="ctrl-digit" data-digit="${n}">${n}</button>`)
         .join("")}
     </div>
-    <button type="button" class="ctrl-clear" data-action="clear">Erase</button>
     <div class="ctrl-actions" role="group" aria-label="Actions">
       <button type="button" data-action="new">New order</button>
       <button type="button" data-action="diff" id="ctrl-diff">Medium</button>
@@ -440,8 +439,12 @@ export function startThcokuGame(canvas, options = {}) {
       ensureAnim();
       return;
     }
-    if (state.pencilMode && digit) {
-      togglePencil(state.board, r, c, digit);
+
+    const currentVal = cellValue(state.board, r, c);
+    const targetDigit = (currentVal === digit && digit !== 0) ? 0 : digit;
+
+    if (state.pencilMode && targetDigit) {
+      togglePencil(state.board, r, c, targetDigit);
       state.status = "Mrs. Puff note";
       state.flashCell = [r, c];
       state.flashUntil = Date.now() + 200;
@@ -456,14 +459,14 @@ export function startThcokuGame(canvas, options = {}) {
       }
       return;
     }
-    setCellValue(state.board, r, c, digit);
-    if (digit) clearPencilDigitPeers(state.board, r, c, digit);
+    setCellValue(state.board, r, c, targetDigit);
+    if (targetDigit) clearPencilDigitPeers(state.board, r, c, targetDigit);
     state.flashCell = [r, c];
     state.flashUntil = Date.now() + 220;
 
     const conflicts = findConflicts(state.board);
     const n = filledCount(state.board);
-    if (digit && conflicts.has(`${r},${c}`)) {
+    if (targetDigit && conflicts.has(`${r},${c}`)) {
       state.status = "Conflict — tartar sauce!";
       state.shakeUntil = Date.now() + 280;
     } else if (isSolved(state.board, state.solution)) {
