@@ -24,7 +24,7 @@ let saving = false;
 let exitHooksBound = false;
 let sessionOpenedAt = 0;
 let hideEndWatchTimer = null;
-const HIDE_END_WATCH_DELAY_MS = 1500;
+const HIDE_END_WATCH_DELAY_MS = 120000;
 
 function setStatus(message) {
   if (statusEl) statusEl.textContent = message;
