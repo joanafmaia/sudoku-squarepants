@@ -3115,7 +3115,7 @@ async def notify_daily_play_started(
         force=True,
         watch_channel_id=watch_channel_id or None,
         announcement=(
-            f"{interaction.user.mention} is doing today's **daily** (`{day}`) — watch live here."
+            f"{interaction.user.mention} is playing today's **Daily Sudoku** (`{day}`)!"
         ),
     )
 
