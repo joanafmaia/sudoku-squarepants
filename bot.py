@@ -3203,21 +3203,18 @@ async def notify_activity_play_started(
             return
 
         if announcement is None:
-            if str(session_id).startswith("daily:"):
+            kind = (session or {}).get("session_kind") or "play"
+            if kind == "daily":
                 day = (session or {}).get("daily_date") or utc_today()
-                announcement = (
-                    f"{mention} is doing today's **daily** (`{day}`) — watch live here."
-                )
+                announcement = f"{mention} is playing today's **Daily Sudoku** (`{day}`)!"
+            elif kind == "challenge":
+                announcement = f"{mention} is playing a **Challenge Match**!"
             else:
-                announcement = f"{mention} is playing — you can watch here."
+                announcement = f"{mention} is playing **Sudoku**!"
 
-        view = ActivityPlayWatchView(session_id, bot_ref)
         msg = await channel.send(
             content=announcement,
-            view=view,
         )
-        view.message = msg
-        bot_ref.add_view(view)
         await match_store.merge_activity_session(
             session_id,
             {
@@ -6098,105 +6095,6 @@ async def challenge_cmd(
     )
     view.message = await interaction.original_response()
 
-
-@bot.tree.command(
-    name="watch",
-    description="Spectate active /play, /daily, and challenge races",
-)
-async def watch_cmd(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("Server only.", ephemeral=True)
-        return
-
-    guild_id = interaction.guild.id
-    guild_matches: list[dict] = []
-    activity_sessions: list[dict] = []
-
-    try:
-        active = await match_store.list_matches(status="active")
-        guild_matches = [m for m in active if m.get("guild_id") == guild_id]
-    except Exception as exc:  # noqa: BLE001
-        await interaction.response.send_message(
-            f"Couldn't list challenge matches ({exc}).",
-            ephemeral=True,
-        )
-        return
-
-    try:
-        activity_sessions = await match_store.list_activity_sessions(
-            guild_id,
-            max_age_sec=WATCH_LIST_MAX_AGE_SEC,
-        )
-    except Exception as exc:  # noqa: BLE001
-        await interaction.response.send_message(
-            f"Couldn't list Activity sessions ({exc}).",
-            ephemeral=True,
-        )
-        return
-
-    if not guild_matches and not activity_sessions:
-        await interaction.response.send_message(
-            "No active games right now. Start `/play`, `/daily`, or `/challenge`.",
-            ephemeral=True,
-        )
-        return
-
-    if activity_sessions and not guild_matches:
-        embed = build_activity_live_embed(activity_sessions, interaction.guild)
-        view = build_activity_watch_view(guild_id, None, bot, activity_sessions)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-        return
-
-    if guild_matches and not activity_sessions:
-        if len(guild_matches) == 1:
-            match = guild_matches[0]
-            embed = build_challenge_live_embed(match, interaction.guild)
-            view = build_challenge_watch_view(match, bot)
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-            return
-        lines: list[str] = []
-        for match in guild_matches:
-            roster = ", ".join(
-                challenge_player_mention(interaction.guild, player)
-                for _slot, player in match_player_entries(match)
-            )
-            tier = difficulty_label(match.get("difficulty"))
-            short_id = str(match.get("_id", ""))[:8]
-            channel = await resolve_channel(bot, match.get("channel_id"))
-            where = f"<#{channel.id}>" if isinstance(channel, discord.TextChannel) else "channel"
-            lines.append(f"`{short_id}` · **{tier}** in {where} — {roster}")
-        embed = paper_embed("Active challenges")
-        embed.description = (
-            "\n".join(lines)
-            + "\n\nOpen the **Live challenge** panel in those channels, or run `/watch` "
-            "when only one race is active."
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        return
-
-    embed = paper_embed("Live games")
-    embed.add_field(
-        name="Activity /play",
-        value=build_activity_live_embed(activity_sessions, interaction.guild).description
-        or "—",
-        inline=False,
-    )
-    challenge_lines: list[str] = []
-    for match in guild_matches:
-        roster = ", ".join(
-            challenge_player_mention(interaction.guild, player)
-            for _slot, player in match_player_entries(match)
-        )
-        tier = difficulty_label(match.get("difficulty"))
-        challenge_lines.append(f"**{tier}** — {roster}")
-    embed.add_field(
-        name="Challenges",
-        value="\n".join(challenge_lines) or "—",
-        inline=False,
-    )
-    embed.set_footer(text="Use the buttons below for /play boards · challenges have channel panels")
-    view = build_activity_watch_view(guild_id, None, bot, activity_sessions)
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 @bot.tree.command(name="daily", description="Play today's daily Sudoku (same level, unique board)")
