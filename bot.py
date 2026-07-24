@@ -68,6 +68,7 @@ def _env_int(name: str, default: int) -> int:
 
 DISCORD_GUILD_ID = _env_int("DISCORD_GUILD_ID", 0)
 ACTIVITY_WATCH_CHANNEL_ID = _env_int("ACTIVITY_WATCH_CHANNEL_ID", 1527293243434209300)
+DAILY_ANNOUNCE_CHANNEL_ID = _env_int("DAILY_ANNOUNCE_CHANNEL_ID", 1527293243434209300)
 
 # Fixed weekly difficulty for /daily (Monday=0 … Sunday=6)
 DAILY_WEEKDAY_DIFFICULTY = {
@@ -5585,9 +5586,101 @@ async def rotate_status():
     _status_i += 1
 
 
-@rotate_status.before_loop
-async def _wait_ready():
+_last_announced_daily_date: str | None = None
+
+
+async def broadcast_daily_announcement(target_channel_id: int | None = None) -> int:
+    """Broadcast a Bikini Bottom embed announcing today's Daily Sudoku."""
+    now_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    weekday = datetime.now(timezone.utc).weekday()
+    diff_key = DAILY_WEEKDAY_DIFFICULTY.get(weekday, "medium")
+    meta = DIFFICULTY_TIERS.get(diff_key, {})
+    label = meta.get("label", "Medium")
+
+    embed = paper_embed(f"{PINEAPPLE} Novo Sudoku Diário Disponível! ({now_date})")
+    embed.description = (
+        f"{WAVE} **Ahoy, habitantes da Fenda do Biquíni!**\n\n"
+        f"O Sudoku Diário de hoje já está servido no Siri Cascudo! 🍔"
+    )
+    embed.add_field(name="Dificuldade", value=f"**{label}**", inline=True)
+    embed.add_field(name="Bónus Diário", value=f"**+{DAILY_BONUS} Sponges {SPONGE}**", inline=True)
+    embed.add_field(name="Bónus de Streak", value=f"**+{STREAK_BONUS_PER} / dia {STAR}**", inline=True)
+    embed.add_field(
+        name="Como Jogar",
+        value="Escreve `/daily` no chat ou abre o jogo através do botão de **Activity** no Discord!",
+        inline=False,
+    )
+
+    channels_to_notify: set[int] = set()
+    if target_channel_id:
+        channels_to_notify.add(target_channel_id)
+    elif DAILY_ANNOUNCE_CHANNEL_ID:
+        channels_to_notify.add(DAILY_ANNOUNCE_CHANNEL_ID)
+    elif ACTIVITY_WATCH_CHANNEL_ID:
+        channels_to_notify.add(ACTIVITY_WATCH_CHANNEL_ID)
+
+    try:
+        guilds_data = bot.data.get("guilds", {}) if hasattr(bot, "data") else {}
+        for g_id, g_info in guilds_data.items():
+            if isinstance(g_info, dict) and g_info.get("daily_channel_id"):
+                try:
+                    channels_to_notify.add(int(g_info["daily_channel_id"]))
+                except (ValueError, TypeError):
+                    pass
+    except Exception:
+        pass
+
+    sent_count = 0
+    for ch_id in channels_to_notify:
+        if not ch_id:
+            continue
+        try:
+            ch = bot.get_channel(ch_id)
+            if ch is None:
+                ch = await bot.fetch_channel(ch_id)
+            if ch:
+                await ch.send(embed=embed)
+                sent_count += 1
+        except Exception as exc:
+            print(f"[DailyAnnouncement] Failed to send to channel {ch_id}: {exc}")
+    return sent_count
+
+
+@tasks.loop(minutes=2)
+async def check_daily_announcement():
+    global _last_announced_daily_date
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _last_announced_daily_date is None:
+        _last_announced_daily_date = today_str
+        return
+    if today_str != _last_announced_daily_date:
+        _last_announced_daily_date = today_str
+        print(f"[DailyAnnouncement] New UTC day detected: {today_str}. Broadcasting daily announcement...")
+        sent = await broadcast_daily_announcement()
+        print(f"[DailyAnnouncement] Broadcast complete. Sent to {sent} channel(s).")
+
+
+@check_daily_announcement.before_loop
+async def _wait_daily_announce_ready():
     await bot.wait_until_ready()
+
+
+@bot.tree.command(name="setdailychannel", description="Set or clear channel for automatic Daily Sudoku announcements")
+@app_commands.describe(channel="Channel to announce the Daily Sudoku at 00:00 UTC (leave empty to disable)")
+@app_commands.checks.has_permissions(administrator=True)
+async def setdailychannel_cmd(interaction: discord.Interaction, channel: discord.TextChannel | None = None):
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+    gstats = guild_stats(bot.data, interaction.guild.id)
+    if channel is None:
+        gstats["daily_channel_id"] = None
+        save_data(bot.data)
+        await interaction.response.send_message("Desativaste os anúncios automáticos do Sudoku Diário neste servidor.", ephemeral=True)
+    else:
+        gstats["daily_channel_id"] = channel.id
+        save_data(bot.data)
+        await interaction.response.send_message(f"Anúncios do Sudoku Diário definidos para o canal {channel.mention}! {PINEAPPLE}", ephemeral=True)
 
 
 async def reply_ephemeral(interaction: discord.Interaction, content: str) -> None:
@@ -5744,6 +5837,8 @@ async def on_ready():
     print(f"Activity watch channel id: {ACTIVITY_WATCH_CHANNEL_ID or 'unset'}")
     if not rotate_status.is_running():
         rotate_status.start()
+    if not check_daily_announcement.is_running():
+        check_daily_announcement.start()
     await bot.change_presence(activity=STATUS_ROTATION[0])
     await restore_persisted_sessions(bot)
     await restore_challenge_watch_views(bot)

@@ -732,12 +732,29 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
+        def _cors_origin(self) -> str:
+            req_origin = self.headers.get("Origin", "").strip()
+            if not req_origin:
+                return "*"
+            if (
+                ".discordsays.com" in req_origin
+                or ".onrender.com" in req_origin
+                or "localhost" in req_origin
+                or "127.0.0.1" in req_origin
+            ):
+                return req_origin
+            return "*"
+
         def _send(self, status: int, body: bytes, content_type: str, extra: dict | None = None) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
-            headers = {**CORS, **(extra or {})}
-            for key, value in headers.items():
+            cors_headers = {
+                **CORS,
+                "Access-Control-Allow-Origin": self._cors_origin(),
+                **(extra or {}),
+            }
+            for key, value in cors_headers.items():
                 self.send_header(key, value)
             self.end_headers()
             if self.command != "HEAD":

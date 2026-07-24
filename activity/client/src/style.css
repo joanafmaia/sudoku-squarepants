@@ -262,8 +262,12 @@ body {
 #game-controls .ctrl-actions button {
   background: linear-gradient(180deg, #fde68a 0%, var(--gold) 100%);
   border-color: #b45309;
-  font-size: 0.88rem;
-  letter-spacing: 0.01em;
+  font-size: 0.85rem;
+  letter-spacing: -0.01em;
+  padding: 0 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #game-controls button.is-active {
@@ -297,10 +301,31 @@ body {
 @media (max-width: 859px) {
   #game-shell {
     width: min(100%, 420px);
+    gap: 6px;
   }
 
   #canvas {
-    max-height: min(50vh, 640px);
+    max-height: min(56vh, 640px);
+  }
+
+  #game-controls {
+    gap: 5px;
+  }
+
+  #game-controls .ctrl-digit {
+    min-height: 42px;
+    font-size: 1.3rem;
+  }
+
+  #game-controls .ctrl-actions button {
+    min-height: 36px;
+    font-size: 0.82rem;
+    padding: 0 2px;
+  }
+
+  .ctrl-pad,
+  .ctrl-actions {
+    gap: 5px;
   }
 }
 

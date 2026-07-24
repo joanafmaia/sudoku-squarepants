@@ -103,6 +103,81 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+let audioCtx = null;
+function getAudioCtx() {
+  if (!audioCtx) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (AudioContextClass) audioCtx = new AudioContextClass();
+  }
+  if (audioCtx && audioCtx.state === "suspended") {
+    audioCtx.resume().catch(() => { });
+  }
+  return audioCtx;
+}
+
+export function playFx(type) {
+  try {
+    const ctx = getAudioCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    if (type === "pop") {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(440, now);
+      osc.frequency.exponentialRampToValueAtTime(880, now + 0.08);
+      gain.gain.setValueAtTime(0.15, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.08);
+      osc.start(now);
+      osc.stop(now + 0.08);
+    } else if (type === "error") {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(160, now);
+      osc.frequency.setValueAtTime(120, now + 0.08);
+      gain.gain.setValueAtTime(0.2, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.18);
+      osc.start(now);
+      osc.stop(now + 0.18);
+    } else if (type === "hint") {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(523.25, now);
+      osc.frequency.setValueAtTime(659.25, now + 0.08);
+      osc.frequency.setValueAtTime(783.99, now + 0.16);
+      gain.gain.setValueAtTime(0.15, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.28);
+      osc.start(now);
+      osc.stop(now + 0.28);
+    } else if (type === "win") {
+      const notes = [523.25, 659.25, 783.99, 1046.5];
+      notes.forEach((freq, idx) => {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = "sine";
+        o.frequency.setValueAtTime(freq, now + idx * 0.1);
+        g.connect(ctx.destination);
+        o.connect(g);
+        g.gain.setValueAtTime(0.2, now + idx * 0.1);
+        g.gain.exponentialRampToValueAtTime(0.01, now + idx * 0.1 + 0.25);
+        o.start(now + idx * 0.1);
+        o.stop(now + idx * 0.1 + 0.25);
+      });
+    }
+  } catch (e) {
+    // audio context suppressed by browser policy until gesture
+  }
+}
+
 function ensureControls(shell) {
   let bar = document.getElementById("game-controls");
   if (bar) return bar;
@@ -111,13 +186,18 @@ function ensureControls(shell) {
   bar.innerHTML = `
     <div class="ctrl-pad" role="group" aria-label="Numbers">
       ${[1, 2, 3, 4, 5, 6, 7, 8, 9]
-        .map((n) => `<button type="button" class="ctrl-digit" data-digit="${n}">${n}</button>`)
-        .join("")}
+      .map((n) => `<button type="button" class="ctrl-digit" data-digit="${n}">${n}</button>`)
+      .join("")}
     </div>
-    <div class="ctrl-actions" role="group" aria-label="Actions">
-      <button type="button" data-action="new">New order</button>
+    <div class="ctrl-actions" role="group" aria-label="Game Setup Actions">
+      <button type="button" data-action="new">New sudoku</button>
       <button type="button" data-action="diff" id="ctrl-diff">Medium</button>
-      <button type="button" data-action="pencil" id="ctrl-pencil">Notes</button>
+      <button type="button" data-action="pencil" id="ctrl-pencil">Pencil</button>
+    </div>
+    <div class="ctrl-actions" role="group" aria-label="Editing Actions">
+      <button type="button" data-action="undo" id="ctrl-undo" title="Undo move">↩ Undo</button>
+      <button type="button" data-action="clear" class="ctrl-clear">Clear</button>
+      <button type="button" data-action="hint" id="ctrl-hint" title="Get a hint">💡 Hint</button>
     </div>
   `;
   shell.appendChild(bar);
@@ -188,6 +268,7 @@ export function startThcokuGame(canvas, options = {}) {
     raf: 0,
     winZoom: 1,
     sessionKind: options.sessionKind || null,
+    undoStack: [],
   };
 
   const diffBtn = controls.querySelector("#ctrl-diff");
@@ -429,16 +510,82 @@ export function startThcokuGame(canvas, options = {}) {
     }
   }
 
+  function saveUndoState() {
+    if (!state.board) return;
+    const boardCopy = state.board.map((row) =>
+      row.map((cell) => ({
+        val: cell.val,
+        pencil: cell.pencil ? Array.from(cell.pencil) : [],
+      }))
+    );
+    state.undoStack.push(boardCopy);
+    if (state.undoStack.length > 50) state.undoStack.shift();
+  }
+
+  function undo() {
+    if (state.won || !state.undoStack.length) return;
+    const prev = state.undoStack.pop();
+    state.board = prev.map((row) =>
+      row.map((cell) => ({
+        val: cell.val,
+        pencil: new Set(cell.pencil || []),
+      }))
+    );
+    state.status = "Move undone ↩";
+    playFx("pop");
+    draw();
+  }
+
+  function hint() {
+    if (state.won || !state.solution || !state.board) return;
+    const [r, c] = state.selected;
+    let targetR = r;
+    let targetC = c;
+    if (state.given[r][c] || state.board[r][c].val === state.solution[r][c]) {
+      let found = false;
+      for (let ri = 0; ri < 9; ri++) {
+        for (let ci = 0; ci < 9; ci++) {
+          if (!state.given[ri][ci] && state.board[ri][ci].val !== state.solution[ri][ci]) {
+            targetR = ri;
+            targetC = ci;
+            found = true;
+            break;
+          }
+        }
+        if (found) break;
+      }
+      if (!found) return;
+    }
+    saveUndoState();
+    state.selected = [targetR, targetC];
+    const correctVal = state.solution[targetR][targetC];
+    setCellValue(state.board, targetR, targetC, correctVal);
+    clearPencilDigitPeers(state.board, targetR, targetC, correctVal);
+    state.flashCell = [targetR, targetC];
+    state.flashUntil = Date.now() + 300;
+    state.status = `Hint applied! 💡 (${correctVal})`;
+    playFx("hint");
+    if (isSolved(state.board, state.solution)) {
+      state.won = true;
+      state.winAt = Date.now();
+      playFx("win");
+    }
+    draw();
+  }
+
   function place(digit) {
     if (state.won) return;
     const [r, c] = state.selected;
     if (state.given[r][c]) {
       state.status = "Fixed clue — barnacles!";
       state.shakeUntil = Date.now() + 250;
+      playFx("error");
       draw();
       ensureAnim();
       return;
     }
+
+    saveUndoState();
 
     const currentVal = cellValue(state.board, r, c);
     const targetDigit = (currentVal === digit && digit !== 0) ? 0 : digit;
@@ -448,6 +595,7 @@ export function startThcokuGame(canvas, options = {}) {
       state.status = "Mrs. Puff note";
       state.flashCell = [r, c];
       state.flashUntil = Date.now() + 200;
+      playFx("pop");
       draw();
       ensureAnim();
       if (typeof options.onProgress === "function") {
@@ -469,6 +617,7 @@ export function startThcokuGame(canvas, options = {}) {
     if (targetDigit && conflicts.has(`${r},${c}`)) {
       state.status = "Conflict — tartar sauce!";
       state.shakeUntil = Date.now() + 280;
+      playFx("error");
     } else if (isSolved(state.board, state.solution)) {
       state.won = true;
       state.winAt = Date.now();
@@ -479,6 +628,7 @@ export function startThcokuGame(canvas, options = {}) {
       state.status = `Order up! ${mm}:${ss}`;
       spawnBubbles();
       spawnConfetti();
+      playFx("win");
       if (typeof window.thcokuReportWin === "function") {
         window.thcokuReportWin(state.difficulty, elapsed, {
           board: state.board,
@@ -488,6 +638,7 @@ export function startThcokuGame(canvas, options = {}) {
       }
     } else {
       state.status = digit ? fmt(pick(STATUS_OK), n) : fmt(pick(STATUS_CLEAR), n);
+      if (digit) playFx("pop");
     }
     draw();
     ensureAnim();
@@ -858,6 +1009,8 @@ export function startThcokuGame(canvas, options = {}) {
       return;
     }
     if (action === "clear") place(0);
+    else if (action === "undo") undo();
+    else if (action === "hint") hint();
     else if (action === "new") {
       if (state.sessionKind !== "daily" && state.sessionKind !== "challenge") newGame();
     } else if (action === "diff") {
@@ -867,7 +1020,7 @@ export function startThcokuGame(canvas, options = {}) {
       }
     } else if (action === "pencil") {
       state.pencilMode = !state.pencilMode;
-      state.status = state.pencilMode ? "Notes ON — Mrs. Puff mode" : "Notes OFF";
+      state.status = state.pencilMode ? "Pencil ON — Mrs. Puff mode" : "Pencil OFF";
       syncControls();
       draw();
     }
@@ -876,6 +1029,11 @@ export function startThcokuGame(canvas, options = {}) {
   window.addEventListener("keydown", (evt) => {
     if (evt.key >= "1" && evt.key <= "9") place(Number(evt.key));
     else if (evt.key === "0" || evt.key === "Backspace" || evt.key === "Delete") place(0);
+    else if ((evt.ctrlKey || evt.metaKey) && evt.key.toLowerCase() === "z") {
+      evt.preventDefault();
+      undo();
+    } else if (evt.key.toLowerCase() === "u") undo();
+    else if (evt.key.toLowerCase() === "h") hint();
     else if (evt.key === "p" || evt.key === "P") {
       state.pencilMode = !state.pencilMode;
       syncControls();
