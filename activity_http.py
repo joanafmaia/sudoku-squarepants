@@ -318,7 +318,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
     gstats = guild_stats(bot.data, gid_key)
     stats = user_stats(gstats, uid)
 
-    from challenge_store import match_store
+    from bot import match_store
     session_id = _activity_session_id(gid_key, uid)
     session = await match_store.get_activity_session(session_id)
     is_daily = session and session.get("session_kind") == "daily"
@@ -453,8 +453,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
         print(f"activity win chat post failed: {exc}")
 
     try:
-        from challenge_store import match_store
-        from bot import clear_activity_session
+        from bot import match_store, clear_activity_session
 
         await clear_activity_session(bot, _activity_session_id(guild_id, uid))
     except Exception as exc:  # noqa: BLE001
@@ -491,7 +490,7 @@ async def _resolve_activity_guild_id(guild_id: str | int, user_id: str | int) ->
     gid = str(guild_id if guild_id is not None else "0")
     if gid not in ("", "0"):
         return gid
-    from challenge_store import match_store
+    from bot import match_store
 
     recent = await match_store.find_activity_session_by_user_id(user_id)
     if recent and recent.get("guild_id") and str(recent["guild_id"]) not in ("", "0"):
@@ -500,7 +499,7 @@ async def _resolve_activity_guild_id(guild_id: str | int, user_id: str | int) ->
 
 
 async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
-    from challenge_store import match_store
+    from bot import match_store
 
     uid = int(user["id"])
     guild_id = await _resolve_activity_guild_id(
@@ -623,7 +622,7 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
 
 
 async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict:
-    from challenge_store import match_store
+    from bot import match_store
 
     uid = int(user["id"])
     from bot import find_challenge_game_for_user, games, game_filled_count
@@ -883,7 +882,7 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 else:
 
                     async def _load():
-                        from challenge_store import match_store
+                        from bot import match_store
 
                         remote = await match_store.load_leaderboard()
                         return remote or {}
