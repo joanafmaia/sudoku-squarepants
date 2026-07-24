@@ -131,7 +131,7 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
       cosmetics: cosmetics || { title: null, pins: [], seed: 1 },
       autoStart: gameOptions.autoStart !== false,
       onNewGame: () => {
-        clearSavedSession();
+        clearLocalSession();
       },
       onBoardReady: () => {
         saveSessionNow({ force: true });
