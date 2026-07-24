@@ -3344,10 +3344,7 @@ async def end_activity_watch(
 
 
 async def clear_activity_session(bot_ref: "SudokuBot", session_id: str) -> None:
-    """Delete watch announcement (if any) and drop the persisted session."""
-    session = await match_store.get_activity_session(session_id)
-    if session:
-        await delete_activity_watch_message(bot_ref, session)
+    """Drop the persisted session (keeps the watch announcement in chat history)."""
     await match_store.delete_activity_session(session_id)
 
 
