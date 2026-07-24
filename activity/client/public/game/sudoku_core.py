@@ -11,12 +11,12 @@ import random
 DEFAULT_DIFFICULTY = "medium"
 
 DIFFICULTY_TIERS: dict[str, dict] = {
-    "very_easy": {"label": "Very Easy", "clues": 46},
-    "easy": {"label": "Easy", "clues": 40},
-    "medium": {"label": "Medium", "clues": 34},
-    "hard": {"label": "Hard", "clues": 28},
-    "very_hard": {"label": "Very Hard", "clues": 24},
-    "expertttt": {"label": "Expertttt", "clues": 22},
+    "very_easy": {"label": "Very Easy", "clues": 50},
+    "easy": {"label": "Easy", "clues": 44},
+    "medium": {"label": "Medium", "clues": 38},
+    "hard": {"label": "Hard", "clues": 32},
+    "very_hard": {"label": "Very Hard", "clues": 30},
+    "expertttt": {"label": "Expertttt", "clues": 28},
 }
 
 

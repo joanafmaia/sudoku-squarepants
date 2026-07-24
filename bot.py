@@ -33,12 +33,12 @@ DEFAULT_DIFFICULTY = "medium"
 # key → target clue count (unique solution), display label, coin multiplier on win
 # Clue targets follow human-style bands — NEVER "fewer clues = more solutions".
 DIFFICULTY_TIERS: dict[str, dict] = {
-    "very_easy": {"label": "Very Easy", "clues": 46, "multiplier": 0.50},
-    "easy": {"label": "Easy", "clues": 40, "multiplier": 0.75},
-    "medium": {"label": "Medium", "clues": 34, "multiplier": 1.00},
-    "hard": {"label": "Hard", "clues": 28, "multiplier": 1.50},
-    "very_hard": {"label": "Very Hard", "clues": 24, "multiplier": 2.00},
-    "expertttt": {"label": "Expertttt", "clues": 22, "multiplier": 3.00},
+    "very_easy": {"label": "Very Easy", "clues": 50, "multiplier": 0.50},
+    "easy": {"label": "Easy", "clues": 44, "multiplier": 0.75},
+    "medium": {"label": "Medium", "clues": 38, "multiplier": 1.00},
+    "hard": {"label": "Hard", "clues": 32, "multiplier": 1.50},
+    "very_hard": {"label": "Very Hard", "clues": 30, "multiplier": 2.00},
+    "expertttt": {"label": "Expertttt", "clues": 28, "multiplier": 3.00},
 }
 
 DIFFICULTY_CHOICES = [
