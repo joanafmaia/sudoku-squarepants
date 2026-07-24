@@ -2033,15 +2033,16 @@ def finish_win(
     embed.description = random.choice(WIN_TAUNTS)
     embed.add_field(name="Time", value=format_time(elapsed), inline=True)
     embed.add_field(name="Difficulty", value=difficulty_label(game.get("difficulty")), inline=True)
-    embed.add_field(name=f"XP {XP}", value=format_xp(xp, signed=True), inline=True)
-    embed.add_field(name=f"Sponges {SPONGE}", value=format_sponges(coins, signed=True), inline=True)
-    embed.add_field(name=f"Streak {STAR}", value=str(stats["streak"]), inline=True)
-    embed.add_field(name=f"Career XP {XP}", value=format_xp(stats["xp"]), inline=True)
-    embed.add_field(name=f"Pocket {SPONGE}", value=format_sponges(stats["coins"]), inline=True)
+    embed.add_field(name="Streak", value=f"{STAR} {stats['streak']}", inline=True)
+    
+    rewards = f"{format_xp(xp, signed=True)} · {format_sponges(coins, signed=True)}"
     if rank is not None:
-        embed.add_field(name="Rank", value=f"#{rank}", inline=True)
+        rewards += f" · Rank #{rank}"
     else:
-        embed.add_field(name="Mode", value=game["mode"].capitalize(), inline=True)
+        rewards += f" · Mode {game['mode'].capitalize()}"
+    embed.add_field(name="Reward", value=rewards, inline=False)
+    
+    embed.add_field(name="Balance", value=f"{format_xp(stats['xp'])} · {format_sponges(stats['coins'])}", inline=False)
     return WinOutcome(embed=embed, coins=coins, xp=xp, rank=rank, quiet=False)
 
 
@@ -5754,77 +5755,6 @@ async def on_ready():
     await restore_challenge_watch_views(bot)
     await restore_activity_play_watch_views(bot)
     bot.add_view(ChallengeLaunchActivityView())
-
-    # Temporary check to post Joana's missing daily announcement
-    try:
-        uid = 507706734035599360
-        guild_id = 1526989565909274624
-        channel_id = 1527293243434209300
-        daily = get_guild_daily(bot.data, guild_id)
-        if daily.get("date") == "2026-07-24":
-            results = daily.get("results", {})
-            r = results.get(str(uid))
-            if r and r.get("won") and not r.get("announced_debug"):
-                r["announced_debug"] = True
-                save_data(bot.data)
-                
-                channel = bot.get_channel(channel_id)
-                if channel is None:
-                    channel = await bot.fetch_channel(channel_id)
-                if channel:
-                    board, given, solution, diff_key = make_daily_puzzle(guild_id, daily["date"], uid)
-                    gstats = guild_stats(bot.data, guild_id)
-                    stats = user_stats(gstats, uid)
-                    
-                    solved_board = []
-                    for r_idx in range(9):
-                        row = []
-                        for c_idx in range(9):
-                            row.append({"value": solution[r_idx][c_idx], "pencil_marks": []})
-                        solved_board.append(row)
-                        
-                    image = render_board(
-                        solved_board,
-                        given,
-                        solution=solution,
-                        conflicts=set(),
-                        difficulty=diff_key,
-                        title_id=equipped_title_id(stats),
-                        pin_emojis=owned_pin_emojis(stats),
-                        pin_seed=uid,
-                    )
-                    file = board_to_file(image)
-                    
-                    elapsed = r.get("time") or 300
-                    coins = r.get("coins") or 50
-                    xp = r.get("xp") or 50
-                    
-                    title = f"{PINEAPPLE} Daily cleared — aye aye!"
-                    embed = paper_embed(title)
-                    embed.description = "Completed via Activity! (Recovered)"
-                    embed.add_field(name="Time", value=format_time(elapsed), inline=True)
-                    embed.add_field(name="Difficulty", value=difficulty_label(diff_key), inline=True)
-                    embed.add_field(name=f"XP {XP}", value=format_xp(xp, signed=True), inline=True)
-                    embed.add_field(name=f"Sponges {SPONGE}", value=format_sponges(coins, signed=True), inline=True)
-                    embed.add_field(name=f"Streak {STAR}", value=str(stats["streak"]), inline=True)
-                    embed.add_field(name=f"Career XP {XP}", value=format_xp(stats["xp"]), inline=True)
-                    embed.add_field(name=f"Pocket {SPONGE}", value=format_sponges(stats["coins"]), inline=True)
-                    
-                    share = build_daily_share_text(
-                        day=daily["date"],
-                        difficulty=diff_key,
-                        elapsed=elapsed,
-                    )
-                    embed.add_field(name="Share", value=f"```\n{share}\n```", inline=False)
-                    
-                    await channel.send(
-                        content=f"<@{uid}> completed today's daily!",
-                        embed=embed,
-                        file=file,
-                    )
-                    print("Posted Joana's daily announcement successfully!")
-    except Exception as exc:
-        print(f"Failed to post Joana's daily announcement: {exc}")
 
 
 @bot.tree.command(
