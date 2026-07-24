@@ -696,9 +696,13 @@ export function startThcokuGame(canvas, options = {}) {
           state.flashCell[1] === c &&
           now < state.flashUntil;
         const isGiven = state.given[r][c];
+        const selectedVal = cellValue(state.board, sr, sc);
+        const cellVal = cellValue(state.board, r, c);
+        const isMatch = selectedVal !== 0 && cellVal === selectedVal;
 
         let fill = isGiven ? RGB.given : RGB.empty;
         if (sameBox || sameLine) fill = isGiven ? "#fde047" : RGB.boxHl;
+        if (isMatch) fill = "#bbf7d0";
         if (isSel || flash) fill = RGB.select;
         if (conflict) fill = RGB.conflict;
 
