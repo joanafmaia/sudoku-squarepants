@@ -300,6 +300,16 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
     )
     uid = int(user["id"])
 
+    from bot import find_challenge_game_for_user, games, handle_challenge_completion_activity
+    ch_key = find_challenge_game_for_user(uid)
+    if ch_key:
+        game = games[ch_key]
+        board = _normalize_activity_board(body.get("board"))
+        if board:
+            game["board"] = board
+        await handle_challenge_completion_activity(bot, uid, game, elapsed)
+        return {"ok": True, "challenge": True}
+
     try:
         gid_key = int(guild_id)
     except ValueError:
@@ -307,6 +317,84 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
 
     gstats = guild_stats(bot.data, gid_key)
     stats = user_stats(gstats, uid)
+
+    from challenge_store import match_store
+    session_id = _activity_session_id(gid_key, uid)
+    session = await match_store.get_activity_session(session_id)
+    is_daily = session and session.get("session_kind") == "daily"
+    if is_daily:
+        board = _normalize_activity_board(body.get("board"))
+        given = session.get("given")
+        solution = session.get("solution")
+        daily_date = session.get("daily_date") or time.strftime("%Y-%m-%d", time.gmtime())
+        started_at = session.get("started_at") or (time.time() - elapsed)
+
+        discord_user = bot.get_user(uid)
+        if discord_user is None:
+            try:
+                discord_user = await bot.fetch_user(uid)
+            except Exception:
+                pass
+        if discord_user is None:
+            class FakeUser:
+                def __init__(self, uid, name):
+                    self.id = uid
+                    self.name = name
+                    self.display_name = name
+                    self.mention = f"<@{uid}>"
+            discord_user = FakeUser(uid, display_name)
+
+        game_state = {
+            "mode": "daily",
+            "daily_date": daily_date,
+            "started_at": started_at,
+            "difficulty": difficulty,
+            "board": board,
+            "given": given,
+            "solution": solution,
+        }
+
+        from bot import finish_win_and_announce, clear_activity_session
+
+        outcome = await finish_win_and_announce(bot, gid_key, discord_user, game_state)
+        await clear_activity_session(bot, session_id)
+
+        posted = False
+        post_error = None
+        if channel_id_raw and board and given:
+            try:
+                channel_id = int(channel_id_raw)
+                channel = bot.get_channel(channel_id)
+                if channel is None:
+                    channel = await bot.fetch_channel(channel_id)
+                if channel is not None:
+                    image = render_board(
+                        board,
+                        given,
+                        solution=solution,
+                        conflicts=set(),
+                        difficulty=difficulty,
+                        title_id=equipped_title_id(stats),
+                        pin_emojis=owned_pin_emojis(stats),
+                        pin_seed=uid,
+                    )
+                    file = board_to_file(image)
+                    await channel.send(
+                        embed=outcome.embed,
+                        file=file,
+                    )
+                    posted = True
+            except Exception as exc:
+                post_error = f"send_daily_announce: {exc}"
+
+        return {
+            "ok": True,
+            "daily": True,
+            "coins": int(outcome.coins),
+            "xp": int(outcome.xp),
+            "posted": posted,
+            "post_error": post_error,
+        }
     stats["name"] = display_name
     stats["wins"] = int(stats.get("wins") or 0) + 1
     stats["games"] = int(stats.get("games") or 0) + 1
@@ -438,6 +526,17 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
 
     board = _normalize_activity_board(body.get("board"))
     given = _normalize_activity_given(body.get("given"), board)
+
+    from bot import find_challenge_game_for_user, games, sync_challenge_board
+    ch_key = find_challenge_game_for_user(uid)
+    if ch_key:
+        game = games[ch_key]
+        if board:
+            game["board"] = board
+            game["filled"] = sum(1 for r in range(9) for c in range(9) if board[r][c]["value"])
+            game["elapsed"] = max(0, int(body.get("elapsed") or 0))
+            await sync_challenge_board(game)
+        return {"ok": True, "filled": game["filled"], "elapsed": game["elapsed"]}
     solution = body.get("solution")
     if board is None or given is None:
         print(
@@ -515,6 +614,26 @@ async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict
     from challenge_store import match_store
 
     uid = int(user["id"])
+    from bot import find_challenge_game_for_user, games, game_filled_count
+    ch_key = find_challenge_game_for_user(uid)
+    if ch_key:
+        game = games[ch_key]
+        return {
+            "ok": True,
+            "session": {
+                "difficulty": game.get("difficulty") or "medium",
+                "diff_index": 0,
+                "elapsed": max(0, int(time.time() - float(game.get("started_at") or time.time()))),
+                "board": game.get("board"),
+                "given": game.get("given"),
+                "solution": game.get("solution"),
+                "filled": game_filled_count(game),
+                "session_kind": "challenge",
+                "match_id": game.get("match_id"),
+                "player_slot": game.get("player_slot"),
+            },
+        }
+
     resolved_guild = await _resolve_activity_guild_id(guild_id, uid)
     doc = await match_store.get_activity_session(_activity_session_id(resolved_guild, uid))
     if not doc:
@@ -532,6 +651,8 @@ async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict
             "solution": doc.get("solution"),
             "filled": int(doc.get("filled") or 0),
             "updated_at": doc.get("updated_at"),
+            "session_kind": doc.get("session_kind") or "play",
+            "daily_date": doc.get("daily_date"),
         },
     }
 
@@ -540,6 +661,9 @@ async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> di
     from bot import clear_activity_session
 
     uid = int(user["id"])
+    from bot import find_challenge_game_for_user
+    if find_challenge_game_for_user(uid):
+        return {"ok": True, "cleared": False}
     await clear_activity_session(bot, _activity_session_id(guild_id, uid))
     return {"ok": True, "cleared": True}
 

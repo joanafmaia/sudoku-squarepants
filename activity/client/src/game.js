@@ -188,6 +188,7 @@ export function startThcokuGame(canvas, options = {}) {
     shakeUntil: 0,
     raf: 0,
     winZoom: 1,
+    sessionKind: options.sessionKind || null,
   };
 
   const diffBtn = controls.querySelector("#ctrl-diff");
@@ -316,6 +317,7 @@ export function startThcokuGame(canvas, options = {}) {
       given: state.given,
       solution: state.solution,
       filled: filledCount(state.board),
+      session_kind: state.sessionKind,
     };
   }
 
@@ -334,6 +336,7 @@ export function startThcokuGame(canvas, options = {}) {
     state.pencilMode = false;
     state.flashCell = null;
     state.startedAt = Date.now() - Math.max(0, Number(snap.elapsed) || 0) * 1000;
+    state.sessionKind = snap.session_kind || null;
     const user = discordUsername();
     const hello = user ? `Hey, ${user}! ` : "";
     state.status = `${hello}Continuing · ${filledCount(state.board)}/81`;
@@ -388,6 +391,9 @@ export function startThcokuGame(canvas, options = {}) {
   }
 
   function newGame() {
+    if (state.sessionKind === "daily" || state.sessionKind === "challenge") {
+      return;
+    }
     if (typeof options.onNewGame === "function") {
       try {
         options.onNewGame();
@@ -845,10 +851,13 @@ export function startThcokuGame(canvas, options = {}) {
       return;
     }
     if (action === "clear") place(0);
-    else if (action === "new") newGame();
-    else if (action === "diff") {
-      state.diffIndex = (state.diffIndex + 1) % DIFF_KEYS.length;
-      newGame();
+    else if (action === "new") {
+      if (state.sessionKind !== "daily" && state.sessionKind !== "challenge") newGame();
+    } else if (action === "diff") {
+      if (state.sessionKind !== "daily" && state.sessionKind !== "challenge") {
+        state.diffIndex = (state.diffIndex + 1) % DIFF_KEYS.length;
+        newGame();
+      }
     } else if (action === "pencil") {
       state.pencilMode = !state.pencilMode;
       state.status = state.pencilMode ? "Notes ON — Mrs. Puff mode" : "Notes OFF";
@@ -864,7 +873,9 @@ export function startThcokuGame(canvas, options = {}) {
       state.pencilMode = !state.pencilMode;
       syncControls();
       draw();
-    } else if (evt.key === "n" || evt.key === "N") newGame();
+    } else if (evt.key === "n" || evt.key === "N") {
+      if (state.sessionKind !== "daily" && state.sessionKind !== "challenge") newGame();
+    }
     else if (evt.key === "ArrowLeft") {
       state.selected[1] = (state.selected[1] + 8) % 9;
       draw();

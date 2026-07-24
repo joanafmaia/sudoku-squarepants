@@ -387,16 +387,25 @@ function askResume(session) {
 
 async function beginPlay({ resumeSession = null } = {}) {
   sessionOpenedAt = Date.now();
+  const sessionKind = resumeSession?.session_kind || null;
   if (resumeSession) {
-    startGameOnce(null, { autoStart: false });
+    startGameOnce(null, { autoStart: false, sessionKind });
     if (!gameApi?.loadSnapshot?.(resumeSession)) {
       gameApi?.newGame?.();
     }
   } else {
-    startGameOnce(null, { autoStart: true });
+    startGameOnce(null, { autoStart: true, sessionKind });
   }
   startAutosave();
   await reportSessionActive();
+
+  if (sessionKind === "daily" || sessionKind === "challenge") {
+    const newBtn = document.querySelector('[data-action="new"]');
+    const diffBtn = document.querySelector('#ctrl-diff');
+    if (newBtn) newBtn.style.display = 'none';
+    if (diffBtn) diffBtn.style.display = 'none';
+  }
+
   const cosmetics = await loadCosmetics();
   if (cosmetics && gameApi?.setCosmetics) gameApi.setCosmetics(cosmetics);
 }
@@ -414,6 +423,7 @@ async function prefetchSessionBoard(session) {
       given: session.given,
       solution: session.solution,
       filled: session.filled ?? 0,
+      session_kind: session.session_kind,
     },
   });
 }
@@ -429,6 +439,10 @@ async function showGame() {
   const session = await loadSavedSession();
   if (session) {
     await prefetchSessionBoard(session);
+    if (session.session_kind === "daily" || session.session_kind === "challenge") {
+      await beginPlay({ resumeSession: session });
+      return;
+    }
     const resume = await askResume(session);
     if (resume) {
       await beginPlay({ resumeSession: session });

@@ -2489,6 +2489,68 @@ async def handle_challenge_completion(
         await settle_challenge_match(bot, match, reason="all finished")
 
 
+async def handle_challenge_completion_activity(
+    bot: "SudokuBot",
+    user_id: int,
+    game: dict,
+    elapsed: int,
+) -> None:
+    """Record finish time from Activity; settle challenge when everyone is done."""
+    finished_at = time.time()
+    match_id = game["match_id"]
+    slot = game["player_slot"]
+
+    match = await match_store.update_player(
+        match_id,
+        slot,
+        {
+            "current_board": copy_grid(game["board"]),
+            "finished_time": finished_at,
+            "elapsed": elapsed,
+        },
+    )
+    key = challenge_game_key(match_id, user_id)
+    await remove_game(key)
+
+    if not match:
+        return
+
+    # Send completion image & text to the private thread
+    channel_id = game.get("channel_id")
+    if channel_id:
+        try:
+            channel = bot.get_channel(int(channel_id))
+            if channel is None:
+                channel = await bot.fetch_channel(int(channel_id))
+            if channel:
+                image = render_board(
+                    game["board"],
+                    game["given"],
+                    solution=game["solution"],
+                    conflicts=set(),
+                    difficulty=game.get("difficulty"),
+                    title_id=game.get("owner_title"),
+                    pin_emojis=game.get("pin_emojis"),
+                    pin_seed=game.get("pin_seed"),
+                )
+                file = board_to_file(image)
+                remaining = sum(
+                    1
+                    for _, p in match_player_entries(match)
+                    if not p.get("forfeit") and p.get("finished_time") is None
+                )
+                wait_msg = "Waiting for other players…" if remaining else "Settling match…"
+                caption = f"**Board complete (via Activity)** · Time: **{format_time(elapsed)}**. {wait_msg}"
+                await channel.send(content=caption, file=file)
+        except Exception as exc:
+            print(f"Failed to post challenge activity completion to thread: {exc}")
+
+    schedule_challenge_live_update(match_id, immediate=True)
+
+    if challenge_ready_to_settle(match):
+        await settle_challenge_match(bot, match, reason="all finished")
+
+
 async def handle_challenge_forfeit(
     bot: "SudokuBot",
     interaction: discord.Interaction,
@@ -2600,9 +2662,9 @@ async def launch_challenge_match(
             try:
                 await dest.send(
                     f"{member.mention} Speedrun ({len(players)} players) · **{tier}**\n"
-                    f"Field: {names} — go!"
+                    f"Field: {names} — click below to open the Activity and start playing!",
+                    view=ChallengeLaunchActivityView(),
                 )
-                await post_game_panel(dest, key, games[key])
                 await persist_game(key, games[key])
             except discord.HTTPException as exc:
                 raise RuntimeError(
@@ -2959,7 +3021,7 @@ def build_activity_watch_view(
 
 
 def daily_watch_session_id(guild_id: int, user_id: int) -> str:
-    return f"daily:{guild_id}:{user_id}"
+    return f"activity:{guild_id}:{user_id}"
 
 
 def parse_watch_session_ids(session_id: str) -> tuple[int, int]:
@@ -4106,6 +4168,75 @@ class ConfirmQuitView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(content="Still playing.", view=None)
         self.stop()
+
+
+class ConfirmQuitActivityDailyView(discord.ui.View):
+    """Confirm daily quit for Activity session (locks attempt, resets streak)."""
+
+    def __init__(self, session_id: str, bot_ref: "SudokuBot"):
+        super().__init__(timeout=30)
+        self.session_id = session_id
+        self.bot = bot_ref
+
+    @discord.ui.button(label="Quit", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        session = await match_store.get_activity_session(self.session_id)
+        if not session:
+            await interaction.response.edit_message(content="Game already ended.", view=None)
+            self.stop()
+            return
+
+        guild_id = int(session.get("guild_id") or 0)
+        uid = int(session.get("user_id") or 0)
+        if interaction.user.id != uid:
+            await interaction.response.send_message("Not your board.", ephemeral=True)
+            return
+
+        await interaction.response.edit_message(content="Quitting...", view=None)
+        self.stop()
+
+        daily = get_guild_daily(self.bot.data, guild_id)
+        daily["results"][str(uid)] = {
+            "won": False,
+            "forfeit": True,
+            "name": interaction.user.display_name,
+        }
+        stats = user_stats(guild_stats(self.bot.data, guild_id), uid)
+        stats["streak"] = 0
+        save_data(self.bot.data)
+        
+        await clear_activity_session(self.bot, self.session_id)
+        await interaction.followup.send(
+            "Forfeited today's daily. Streak wiped.",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Keep playing", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(content="Still playing.", view=None)
+        self.stop()
+
+
+class ChallengeLaunchActivityView(discord.ui.View):
+    """Persistent button in challenge threads to open the Activity."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Play in Activity 🎮",
+        style=discord.ButtonStyle.primary,
+        custom_id="challenge_launch_activity",
+    )
+    async def play_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        ch_key = find_challenge_game_for_user(interaction.user.id)
+        if not ch_key:
+            await interaction.response.send_message(
+                "You do not have an active challenge in this server. Start one with `/challenge`.",
+                ephemeral=True,
+            )
+            return
+        await _launch_activity_window(interaction)
 
 
 # ---------------------------------------------------------------------------
@@ -5622,6 +5753,7 @@ async def on_ready():
     await restore_persisted_sessions(bot)
     await restore_challenge_watch_views(bot)
     await restore_activity_play_watch_views(bot)
+    bot.add_view(ChallengeLaunchActivityView())
 
 
 @bot.tree.command(
@@ -6107,13 +6239,10 @@ async def daily_cmd(interaction: discord.Interaction):
     if uid in daily["results"]:
         r = daily["results"][uid]
         if r.get("in_progress"):
-            restored = await load_persisted_game(sk)
-            if restored and restored.get("mode") == "daily":
-                await reply_ephemeral(
-                    interaction,
-                    "You already started today's daily — continue on your board message "
-                    "(use **Refresh** if the buttons timed out).",
-                )
+            session_id = f"activity:{guild_id}:{user_id}"
+            existing = await match_store.get_activity_session(session_id)
+            if existing and existing.get("session_kind") == "daily":
+                await _launch_activity_window(interaction)
                 return
             # Orphan lock (restart without recoverable session) — unlock and continue
             daily["results"].pop(uid, None)
@@ -6150,37 +6279,40 @@ async def daily_cmd(interaction: discord.Interaction):
     save_data(bot.data)
 
     board, given, solution, diff_key = make_daily_puzzle(guild_id, daily["date"], user_id)
-    gstats = guild_stats(bot.data, guild_id)
-    stats = user_stats(gstats, user_id)
-    games[sk] = new_game_state(
-        mode="daily",
-        board=board,
-        given=given,
-        solution=solution,
-        owner_id=user_id,
-        owner_name=interaction.user.display_name,
-        owner_title=equipped_title_id(stats),
-        channel_id=interaction.channel_id,
-        guild_id=guild_id,
-        daily_date=daily["date"],
-        difficulty=diff_key,
-        pin_emojis=owned_pin_emojis(stats),
-    )
+    session_id = f"activity:{guild_id}:{user_id}"
+    doc = {
+        "_id": session_id,
+        "guild_id": str(guild_id),
+        "user_id": str(user_id),
+        "difficulty": diff_key,
+        "elapsed": 0,
+        "board": board,
+        "given": given,
+        "solution": solution,
+        "filled": game_filled_count({"board": board}),
+        "name": interaction.user.display_name,
+        "channel_id": str(interaction.channel_id),
+        "session_kind": "daily",
+        "daily_date": daily["date"],
+        "started_at": time.time(),
+        "last_move_at": time.time(),
+    }
     try:
-        await start_panel(interaction, sk, games[sk], silent=False)
+        await match_store.upsert_activity_session(doc)
         asyncio.create_task(_notify_daily_play_started_safe(bot, interaction))
-    except Exception:
-        await remove_game(sk)
+        await _launch_activity_window(interaction)
+    except Exception as exc:
         daily["results"].pop(str(user_id), None)
         save_data(bot.data)
+        await match_store.delete_activity_session(session_id)
         if not interaction.response.is_done():
             await interaction.response.send_message(
-                "Couldn't start the daily board. Try again.",
+                f"Couldn't start the daily board: {exc}. Try again.",
                 ephemeral=True,
             )
         else:
             await interaction.followup.send(
-                "Couldn't start the daily board. Try again.",
+                f"Couldn't start the daily board: {exc}. Try again.",
                 ephemeral=True,
             )
 
@@ -6220,6 +6352,17 @@ async def quit_cmd(interaction: discord.Interaction):
         await interaction.response.send_message(
             "Really leave this speedrun?",
             view=ConfirmQuitView(ch_key, bot, None),
+            ephemeral=True,
+        )
+        return
+
+    # Check for active daily Activity session
+    session_id = f"activity:{guild_id}:{interaction.user.id}"
+    session = await match_store.get_activity_session(session_id)
+    if session and session.get("session_kind") == "daily":
+        await interaction.response.send_message(
+            "Quit today's daily? This locks your attempt and resets your streak.",
+            view=ConfirmQuitActivityDailyView(session_id, bot),
             ephemeral=True,
         )
         return
