@@ -340,6 +340,7 @@ function startAutosave() {
       scheduleEndWatchOnHide();
     } else {
       cancelEndWatchOnHide();
+      reportSessionActive();
     }
   });
   window.addEventListener("pagehide", (event) => {
