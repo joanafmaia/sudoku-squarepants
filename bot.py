@@ -1736,18 +1736,10 @@ def build_activity_win_embed(
     """Channel announcement when someone clears an Activity (/play) puzzle."""
     mention = f"<@{user_id}>"
     tier = difficulty_label(difficulty)
-    embed = paper_embed(f"{SPONGE} /play — puzzle solved!")
+    embed = paper_embed(f"{SPONGE} {mention} completou o Sudoku!")
     embed.description = (
-        f"{WAVE} {mention} cleared the board!\n"
-        f"{random.choice(WIN_TAUNTS)}"
-    )
-    embed.add_field(name="Difficulty", value=f"**{tier}**", inline=True)
-    embed.add_field(name="Time", value=f"**{format_time(elapsed)}**", inline=True)
-    embed.add_field(name="Streak", value=f"{STAR} **{streak}**", inline=True)
-    embed.add_field(
-        name="Reward",
-        value=f"{format_xp(xp, signed=True)} · {format_sponges(coins, signed=True)}",
-        inline=False,
+        f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {streak}**\n"
+        f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
     )
     return embed
 
@@ -2030,20 +2022,12 @@ def finish_win(
     else:
         title = f"{SPONGE} Puzzle solved — yay!"
 
-    embed = paper_embed(title)
-    embed.description = random.choice(WIN_TAUNTS)
-    embed.add_field(name="Time", value=format_time(elapsed), inline=True)
-    embed.add_field(name="Difficulty", value=difficulty_label(game.get("difficulty")), inline=True)
-    embed.add_field(name="Streak", value=f"{STAR} {stats['streak']}", inline=True)
-    
-    rewards = f"{format_xp(xp, signed=True)} · {format_sponges(coins, signed=True)}"
-    if rank is not None:
-        rewards += f" · Rank #{rank}"
-    else:
-        rewards += f" · Mode {game['mode'].capitalize()}"
-    embed.add_field(name="Reward", value=rewards, inline=False)
-    
-    embed.add_field(name="Balance", value=f"{format_xp(stats['xp'])} · {format_sponges(stats['coins'])}", inline=False)
+    tier = difficulty_label(game.get("difficulty"))
+    embed = paper_embed(f"{SPONGE} {user.mention} completou o Sudoku!")
+    embed.description = (
+        f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {stats['streak']}**\n"
+        f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
+    )
     return WinOutcome(embed=embed, coins=coins, xp=xp, rank=rank, quiet=False)
 
 
