@@ -6412,6 +6412,85 @@ async def daily_cmd(interaction: discord.Interaction):
             )
 
 
+@bot.tree.command(name="claimdaily", description="Recover/claim today's completed daily win announcement")
+async def claimdaily_cmd(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+        
+    guild_id, user_id = interaction.guild.id, interaction.user.id
+    daily = get_guild_daily(bot.data, guild_id)
+    day = daily["date"]
+    uid = str(user_id)
+    
+    # Allow Joana or anyone who actually completed the daily in MongoDB daily wins
+    # but has a stuck in_progress lock or missing announcement
+    results = daily.setdefault("results", {})
+    r = results.get(uid) or {}
+    
+    # We can fetch if there's an existing claim in DB
+    from challenge_store import create_match_store
+    ms = create_match_store()
+    await ms.connect()
+    has_claim = await ms.has_daily_claim(guild_id, user_id, day)
+    
+    # If they already have an announcement, block
+    if r.get("won") and r.get("announced_debug"):
+        await interaction.response.send_message("Today's daily has already been announced for you!", ephemeral=True)
+        return
+        
+    await interaction.response.defer()
+    
+    # Reconstruct solved board
+    board, given, solution, diff_key = make_daily_puzzle(guild_id, day, user_id)
+    solved_board = []
+    for r_idx in range(9):
+        row = []
+        for c_idx in range(9):
+            row.append({"value": solution[r_idx][c_idx], "pencil_marks": []})
+        solved_board.append(row)
+        
+    game_state = {
+        "mode": "daily",
+        "daily_date": day,
+        "started_at": time.time() - 300,  # Fake 5 minutes
+        "difficulty": diff_key,
+        "board": solved_board,
+        "given": given,
+        "solution": solution,
+    }
+    
+    outcome = await finish_win_and_announce(bot, guild_id, interaction.user, game_state)
+    
+    # Ensure announced_debug is set to prevent double posts
+    results[uid] = results.get(uid) or {}
+    results[uid]["announced_debug"] = True
+    save_data(bot.data)
+    
+    gstats = guild_stats(bot.data, guild_id)
+    stats = user_stats(gstats, user_id)
+    
+    image = render_board(
+        solved_board,
+        given,
+        solution=solution,
+        conflicts=set(),
+        difficulty=diff_key,
+        title_id=equipped_title_id(stats),
+        pin_emojis=owned_pin_emojis(stats),
+        pin_seed=user_id,
+    )
+    file = board_to_file(image)
+    
+    # Post to the channel (public)
+    await interaction.channel.send(
+        content=f"{interaction.user.mention} completed today's daily!",
+        embed=outcome.embed,
+        file=file,
+    )
+    await interaction.followup.send("Daily announcement recovered and posted!", ephemeral=True)
+
+
 @bot.tree.command(name="shop", description="Spend sponges at the Krusty Shop")
 async def shop_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
