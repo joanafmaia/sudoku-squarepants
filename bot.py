@@ -6525,8 +6525,10 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
     has_claim = await ms.has_daily_claim(guild_id, user_id, day)
     
     await interaction.response.defer()
+    gstats = guild_stats(bot.data, guild_id)
+    stats = user_stats(gstats, user_id)
     
-    # Reconstruct solved board
+    # Reconstruct solved board and build official win embed
     board, given, solution, diff_key = make_daily_puzzle(guild_id, day, user_id)
     solved_board = []
     for r_idx in range(9):
@@ -6535,25 +6537,26 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
             row.append({"value": solution[r_idx][c_idx], "pencil_marks": []})
         solved_board.append(row)
         
-    game_state = {
-        "mode": "daily",
-        "daily_date": day,
-        "started_at": time.time() - 300,  # Fake 5 minutes
-        "difficulty": diff_key,
-        "board": solved_board,
-        "given": given,
-        "solution": solution,
-    }
-    
-    outcome = await finish_win_and_announce(bot, guild_id, target_user, game_state)
+    elapsed = int(r.get("time") or 604)
+    coins = int(r.get("coins") or win_reward(int(stats.get("streak") or 1), daily=True, difficulty=diff_key))
+    xp = int(r.get("xp") or coins)
+    streak = max(int(stats.get("streak") or 1), 1)
+
+    embed = build_activity_win_embed(
+        user_id=user_id,
+        difficulty=diff_key,
+        elapsed=elapsed,
+        coins=coins,
+        xp=xp,
+        streak=streak,
+        is_daily=True,
+        user_stats_dict=stats,
+    )
     
     # Ensure announced_debug is set to prevent double posts
     results[uid] = results.get(uid) or {}
     results[uid]["announced_debug"] = True
     save_data(bot.data)
-    
-    gstats = guild_stats(bot.data, guild_id)
-    stats = user_stats(gstats, user_id)
     
     image = await asyncio.to_thread(
         render_board,
@@ -6570,8 +6573,7 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
     
     # Post to the channel (public)
     await interaction.channel.send(
-        content=None,
-        embed=outcome.embed,
+        embed=embed,
         file=file,
     )
     await interaction.followup.send(f"Daily announcement recovered and posted for {target_user.mention}!", ephemeral=True)
