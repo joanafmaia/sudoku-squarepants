@@ -239,7 +239,7 @@ class ThcokuGame:
 
     def quit_game(self) -> None:
         try:
-            import js
+            import js  # type: ignore
             js.closeDiscordActivity()
         except Exception:
             pass
