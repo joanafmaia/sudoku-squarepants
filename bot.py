@@ -200,6 +200,8 @@ SHOP_TITLES = {
 
 # Pins = border stickers only. One free; paid pins scale up so cosmetics stay a chase.
 SHOP_PINS = {
+    "xp_boost": {"label": "🔮 Puff's Crystal Ball (2x XP - 3 Games)", "pin": "Crystal Ball", "emoji": "🔮", "cost": 120},
+    "streak_shield": {"label": "🛡️ Krabby Shield (Protect Streak)", "pin": "Shield", "emoji": "🛡️", "cost": 150},
     "wave": {"label": "🌊 Wave Pin", "pin": "Wave", "emoji": "🌊", "cost": 0},
     # Former title emojis → buyable border pins
     "pin_jelly": {"label": "🪼 Jelly Pin", "pin": "Jelly", "emoji": "🪼", "cost": 40},
@@ -237,8 +239,6 @@ SHOP_PINS = {
     "pin_mama": {"label": "🫶 Mama Pin", "pin": "Mama", "emoji": "🫶", "cost": 700},
     "pin_hulk": {"label": "🧌 Hulk Pin", "pin": "Hulk", "emoji": "🧌", "cost": 820},
     "pin_apex": {"label": "🐋 Apex Pin", "pin": "Apex", "emoji": "🐋", "cost": 1000},
-    "streak_shield": {"label": "🛡️ Krabby Shield", "pin": "Shield", "emoji": "🛡️", "cost": 150},
-    "xp_boost": {"label": "🔮 Puff's Crystal Ball (2x XP Boost)", "pin": "Crystal Ball", "emoji": "🔮", "cost": 120},
 }
 
 ACHIEVEMENTS = {
@@ -2053,15 +2053,12 @@ def finish_win(
     )
     xp = coins  # career XP mirrors sponge grant; shop spend never reduces XP
 
-    # 🔮 Puff's Crystal Ball Consumable (2x XP & Sponge Boost)
-    if stats.get("equipped_pin") == "xp_boost":
+    # 🔮 Puff's Crystal Ball Consumable (2x XP & Sponge Boost - 3 Games)
+    boost_charges = int(stats.get("xp_boost_charges") or 0)
+    if boost_charges > 0:
         coins *= 2
         xp *= 2
-        stats["equipped_pin"] = "wave"
-        owned = list(stats.get("owned_pins") or [])
-        if "xp_boost" in owned:
-            owned.remove("xp_boost")
-            stats["owned_pins"] = owned
+        stats["xp_boost_charges"] = boost_charges - 1
 
     stats["coins"] += coins
     stats["xp"] = int(stats.get("xp") or 0) + xp
@@ -5132,6 +5129,31 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
             "label": item["label"],
             "cost": cost,
             "message": f"Bought **{item['label']}**! (Shields owned: **{stats['streak_shields']}** 🛡️)",
+        }
+
+    if tid == "xp_boost":
+        if stats["coins"] < cost:
+            return {
+                "ok": False,
+                "bought": False,
+                "message": (
+                    f"Need **{format_sponges(cost)}** "
+                    f"(you have {format_sponges(stats['coins'])})."
+                ),
+            }
+        stats["coins"] -= cost
+        stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
+        stats["xp_boost_charges"] = int(stats.get("xp_boost_charges") or 0) + 3
+        save_data(bot.data)
+        return {
+            "ok": True,
+            "bought": True,
+            "label": item["label"],
+            "cost": cost,
+            "message": (
+                f"Bought **🔮 Puff's Crystal Ball**! 🔮 **2x XP & Sponges active for next "
+                f"{stats['xp_boost_charges']} games!**"
+            ),
         }
 
     if tid not in SHOP_PINS:
