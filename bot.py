@@ -237,7 +237,33 @@ SHOP_PINS = {
     "pin_mama": {"label": "🫶 Mama Pin", "pin": "Mama", "emoji": "🫶", "cost": 1200},
     "pin_hulk": {"label": "🧌 Hulk Pin", "pin": "Hulk", "emoji": "🧌", "cost": 1450},
     "pin_apex": {"label": "🐋 Apex Pin", "pin": "Apex", "emoji": "🐋", "cost": 1800},
+    "streak_shield": {"label": "🛡️ Krabby Shield", "pin": "Shield", "emoji": "🛡️", "cost": 300},
 }
+
+ACHIEVEMENTS = {
+    "speed_demon": {"label": "⚡ Speed Demon", "desc": "Solve a puzzle in under 3 mins"},
+    "streak_master": {"label": "🔥 Streak Master", "desc": "Reach a 7-day daily streak"},
+    "sponge_boss": {"label": "🧽 Sponge Boss", "desc": "Accumulate 1,000 Sponges"},
+    "puzzle_master": {"label": "🧩 Puzzle Master", "desc": "Complete 25 total wins"},
+}
+
+
+def evaluate_user_achievements(stats: dict) -> list[str]:
+    unlocked = set(stats.get("badges") or [])
+    best_time = float(stats.get("best_time") if stats.get("best_time") is not None else 0)
+    if best_time > 0 and best_time <= 180:
+        unlocked.add("speed_demon")
+    streak = max(int(stats.get("streak") or 0), int(stats.get("best_streak") or 0))
+    if streak >= 7:
+        unlocked.add("streak_master")
+    coins = int(stats.get("coins") or 0) + int(stats.get("sponges_spent") or 0)
+    if coins >= 1000:
+        unlocked.add("sponge_boss")
+    wins = max(int(stats.get("wins") or 0), int(stats.get("activity_wins") or 0))
+    if wins >= 25:
+        unlocked.add("puzzle_master")
+    stats["badges"] = list(unlocked)
+    return list(unlocked)
 
 # Legacy shop pin ids → current ids (owned_themes / owned_pins from older builds)
 SHOP_PIN_ALIASES = {
@@ -3076,33 +3102,33 @@ async def notify_daily_play_started(
     if interaction.guild is None:
         return
     session_id = daily_watch_session_id(interaction.guild.id, interaction.user.id)
-    watch_channel_id = ACTIVITY_WATCH_CHANNEL_ID
-    if not watch_channel_id and isinstance(interaction.channel, discord.abc.GuildChannel):
-        watch_channel_id = int(interaction.channel.id)
-    print(
-        f"daily watch notify for {session_id} channel={watch_channel_id or 'unset'}"
-    )
-    existing = await match_store.get_activity_session(session_id)
-    if existing:
-        await delete_activity_watch_message(bot_ref, existing, session_id=session_id)
-        await match_store.merge_activity_session(
-            session_id,
-            {
-                "watch_notified": False,
-                "watch_message_id": None,
-            },
+    if session_id in _activity_notify_inflight:
+        print(f"daily watch notify skipped for {session_id}: already in flight")
+        return
+    _activity_notify_inflight.add(session_id)
+    try:
+        watch_channel_id = ACTIVITY_WATCH_CHANNEL_ID
+        if not watch_channel_id and isinstance(interaction.channel, discord.abc.GuildChannel):
+            watch_channel_id = int(interaction.channel.id)
+        print(
+            f"daily watch notify for {session_id} channel={watch_channel_id or 'unset'}"
         )
-    day = utc_today()
-    await notify_activity_play_started(
-        bot_ref,
-        session_id,
-        fallback_user=interaction.user,
-        force=True,
-        watch_channel_id=watch_channel_id or None,
-        announcement=(
-            f"{interaction.user.mention} is playing today's **Daily Sudoku** (`{day}`)!"
-        ),
-    )
+        existing = await match_store.get_activity_session(session_id)
+        if existing:
+            await delete_activity_watch_message(bot_ref, existing, session_id=session_id)
+        day = utc_today()
+        await notify_activity_play_started(
+            bot_ref,
+            session_id,
+            fallback_user=interaction.user,
+            force=True,
+            watch_channel_id=watch_channel_id or None,
+            announcement=(
+                f"{interaction.user.mention} is playing today's **Daily Sudoku** (`{day}`)!"
+            ),
+        )
+    finally:
+        _activity_notify_inflight.discard(session_id)
 
 
 async def _notify_daily_play_started_safe(
@@ -3154,14 +3180,14 @@ async def notify_activity_play_started(
         print(f"activity watch notify skipped for {session_id}: already in flight")
         return
 
-    session = await match_store.get_activity_session(session_id)
-    if not force and await activity_watch_is_live(bot_ref, session):
-        print(f"activity watch notify skipped for {session_id}: announcement already live")
-        return
-
     _activity_notify_inflight.add(session_id)
     try:
         session = await match_store.get_activity_session(session_id)
+        posted_at = float((session or {}).get("watch_posted_at") or 0)
+        # Skip duplicate post if posted within last 60s or announcement is live
+        if not force and session and session.get("watch_notified") and (time.time() - posted_at < 60):
+            print(f"activity watch notify skipped for {session_id}: announcement posted recently")
+            return
         if not force and await activity_watch_is_live(bot_ref, session):
             print(f"activity watch notify skipped for {session_id}: announcement already live")
             return
@@ -3228,30 +3254,30 @@ async def notify_activity_play_from_launch(
     if interaction.guild is None:
         return
     session_id = f"activity:{interaction.guild.id}:{interaction.user.id}"
-    watch_channel_id = ACTIVITY_WATCH_CHANNEL_ID
-    if not watch_channel_id and isinstance(interaction.channel, discord.abc.GuildChannel):
-        watch_channel_id = int(interaction.channel.id)
-    print(
-        f"activity watch launch notify for {session_id} "
-        f"channel={watch_channel_id or 'unset'}"
-    )
-    existing = await match_store.get_activity_session(session_id)
-    if existing:
-        await delete_activity_watch_message(bot_ref, existing, session_id=session_id)
-        await match_store.merge_activity_session(
-            session_id,
-            {
-                "watch_notified": False,
-                "watch_message_id": None,
-            },
+    if session_id in _activity_notify_inflight:
+        print(f"activity watch launch notify skipped for {session_id}: already in flight")
+        return
+    _activity_notify_inflight.add(session_id)
+    try:
+        watch_channel_id = ACTIVITY_WATCH_CHANNEL_ID
+        if not watch_channel_id and isinstance(interaction.channel, discord.abc.GuildChannel):
+            watch_channel_id = int(interaction.channel.id)
+        print(
+            f"activity watch launch notify for {session_id} "
+            f"channel={watch_channel_id or 'unset'}"
         )
-    await notify_activity_play_started(
-        bot_ref,
-        session_id,
-        fallback_user=interaction.user,
-        force=True,
-        watch_channel_id=watch_channel_id or None,
-    )
+        existing = await match_store.get_activity_session(session_id)
+        if existing:
+            await delete_activity_watch_message(bot_ref, existing, session_id=session_id)
+        await notify_activity_play_started(
+            bot_ref,
+            session_id,
+            fallback_user=interaction.user,
+            force=True,
+            watch_channel_id=watch_channel_id or None,
+        )
+    finally:
+        _activity_notify_inflight.discard(session_id)
 
 
 async def _notify_activity_play_from_launch_safe(
@@ -3631,6 +3657,31 @@ class ActivityWatchMenuView(discord.ui.View):
         return _cb
 
 
+async def resolve_member_or_user(
+    bot_ref: "SudokuBot",
+    guild: discord.Guild | None,
+    user_id: int,
+    fallback: discord.abc.User | None = None,
+) -> discord.abc.User | discord.Member | None:
+    if fallback is not None and getattr(fallback, "id", None) == user_id:
+        return fallback
+    if guild is not None:
+        m = guild.get_member(user_id)
+        if m is not None:
+            return m
+        try:
+            return await guild.fetch_member(user_id)
+        except Exception:
+            pass
+    u = bot_ref.get_user(user_id)
+    if u is not None:
+        return u
+    try:
+        return await bot_ref.fetch_user(user_id)
+    except Exception:
+        return None
+
+
 class ChallengeInviteView(discord.ui.View):
     def __init__(
         self,
@@ -3711,9 +3762,9 @@ class ChallengeInviteView(discord.ui.View):
                 await _abort("Someone already has an active challenge — try again later.")
                 return
 
-        members: list[discord.Member] = []
+        members: list[discord.abc.User | discord.Member] = []
         for uid in all_ids:
-            m = guild.get_member(uid)
+            m = await resolve_member_or_user(bot, guild, uid, fallback=interaction.user)
             if m is None:
                 await _abort("Could not resolve all players.")
                 return
@@ -3929,9 +3980,9 @@ class OpenChallengeLobbyView(discord.ui.View):
             await interaction.response.send_message("Invalid channel.", ephemeral=True)
             return
 
-        members: list[discord.Member] = []
+        members: list[discord.abc.User | discord.Member] = []
         for uid in self.joined_ids:
-            m = guild.get_member(uid)
+            m = await resolve_member_or_user(bot, guild, uid, fallback=interaction.user)
             if m is None:
                 await interaction.response.send_message("Could not resolve all players.", ephemeral=True)
                 return
@@ -4997,6 +5048,28 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
         }
 
     tid = item["id"]
+    if tid == "streak_shield":
+        if stats["coins"] < cost:
+            return {
+                "ok": False,
+                "bought": False,
+                "message": (
+                    f"Need **{format_sponges(cost)}** "
+                    f"(you have {format_sponges(stats['coins'])})."
+                ),
+            }
+        stats["coins"] -= cost
+        stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
+        stats["streak_shields"] = int(stats.get("streak_shields") or 0) + 1
+        save_data(bot.data)
+        return {
+            "ok": True,
+            "bought": True,
+            "label": item["label"],
+            "cost": cost,
+            "message": f"Bought **{item['label']}**! (Shields owned: **{stats['streak_shields']}** 🛡️)",
+        }
+
     if tid not in SHOP_PINS:
         return {"ok": False, "bought": False, "message": "Unknown pin."}
     owned = owned_pin_ids(stats)
@@ -5581,17 +5654,17 @@ async def broadcast_daily_announcement(target_channel_id: int | None = None) -> 
     meta = DIFFICULTY_TIERS.get(diff_key, {})
     label = meta.get("label", "Medium")
 
-    embed = paper_embed(f"{PINEAPPLE} Novo Sudoku Diário Disponível! ({now_date})")
+    embed = paper_embed(f"{PINEAPPLE} New Daily Sudoku Available! ({now_date})")
     embed.description = (
-        f"{WAVE} **Ahoy, habitantes da Fenda do Biquíni!**\n\n"
-        f"O Sudoku Diário de hoje já está servido no Siri Cascudo! 🍔"
+        f"{WAVE} **Ahoy, Bikini Bottom residents!**\n\n"
+        f"Today's Daily Sudoku is now being served at the Krusty Krab! 🍔"
     )
-    embed.add_field(name="Dificuldade", value=f"**{label}**", inline=True)
-    embed.add_field(name="Bónus Diário", value=f"**+{DAILY_BONUS} Sponges {SPONGE}**", inline=True)
-    embed.add_field(name="Bónus de Streak", value=f"**+{STREAK_BONUS_PER} / dia {STAR}**", inline=True)
+    embed.add_field(name="Difficulty", value=f"**{label}**", inline=True)
+    embed.add_field(name="Daily Bonus", value=f"**+{DAILY_BONUS} Sponges {SPONGE}**", inline=True)
+    embed.add_field(name="Streak Bonus", value=f"**+{STREAK_BONUS_PER} / day {STAR}**", inline=True)
     embed.add_field(
-        name="Como Jogar",
-        value="Escreve `/daily` no chat ou abre o jogo através do botão de **Activity** no Discord!",
+        name="How to Play",
+        value="Type `/daily` in chat or launch the game using the **Activity** button in Discord!",
         inline=False,
     )
 
@@ -5634,11 +5707,17 @@ async def broadcast_daily_announcement(target_channel_id: int | None = None) -> 
 async def check_daily_announcement():
     global _last_announced_daily_date
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    if _last_announced_daily_date is None:
+    last_announced = (
+        bot.data.get("last_announced_daily_date")
+        if hasattr(bot, "data") and isinstance(bot.data, dict)
+        else _last_announced_daily_date
+    )
+
+    if last_announced != today_str:
         _last_announced_daily_date = today_str
-        return
-    if today_str != _last_announced_daily_date:
-        _last_announced_daily_date = today_str
+        if hasattr(bot, "data") and isinstance(bot.data, dict):
+            bot.data["last_announced_daily_date"] = today_str
+            save_data(bot.data)
         print(f"[DailyAnnouncement] New UTC day detected: {today_str}. Broadcasting daily announcement...")
         sent = await broadcast_daily_announcement()
         print(f"[DailyAnnouncement] Broadcast complete. Sent to {sent} channel(s).")
@@ -5660,11 +5739,11 @@ async def setdailychannel_cmd(interaction: discord.Interaction, channel: discord
     if channel is None:
         gstats["daily_channel_id"] = None
         save_data(bot.data)
-        await interaction.response.send_message("Desativaste os anúncios automáticos do Sudoku Diário neste servidor.", ephemeral=True)
+        await interaction.response.send_message("Disabled automatic Daily Sudoku announcements in this server.", ephemeral=True)
     else:
         gstats["daily_channel_id"] = channel.id
         save_data(bot.data)
-        await interaction.response.send_message(f"Anúncios do Sudoku Diário definidos para o canal {channel.mention}! {PINEAPPLE}", ephemeral=True)
+        await interaction.response.send_message(f"Daily Sudoku announcements set to channel {channel.mention}! {PINEAPPLE}", ephemeral=True)
 
 
 async def reply_ephemeral(interaction: discord.Interaction, content: str) -> None:
@@ -6615,6 +6694,7 @@ async def stats_cmd(interaction: discord.Interaction, member: discord.Member | N
     gstats = guild_stats(bot.data, interaction.guild.id)
     s = user_stats(gstats, target.id)
     s["name"] = target.display_name
+    evaluate_user_achievements(s)
     save_data(bot.data)
     best = format_time(s["best_time"]) if s.get("best_time") is not None else "— not yet!"
     title = SHOP_TITLES[s["title"]]["label"] if s.get("title") in SHOP_TITLES else "Civilian"
@@ -6624,6 +6704,10 @@ async def stats_cmd(interaction: discord.Interaction, member: discord.Member | N
     losses = int(s.get("losses", 0))
     games_n = int(s.get("games", 0)) or (wins + losses)
     win_rate = f"{(100 * wins / games_n):.0f}%" if games_n else "—"
+
+    shields = int(s.get("streak_shields") or 0)
+    unlocked_badges = [ACHIEVEMENTS[b]["label"] for b in s.get("badges", []) if b in ACHIEVEMENTS]
+    badge_str = " · ".join(unlocked_badges) if unlocked_badges else "None yet — keep playing!"
 
     embed = paper_embed(f"{SPONGE} {display_name(s)}")
     embed.description = (
@@ -6643,6 +6727,7 @@ async def stats_cmd(interaction: discord.Interaction, member: discord.Member | N
         inline=True,
     )
     embed.add_field(name=f"Streak {STAR}", value=f"**{streak}** (best {best_streak})", inline=True)
+    embed.add_field(name="Shields 🛡️", value=f"**{shields}**", inline=True)
     embed.add_field(name="Win rate", value=f"**{win_rate}**", inline=True)
     embed.add_field(name="Wins", value=f"**{wins}**", inline=True)
     embed.add_field(name="Losses", value=f"**{losses}**", inline=True)
@@ -6650,7 +6735,14 @@ async def stats_cmd(interaction: discord.Interaction, member: discord.Member | N
     embed.add_field(name=f"Daily {PINEAPPLE}", value=f"**{s.get('daily_wins', 0)}** clears", inline=True)
     embed.add_field(name=f"Challenge {JELLY}", value=f"**{s.get('challenge_wins', 0)}** wins", inline=True)
     embed.add_field(name="Boards played", value=f"**{games_n}**", inline=True)
+    embed.add_field(name="Badges & Achievements 🏆", value=f"**{badge_str}**", inline=False)
     await interaction.response.send_message(embed=embed, silent=True)
+
+
+@bot.tree.command(name="profile", description="View your profile, badges, and achievements")
+@app_commands.describe(member="Peek at a neighbor's profile")
+async def profile_cmd(interaction: discord.Interaction, member: discord.Member | None = None):
+    await stats_cmd(interaction, member=member)
 
 
 if __name__ == "__main__":

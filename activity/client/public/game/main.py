@@ -11,9 +11,9 @@ import random
 import sys
 import time
 
-import pygame
+import pygame  # type: ignore
 
-from sudoku_core import (
+from sudoku_core import (  # type: ignore
     DEFAULT_DIFFICULTY,
     DIFFICULTY_TIERS,
     cell_value,
@@ -170,7 +170,7 @@ class ThcokuGame:
 
     def new_game(self) -> None:
         key = DIFF_KEYS[self.diff_index]
-        self.status = f"A gerar ({difficulty_label(key)})…"
+        self.status = f"Generating ({difficulty_label(key)})…"
         self.won = False
         self.bubbles = []
         self.draw()
@@ -181,8 +181,8 @@ class ThcokuGame:
         self.pencil_mode = False
         self.flash_cell = None
         user = discord_username()
-        hello = f"Olá, {user}! " if user else ""
-        self.status = f"{hello}Toca numa célula, depois num número"
+        hello = f"Hey, {user}! " if user else ""
+        self.status = f"{hello}Tap a cell, then a number"
 
     def cell_at(self, pos: tuple[int, int]) -> tuple[int, int] | None:
         x, y = pos
@@ -197,12 +197,12 @@ class ThcokuGame:
             return
         r, c = self.selected
         if self.given[r][c]:
-            self.status = "Essa célula é uma pista fixa"
+            self.status = "Fixed clue — barnacles!"
             self.shake_until = time.time() + 0.25
             return
         if self.pencil_mode and digit:
             toggle_pencil(self.board, r, c, digit)
-            self.status = "Nota a lápis"
+            self.status = "Pencil note"
             self.flash_cell = (r, c)
             self.flash_until = time.time() + 0.2
             return
@@ -213,18 +213,18 @@ class ThcokuGame:
         self.flash_until = time.time() + 0.22
 
         if digit and find_conflicts(self.board) & {(r, c)}:
-            self.status = "Conflito — tenta outro número"
+            self.status = "Conflict — tartar sauce!"
             self.shake_until = time.time() + 0.28
         elif is_solved(self.board, self.solution):
             self.won = True
             self.win_at = time.time()
             elapsed = int(time.time() - self.started_at)
-            self.status = f"Resolvido em {elapsed // 60:02d}:{elapsed % 60:02d}!"
+            self.status = f"Order up! {elapsed // 60:02d}:{elapsed % 60:02d}"
             self._spawn_bubbles()
             self._report_win(elapsed)
         else:
             filled = filled_count(self.board)
-            self.status = f"{'Ok' if digit else 'Apagado'} · {filled}/81"
+            self.status = f"{'Good move!' if digit else 'Cleared'} · {filled}/81"
 
     def _report_win(self, elapsed: int) -> None:
         try:
@@ -252,7 +252,7 @@ class ThcokuGame:
         cell = self.cell_at(pos)
         if cell is not None and not self.won:
             self.selected = cell
-            self.status = "Célula escolhida — toca num número"
+            self.status = "Cell selected — tap a number"
             return
 
         for key, rect in self.pad_keys.items():
@@ -276,7 +276,7 @@ class ThcokuGame:
                 self.new_game()
             elif name == "pencil":
                 self.pencil_mode = not self.pencil_mode
-                self.status = "Modo lápis ON" if self.pencil_mode else "Modo lápis OFF"
+                self.status = "Pencil mode ON" if self.pencil_mode else "Pencil mode OFF"
             return
 
     def handle_key(self, key: int) -> None:
@@ -294,7 +294,7 @@ class ThcokuGame:
             self.selected = ((r + 1) % 9, c)
         elif key == pygame.K_p:
             self.pencil_mode = not self.pencil_mode
-            self.status = "Modo lápis ON" if self.pencil_mode else "Modo lápis OFF"
+            self.status = "Pencil mode ON" if self.pencil_mode else "Pencil mode OFF"
         elif key in (pygame.K_BACKSPACE, pygame.K_DELETE, pygame.K_0, pygame.K_KP0):
             self.press_key = "clear"
             self.press_until = time.time() + 0.15

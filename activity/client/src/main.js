@@ -119,9 +119,39 @@ function clearLocalSession() {
   }
 }
 
+let currentTheme = localStorage.getItem("thcoku_theme") || "light";
+
+function applyTheme(theme) {
+  currentTheme = theme;
+  try {
+    localStorage.setItem("thcoku_theme", theme);
+  } catch {
+    /* ignore */
+  }
+  if (theme === "dark") {
+    document.body.classList.add("theme-dark");
+  } else {
+    document.body.classList.remove("theme-dark");
+  }
+  if (gameApi?.setTheme) {
+    gameApi.setTheme(theme);
+  }
+  const btn = document.getElementById("theme-toggle");
+  if (btn) {
+    btn.textContent = theme === "dark" ? "☀️" : "🌙";
+    btn.title = theme === "dark" ? "Switch to Light Mode" : "Switch to Dark Mode";
+  }
+}
+
+document.getElementById("theme-toggle")?.addEventListener("click", () => {
+  const next = currentTheme === "dark" ? "light" : "dark";
+  applyTheme(next);
+});
+
 function startGameOnce(cosmetics = null, gameOptions = {}) {
   if (gameStarted) {
     if (cosmetics && gameApi?.setCosmetics) gameApi.setCosmetics(cosmetics);
+    applyTheme(currentTheme);
     return gameApi;
   }
   gameStarted = true;
@@ -141,6 +171,7 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
         saveSessionNow({ keepalive: false, force: true });
       },
     });
+    applyTheme(currentTheme);
     if (gameHintEl) gameHintEl.hidden = true;
   } catch (err) {
     console.error(err);
@@ -439,6 +470,11 @@ async function showGame() {
 
   const session = await loadSavedSession();
   if (session) {
+    if (Number(session.filled) >= 81 || session.won) {
+      await clearSavedSession();
+      await beginPlay({ resumeSession: null });
+      return;
+    }
     await prefetchSessionBoard(session);
     if (session.session_kind === "daily" || session.session_kind === "challenge") {
       await beginPlay({ resumeSession: session });
@@ -517,6 +553,7 @@ function showWinToast(message) {
 
 /** Called from the Canvas game after a solved board. */
 window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boardPayload) {
+  await clearSavedSession();
   if (!window.__DISCORD_ACCESS_TOKEN__) {
     showWinToast("Local win (no Discord auth — XP not saved).");
     return null;
@@ -537,6 +574,7 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boa
       }),
     });
     const data = await res.json().catch(() => ({}));
+    await clearSavedSession();
     if (!res.ok) {
       showWinToast(`Win OK, but Mongo failed (${data.error || res.status}).`);
       return null;
@@ -550,6 +588,7 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boa
     return data;
   } catch (err) {
     console.error(err);
+    await clearSavedSession();
     showWinToast("Win OK, but could not save to Mongo.");
     return null;
   }

@@ -565,16 +565,15 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         daily_date = existing.get("daily_date")
         started_at = existing.get("started_at") or time.time()
 
-    # Don't keep fully solved boards as "continue" (except for daily/challenge where win API handles it)
+    # Don't keep fully solved boards as "continue" session
     if filled >= 81:
-        if session_kind not in ("daily", "challenge"):
-            try:
-                from bot import clear_activity_session
+        try:
+            from bot import clear_activity_session
 
-                await clear_activity_session(bot, session_id)
-            except Exception as exc:  # noqa: BLE001
-                print(f"activity session clear on solve failed: {exc}")
-            return {"ok": True, "cleared": True}
+            await clear_activity_session(bot, session_id)
+        except Exception as exc:  # noqa: BLE001
+            print(f"activity session clear on solve failed: {exc}")
+        return {"ok": True, "cleared": True}
 
     doc = {
         "_id": session_id,
@@ -604,8 +603,14 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         if wrong:
             await match_store.delete_activity_session(wrong_id)
     current = await match_store.get_activity_session(session_id)
+    
+    from bot import _activity_notify_inflight
+    posted_at = float((current or {}).get("watch_posted_at") or 0)
+    in_flight = session_id in _activity_notify_inflight
     watch_live = bool(
-        current and current.get("watch_notified") and current.get("watch_message_id")
+        in_flight
+        or (current and current.get("watch_notified") and current.get("watch_message_id"))
+        or (time.time() - posted_at < 60)
     )
     print(
         f"activity session save user={uid} guild={guild_id} filled={filled} "
@@ -622,7 +627,7 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
 
 
 async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict:
-    from bot import match_store
+    from bot import match_store, clear_activity_session
 
     uid = int(user["id"])
     from bot import find_challenge_game_for_user, games, game_filled_count
@@ -646,11 +651,21 @@ async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict
         }
 
     resolved_guild = await _resolve_activity_guild_id(guild_id, uid)
-    doc = await match_store.get_activity_session(_activity_session_id(resolved_guild, uid))
+    session_id = _activity_session_id(resolved_guild, uid)
+    doc = await match_store.get_activity_session(session_id)
     if not doc:
         doc = await match_store.find_activity_session_by_user_id(uid)
     if not doc:
         return {"ok": True, "session": None}
+    
+    # If the loaded session is already completed, drop it
+    if int(doc.get("filled") or 0) >= 81:
+        try:
+            await clear_activity_session(bot, str(doc.get("_id") or session_id))
+        except Exception:
+            pass
+        return {"ok": True, "session": None}
+
     return {
         "ok": True,
         "session": {
@@ -927,6 +942,7 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 from bot import (
                     SHOP_TITLES,
                     equipped_title_id,
+                    evaluate_user_achievements,
                     guild_stats,
                     owned_pin_emojis,
                     user_stats,
@@ -935,6 +951,7 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 uid = int(user["id"])
                 gstats = guild_stats(bot.data if isinstance(getattr(bot, "data", None), dict) else {}, gid_key)
                 stats = user_stats(gstats, uid)
+                badges = evaluate_user_achievements(stats)
                 tid = equipped_title_id(stats)
                 title_meta = SHOP_TITLES.get(tid or "") if tid else None
                 title = None
@@ -958,6 +975,8 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                         "pins": owned_pin_emojis(stats),
                         "xp": int(stats.get("xp") or 0),
                         "coins": int(stats.get("coins") or 0),
+                        "badges": badges,
+                        "streak_shields": int(stats.get("streak_shields") or 0),
                     },
                 )
             except Exception as exc:  # noqa: BLE001

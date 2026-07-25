@@ -391,3 +391,76 @@ body {
     left: 31%;
   }
 }
+
+#theme-toggle {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  z-index: 50;
+  appearance: none;
+  border: 2px solid var(--gold);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.88);
+  font-size: 1.15rem;
+  padding: 6px 12px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(15, 118, 110, 0.2);
+  transition: transform 0.15s ease, background 0.2s ease;
+}
+
+#theme-toggle:active {
+  transform: scale(0.92);
+}
+
+body.theme-dark {
+  background:
+    radial-gradient(circle at 18% 12%, #1e293b 0%, transparent 42%),
+    radial-gradient(circle at 88% 88%, #0f172a 0%, transparent 38%),
+    linear-gradient(160deg, #0f172a, #1e293b 55%, #090d16);
+  color: #38bdf8;
+}
+
+body.theme-dark #boot {
+  background:
+    radial-gradient(circle at 18% 12%, #1e293b 0%, transparent 42%),
+    radial-gradient(circle at 88% 88%, #0f172a 0%, transparent 38%),
+    linear-gradient(160deg, #0f172a, #1e293b 55%, #090d16);
+  color: #38bdf8;
+}
+
+body.theme-dark #canvas {
+  background: #0f172a;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5), 0 0 0 3px rgba(56, 189, 248, 0.4);
+}
+
+body.theme-dark #theme-toggle {
+  background: rgba(30, 41, 59, 0.9);
+  border-color: #38bdf8;
+  color: #fff;
+}
+
+body.theme-dark #game-controls {
+  background: rgba(15, 23, 42, 0.85);
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+body.theme-dark #game-controls button {
+  background: linear-gradient(180deg, #334155 0%, #1e293b 100%);
+  border-color: #475569;
+  color: #38bdf8;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.35);
+}
+
+body.theme-dark #game-controls .ctrl-digit {
+  background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+  border-color: #0284c7;
+  color: #7dd3fc;
+}
+
+body.theme-dark #game-controls .ctrl-clear,
+body.theme-dark #game-controls .ctrl-actions button {
+  background: linear-gradient(180deg, #0284c7 0%, #0369a1 100%);
+  border-color: #0c4a6e;
+  color: #ffffff;
+}
+

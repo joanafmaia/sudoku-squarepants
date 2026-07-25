@@ -15,7 +15,7 @@ import {
   togglePencil,
 } from "./sudoku-core.js";
 
-const RGB = {
+const LIGHT_PALETTE = {
   empty: "#fffef5",
   given: "#facc15",
   select: "#fde047",
@@ -38,6 +38,32 @@ const RGB = {
   leaf: "#16a34a",
   leafDark: "#15803d",
 };
+
+const DARK_PALETTE = {
+  empty: "#1e293b",
+  given: "#854d0e",
+  select: "#b45309",
+  boxHl: "#0e7490",
+  conflict: "#9f1239",
+  line: "#475569",
+  thick: "#38bdf8",
+  text: "#38bdf8",
+  textGiven: "#fef08a",
+  textConflict: "#fecdd3",
+  pencil: "#94a3b8",
+  header: "#38bdf8",
+  panel: "#0f172a",
+  win: "#10b981",
+  bubble: "#0284c7",
+  gold: "#f59e0b",
+  goldDeep: "#d97706",
+  sand: "#334155",
+  sandDeep: "#1e293b",
+  leaf: "#15803d",
+  leafDark: "#166534",
+};
+
+const RGB = { ...LIGHT_PALETTE };
 
 const WIDTH = 720;
 const HEIGHT = 780;
@@ -486,6 +512,7 @@ export function startThcokuGame(canvas, options = {}) {
     state.won = false;
     state.bubbles = [];
     state.confetti = [];
+    state.undoStack = [];
     state.winZoom = 1;
     draw();
     const puzzle = makePuzzle(key);
@@ -514,8 +541,8 @@ export function startThcokuGame(canvas, options = {}) {
     if (!state.board) return;
     const boardCopy = state.board.map((row) =>
       row.map((cell) => ({
-        val: cell.val,
-        pencil: cell.pencil ? Array.from(cell.pencil) : [],
+        value: cell.value | 0,
+        pencil_marks: Array.isArray(cell.pencil_marks) ? [...cell.pencil_marks] : [],
       }))
     );
     state.undoStack.push(boardCopy);
@@ -527,13 +554,20 @@ export function startThcokuGame(canvas, options = {}) {
     const prev = state.undoStack.pop();
     state.board = prev.map((row) =>
       row.map((cell) => ({
-        val: cell.val,
-        pencil: new Set(cell.pencil || []),
+        value: cell.value | 0,
+        pencil_marks: Array.isArray(cell.pencil_marks) ? [...cell.pencil_marks] : [],
       }))
     );
     state.status = "Move undone ↩";
     playFx("pop");
     draw();
+    if (typeof options.onProgress === "function") {
+      try {
+        options.onProgress();
+      } catch (err) {
+        console.warn("[Thcoku] onProgress", err);
+      }
+    }
   }
 
   function hint() {
@@ -642,7 +676,7 @@ export function startThcokuGame(canvas, options = {}) {
     }
     draw();
     ensureAnim();
-    if (typeof options.onProgress === "function") {
+    if (!state.won && typeof options.onProgress === "function") {
       try {
         options.onProgress();
       } catch (err) {
@@ -1069,6 +1103,14 @@ export function startThcokuGame(canvas, options = {}) {
     state.status = "Loading…";
     draw();
   }
-  startAmbientLoop();
-  return { newGame, place, draw, setCosmetics, getSnapshot, getStartSnapshot, loadSnapshot };
+  function setTheme(themeName) {
+    if (themeName === "dark") {
+      Object.assign(RGB, DARK_PALETTE);
+    } else {
+      Object.assign(RGB, LIGHT_PALETTE);
+    }
+    draw();
+  }
+
+  return { newGame, place, draw, setCosmetics, setTheme, getSnapshot, getStartSnapshot, loadSnapshot };
 }
