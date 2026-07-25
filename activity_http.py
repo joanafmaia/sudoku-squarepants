@@ -328,6 +328,8 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
         solution = session.get("solution")
         daily_date = session.get("daily_date") or time.strftime("%Y-%m-%d", time.gmtime())
         started_at = session.get("started_at") or (time.time() - elapsed)
+        from bot import daily_difficulty_for_date
+        difficulty = session.get("difficulty") or daily_difficulty_for_date(daily_date)
 
         discord_user = bot.get_user(uid)
         if discord_user is None:
@@ -395,6 +397,8 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
             "posted": posted,
             "post_error": post_error,
         }
+    elif session and session.get("difficulty"):
+        difficulty = session.get("difficulty")
     stats["name"] = display_name
     stats["wins"] = int(stats.get("wins") or 0) + 1
     stats["games"] = int(stats.get("games") or 0) + 1
@@ -598,6 +602,10 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         "started_at": started_at,
         "last_move_at": time.time(),
     }
+    if existing:
+        for watch_key in ("watch_notified", "watch_message_id", "watch_channel_id", "watch_posted_at"):
+            if existing.get(watch_key) is not None:
+                doc[watch_key] = existing[watch_key]
     await match_store.upsert_activity_session(doc)
     wrong_id = _activity_session_id("0", uid)
     if wrong_id != session_id:

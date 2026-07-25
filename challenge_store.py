@@ -292,7 +292,9 @@ class MongoMatchStore(MatchStore):
         self._leaderboard = None
 
     async def connect(self) -> None:
-        from motor.motor_asyncio import AsyncIOMotorClient
+        if self._client is not None:
+            return
+        from motor.motor_asyncio import AsyncIOMotorClient  # type: ignore
 
         self._client = AsyncIOMotorClient(self.uri)
         db = self._client[self.db_name]
@@ -432,7 +434,7 @@ class MongoMatchStore(MatchStore):
         coins: int,
         player_name: str | None = None,
     ) -> bool:
-        from pymongo.errors import DuplicateKeyError
+        from pymongo.errors import DuplicateKeyError  # type: ignore
 
         if self._daily is None:
             await self.connect()

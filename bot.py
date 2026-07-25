@@ -238,6 +238,7 @@ SHOP_PINS = {
     "pin_hulk": {"label": "🧌 Hulk Pin", "pin": "Hulk", "emoji": "🧌", "cost": 1450},
     "pin_apex": {"label": "🐋 Apex Pin", "pin": "Apex", "emoji": "🐋", "cost": 1800},
     "streak_shield": {"label": "🛡️ Krabby Shield", "pin": "Shield", "emoji": "🛡️", "cost": 300},
+    "xp_boost": {"label": "🔮 Puff's Crystal Ball (2x XP Boost)", "pin": "Crystal Ball", "emoji": "🔮", "cost": 200},
 }
 
 ACHIEVEMENTS = {
@@ -246,6 +247,32 @@ ACHIEVEMENTS = {
     "sponge_boss": {"label": "🧽 Sponge Boss", "desc": "Accumulate 1,000 Sponges"},
     "puzzle_master": {"label": "🧩 Puzzle Master", "desc": "Complete 25 total wins"},
 }
+
+LEVEL_RANKS = [
+    (0, 1, "🍔 Fry Cook"),
+    (200, 2, "🍔 Senior Fry Cook"),
+    (500, 3, "🪼 Jellycatcher"),
+    (900, 4, "🪼 Jellyfisher Master"),
+    (1400, 5, "🚗 Boatmobile Student"),
+    (2000, 6, "🚗 Boatmobile Ace"),
+    (2800, 7, "🐚 Shell City Explorer"),
+    (3800, 8, "🍦 Goofy Goober Master"),
+    (5000, 9, "🧜 Hero of Bikini Bottom"),
+    (6500, 10, "👑 King of Bikini Bottom"),
+]
+
+
+def evaluate_user_level(xp: int) -> tuple[int, str]:
+    """Return (level_num, rank_label) based on total XP."""
+    current_lvl = 1
+    current_rank = "🍔 Fry Cook"
+    for threshold, lvl, title in LEVEL_RANKS:
+        if xp >= threshold:
+            current_lvl = lvl
+            current_rank = title
+        else:
+            break
+    return current_lvl, current_rank
 
 
 def evaluate_user_achievements(stats: dict) -> list[str]:
@@ -1759,16 +1786,26 @@ def build_activity_win_embed(
     xp: int,
     streak: int,
     is_daily: bool = False,
+    user_stats_dict: dict | None = None,
 ) -> discord.Embed:
     """Channel announcement when someone clears a Sudoku puzzle."""
     mention = f"<@{user_id}>"
     tier = difficulty_label(difficulty)
     badge = PINEAPPLE if is_daily else SPONGE
     label = "Daily Sudoku" if is_daily else "Sudoku"
+    stats_ref = user_stats_dict or {}
+    total_xp = int(stats_ref.get("xp") or 0)
+    lvl_num, lvl_title = evaluate_user_level(total_xp)
+    badges = evaluate_user_achievements(stats_ref) if stats_ref else []
+    badge_str = " ".join(ACHIEVEMENTS[b]["label"].split()[0] for b in badges if b in ACHIEVEMENTS)
+    badge_line = f"\n🎖️ **Badges:** {badge_str}" if badge_str else ""
+
     embed = paper_embed(f"{badge} {mention} completed the {label}!")
     embed.description = (
+        f"🏆 **Rank:** Lvl {lvl_num} · {lvl_title}\n"
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {streak}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
+        f"{badge_line}"
     )
     return embed
 
@@ -2015,6 +2052,17 @@ def finish_win(
         challenge_winner=challenge_winner,
     )
     xp = coins  # career XP mirrors sponge grant; shop spend never reduces XP
+
+    # 🔮 Puff's Crystal Ball Consumable (2x XP & Sponge Boost)
+    if stats.get("equipped_pin") == "xp_boost":
+        coins *= 2
+        xp *= 2
+        stats["equipped_pin"] = "wave"
+        owned = list(stats.get("owned_pins") or [])
+        if "xp_boost" in owned:
+            owned.remove("xp_boost")
+            stats["owned_pins"] = owned
+
     stats["coins"] += coins
     stats["xp"] = int(stats.get("xp") or 0) + xp
 
@@ -2054,10 +2102,17 @@ def finish_win(
     tier = difficulty_label(game.get("difficulty"))
     badge = PINEAPPLE if is_daily else SPONGE
     label = "Daily Sudoku" if is_daily else "Sudoku"
+    lvl_num, lvl_title = evaluate_user_level(int(stats.get("xp") or 0))
+    user_badges = evaluate_user_achievements(stats)
+    badge_str = " ".join(ACHIEVEMENTS[b]["label"].split()[0] for b in user_badges if b in ACHIEVEMENTS)
+    badge_line = f"\n🎖️ **Badges:** {badge_str}" if badge_str else ""
+
     embed = paper_embed(f"{badge} {user.mention} completed the {label}!")
     embed.description = (
+        f"🏆 **Rank:** Lvl {lvl_num} · {lvl_title}\n"
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {stats['streak']}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
+        f"{badge_line}"
     )
     return WinOutcome(embed=embed, coins=coins, xp=xp, rank=rank, quiet=False)
 
@@ -2340,7 +2395,7 @@ async def settle_challenge_match(
 
     guild = bot.get_guild(guild_id)
     channel = await resolve_channel(bot, match.get("channel_id"))
-    if not isinstance(channel, discord.TextChannel):
+    if channel is None or not hasattr(channel, "send"):
         print(f"settle_challenge_match: origin channel missing for match {match.get('_id')}")
         return
 
@@ -5670,7 +5725,6 @@ async def broadcast_daily_announcement(target_channel_id: int | None = None) -> 
     )
     embed.add_field(name="Difficulty", value=f"**{label}**", inline=True)
     embed.add_field(name="Daily Bonus", value=f"**+{DAILY_BONUS} Sponges {SPONGE}**", inline=True)
-    embed.add_field(name="Streak Bonus", value=f"**+{STREAK_BONUS_PER} / day {STAR}**", inline=True)
     embed.add_field(
         name="How to Play",
         value="Type `/daily` in chat or launch the game using the **Activity** button in Discord!",
@@ -6718,9 +6772,10 @@ async def stats_cmd(interaction: discord.Interaction, member: discord.Member | N
     unlocked_badges = [ACHIEVEMENTS[b]["label"] for b in s.get("badges", []) if b in ACHIEVEMENTS]
     badge_str = " · ".join(unlocked_badges) if unlocked_badges else "None yet — keep playing!"
 
+    lvl_num, lvl_title = evaluate_user_level(s.get("xp", 0))
     embed = paper_embed(f"{SPONGE} {display_name(s)}")
     embed.description = (
-        f"{WAVE} Employee of the month? Maybe.\n"
+        f"{WAVE} **Rank:** Lvl {lvl_num} · {lvl_title}\n"
         f"**Title:** {title} · **Form:** {streak_flavor(streak)}"
     )
     try:

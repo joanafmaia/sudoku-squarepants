@@ -146,7 +146,7 @@ class ThcokuGame:
 
         action_y = self.pad_keys["clear"].bottom + 14
         self.buttons = {
-            "new": pygame.Rect(40, action_y, 140, 44),
+            "quit": pygame.Rect(40, action_y, 140, 44),
             "diff": pygame.Rect(200, action_y, 200, 44),
             "pencil": pygame.Rect(420, action_y, 140, 44),
         }
@@ -237,12 +237,19 @@ class ThcokuGame:
         except Exception:
             pass
 
+    def quit_game(self) -> None:
+        try:
+            import js
+            js.closeDiscordActivity()
+        except Exception:
+            pass
+
     def handle_pointer(self, pos: tuple[int, int]) -> None:
         if self.won and time.time() - self.win_at > 0.8:
             # Tap anywhere after win celebration → soft prompt
             for name, rect in self.buttons.items():
-                if rect.collidepoint(pos) and name == "new":
-                    self.new_game()
+                if rect.collidepoint(pos) and name == "quit":
+                    self.quit_game()
                     return
             if self.buttons["diff"].collidepoint(pos):
                 self.diff_index = (self.diff_index + 1) % len(DIFF_KEYS)
@@ -269,8 +276,8 @@ class ThcokuGame:
         for name, rect in self.buttons.items():
             if not rect.collidepoint(pos):
                 continue
-            if name == "new":
-                self.new_game()
+            if name == "quit":
+                self.quit_game()
             elif name == "diff":
                 self.diff_index = (self.diff_index + 1) % len(DIFF_KEYS)
                 self.new_game()
@@ -280,8 +287,8 @@ class ThcokuGame:
             return
 
     def handle_key(self, key: int) -> None:
-        if self.won and key == pygame.K_n:
-            self.new_game()
+        if key == pygame.K_q or key == pygame.K_ESCAPE:
+            self.quit_game()
             return
         r, c = self.selected
         if key in (pygame.K_LEFT, pygame.K_a):
@@ -439,7 +446,7 @@ class ThcokuGame:
             )
 
         hint = self.font_xs.render(
-            "Toca célula → número   ·   conflitos a coral   ·   N = novo",
+            "Tap cell → number   ·   conflicts in coral   ·   Q = quit",
             True,
             RGB_HEADER,
         )
@@ -447,9 +454,9 @@ class ThcokuGame:
 
         for n in range(1, 10):
             self.draw_pad_key(n, self.pad_keys[n], str(n))
-        self.draw_pad_key("clear", self.pad_keys["clear"], "Apagar", wide=True)
+        self.draw_pad_key("clear", self.pad_keys["clear"], "Clear", wide=True)
 
-        self.draw_button(self.buttons["new"], "Novo")
+        self.draw_button(self.buttons["quit"], "Quit")
         self.draw_button(
             self.buttons["diff"], difficulty_label(DIFF_KEYS[self.diff_index])
         )

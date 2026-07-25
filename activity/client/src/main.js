@@ -121,30 +121,36 @@ function clearLocalSession() {
 
 let currentTheme = localStorage.getItem("thcoku_theme") || "light";
 
+const THEMES = ["light", "dark", "jellyfish", "krabs", "rockbottom"];
+const THEME_ICONS = {
+  light: "☀️",
+  dark: "🌙",
+  jellyfish: "🪼",
+  krabs: "🦀",
+  rockbottom: "🌀",
+};
+
 function applyTheme(theme) {
   currentTheme = theme;
   try {
     localStorage.setItem("thcoku_theme", theme);
   } catch {
-    /* ignore */
+    /* localStorage disabled */
   }
-  if (theme === "dark") {
-    document.body.classList.add("theme-dark");
-  } else {
-    document.body.classList.remove("theme-dark");
-  }
+  document.body.className = `theme-${theme}`;
   if (gameApi?.setTheme) {
     gameApi.setTheme(theme);
   }
   const btn = document.getElementById("theme-toggle");
   if (btn) {
-    btn.textContent = theme === "dark" ? "☀️" : "🌙";
-    btn.title = theme === "dark" ? "Switch to Light Mode" : "Switch to Dark Mode";
+    btn.textContent = THEME_ICONS[theme] || "🌙";
+    btn.title = `Theme: ${theme.toUpperCase()} (Click to change)`;
   }
 }
 
 document.getElementById("theme-toggle")?.addEventListener("click", () => {
-  const next = currentTheme === "dark" ? "light" : "dark";
+  const idx = THEMES.indexOf(currentTheme);
+  const next = THEMES[(idx + 1) % THEMES.length];
   applyTheme(next);
 });
 
@@ -160,8 +166,11 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
     gameApi = startThcokuGame(canvas, {
       cosmetics: cosmetics || { title: null, pins: [], seed: 1 },
       autoStart: gameOptions.autoStart !== false,
-      onNewGame: () => {
-        clearLocalSession();
+      onQuit: () => {
+        quitAndClose();
+      },
+      onWin: () => {
+        setTimeout(() => closeDiscordActivity(), 2500);
       },
       onBoardReady: () => {
         saveSessionNow({ force: true });
@@ -380,6 +389,39 @@ function startAutosave() {
   window.addEventListener("beforeunload", () => flushSessionOnExit({ endWatch: true }));
   // Discord Embedded App may freeze the frame without a full unload.
   document.addEventListener("freeze", () => flushSessionOnExit({ endWatch: true }));
+}
+
+export function closeDiscordActivity() {
+  try {
+    if (window.discordSdk && typeof window.discordSdk.close === "function") {
+      window.discordSdk.close();
+    } else if (window.discordSdk?.commands && typeof window.discordSdk.commands.closeActivity === "function") {
+      window.discordSdk.commands.closeActivity().catch(() => {});
+    } else {
+      window.close();
+    }
+  } catch (err) {
+    console.warn("closeDiscordActivity error:", err);
+    try { window.close(); } catch {}
+  }
+}
+
+async function quitAndClose() {
+  try {
+    clearLocalSession();
+    if (window.__DISCORD_ACCESS_TOKEN__) {
+      const gid = await resolveGuildId();
+      await apiFetch("/api/activity/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "clear", guild_id: gid }),
+      });
+    }
+  } catch (err) {
+    console.warn("quitAndClose failed:", err);
+  } finally {
+    closeDiscordActivity();
+  }
 }
 
 function stopAutosave() {

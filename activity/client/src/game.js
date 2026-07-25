@@ -59,6 +59,82 @@ const DARK_PALETTE = {
   goldDeep: "#d97706",
   sand: "#334155",
   sandDeep: "#1e293b",
+  leaf: "#38bdf8",
+  leafDark: "#0284c7",
+};
+
+const JELLYFISH_PALETTE = {
+  empty: "#2e1065",
+  given: "#7e22ce",
+  select: "#a855f7",
+  boxHl: "#581c87",
+  conflict: "#be123c",
+  line: "#6b21a8",
+  thick: "#f472b6",
+  text: "#f472b6",
+  textGiven: "#fef08a",
+  textConflict: "#fecdd3",
+  pencil: "#c084fc",
+  header: "#f472b6",
+  panel: "#1e1b4b",
+  win: "#ec4899",
+  bubble: "#e879f9",
+  gold: "#f59e0b",
+  goldDeep: "#d97706",
+  sand: "#3b0764",
+  sandDeep: "#581c87",
+  leaf: "#f472b6",
+  leafDark: "#db2777",
+};
+
+const KRABS_PALETTE = {
+  empty: "#0c4a6e",
+  given: "#b45309",
+  select: "#f59e0b",
+  boxHl: "#0284c7",
+  conflict: "#9f1239",
+  line: "#0369a1",
+  thick: "#fbbf24",
+  text: "#fef08a",
+  textGiven: "#ffffff",
+  textConflict: "#fecdd3",
+  pencil: "#7dd3fc",
+  header: "#fbbf24",
+  panel: "#082f49",
+  win: "#f59e0b",
+  bubble: "#38bdf8",
+  gold: "#fbbf24",
+  goldDeep: "#d97706",
+  sand: "#075985",
+  sandDeep: "#0369a1",
+  leaf: "#fbbf24",
+  leafDark: "#d97706",
+};
+
+const ROCKBOTTOM_PALETTE = {
+  empty: "#020617",
+  given: "#1e1b4b",
+  select: "#4338ca",
+  boxHl: "#1e293b",
+  conflict: "#881337",
+  line: "#334155",
+  thick: "#22d3ee",
+  text: "#22d3ee",
+  textGiven: "#a5f3fc",
+  textConflict: "#fecdd3",
+  pencil: "#94a3b8",
+  header: "#22d3ee",
+  panel: "#090d16",
+  win: "#06b6d4",
+  bubble: "#0891b2",
+  gold: "#38bdf8",
+  goldDeep: "#0284c7",
+  sand: "#0f172a",
+  sandDeep: "#1e293b",
+  leaf: "#22d3ee",
+  leafDark: "#0891b2",
+};
+  sandDeep: "#1e293b",
   leaf: "#15803d",
   leafDark: "#166534",
 };
@@ -216,7 +292,7 @@ function ensureControls(shell) {
       .join("")}
     </div>
     <div class="ctrl-actions" role="group" aria-label="Game Setup Actions">
-      <button type="button" data-action="new">New sudoku</button>
+      <button type="button" data-action="quit" id="ctrl-quit" class="btn-danger">🚪 Quit</button>
       <button type="button" data-action="diff" id="ctrl-diff">Medium</button>
       <button type="button" data-action="pencil" id="ctrl-pencil">Pencil</button>
     </div>
@@ -670,6 +746,13 @@ export function startThcokuGame(canvas, options = {}) {
           solution: state.solution,
         });
       }
+      if (typeof options.onWin === "function") {
+        try {
+          options.onWin();
+        } catch (err) {
+          console.warn("[Thcoku] onWin", err);
+        }
+      }
     } else {
       state.status = digit ? fmt(pick(STATUS_OK), n) : fmt(pick(STATUS_CLEAR), n);
       if (digit) playFx("pop");
@@ -1045,8 +1128,8 @@ export function startThcokuGame(canvas, options = {}) {
     if (action === "clear") place(0);
     else if (action === "undo") undo();
     else if (action === "hint") hint();
-    else if (action === "new") {
-      if (state.sessionKind !== "daily" && state.sessionKind !== "challenge") newGame();
+    else if (action === "quit") {
+      if (typeof options.onQuit === "function") options.onQuit();
     } else if (action === "diff") {
       if (state.sessionKind !== "daily" && state.sessionKind !== "challenge") {
         state.diffIndex = (state.diffIndex + 1) % DIFF_KEYS.length;
@@ -1072,8 +1155,8 @@ export function startThcokuGame(canvas, options = {}) {
       state.pencilMode = !state.pencilMode;
       syncControls();
       draw();
-    } else if (evt.key === "n" || evt.key === "N") {
-      if (state.sessionKind !== "daily" && state.sessionKind !== "challenge") newGame();
+    } else if (evt.key === "q" || evt.key === "Q") {
+      if (typeof options.onQuit === "function") options.onQuit();
     }
     else if (evt.key === "ArrowLeft") {
       state.selected[1] = (state.selected[1] + 8) % 9;
@@ -1106,6 +1189,12 @@ export function startThcokuGame(canvas, options = {}) {
   function setTheme(themeName) {
     if (themeName === "dark") {
       Object.assign(RGB, DARK_PALETTE);
+    } else if (themeName === "jellyfish") {
+      Object.assign(RGB, JELLYFISH_PALETTE);
+    } else if (themeName === "krabs") {
+      Object.assign(RGB, KRABS_PALETTE);
+    } else if (themeName === "rockbottom") {
+      Object.assign(RGB, ROCKBOTTOM_PALETTE);
     } else {
       Object.assign(RGB, LIGHT_PALETTE);
     }
