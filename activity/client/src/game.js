@@ -129,14 +129,9 @@ const ROCKBOTTOM_PALETTE = {
   bubble: "#0891b2",
   gold: "#38bdf8",
   goldDeep: "#0284c7",
-  sand: "#0f172a",
-  sandDeep: "#1e293b",
+  sandDeep: "#0f172a",
   leaf: "#22d3ee",
   leafDark: "#0891b2",
-};
-  sandDeep: "#1e293b",
-  leaf: "#15803d",
-  leafDark: "#166534",
 };
 
 const RGB = { ...LIGHT_PALETTE };
