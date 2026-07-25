@@ -6459,12 +6459,14 @@ async def daily_cmd(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="claimdaily", description="Recover/claim today's completed daily win announcement")
-async def claimdaily_cmd(interaction: discord.Interaction):
+@app_commands.describe(member="Optional player to recover announcement for (defaults to you)")
+async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Member | None = None):
     if interaction.guild is None:
         await interaction.response.send_message("Server only.", ephemeral=True)
         return
         
-    guild_id, user_id = interaction.guild.id, interaction.user.id
+    target_user = member or interaction.user
+    guild_id, user_id = interaction.guild.id, target_user.id
     daily = get_guild_daily(bot.data, guild_id)
     day = daily["date"]
     uid = str(user_id)
@@ -6480,11 +6482,6 @@ async def claimdaily_cmd(interaction: discord.Interaction):
     await ms.connect()
     has_claim = await ms.has_daily_claim(guild_id, user_id, day)
     
-    # If they already have an announcement, block
-    if r.get("won") and r.get("announced_debug"):
-        await interaction.response.send_message("Today's daily has already been announced for you!", ephemeral=True)
-        return
-        
     await interaction.response.defer()
     
     # Reconstruct solved board
@@ -6506,7 +6503,7 @@ async def claimdaily_cmd(interaction: discord.Interaction):
         "solution": solution,
     }
     
-    outcome = await finish_win_and_announce(bot, guild_id, interaction.user, game_state)
+    outcome = await finish_win_and_announce(bot, guild_id, target_user, game_state)
     
     # Ensure announced_debug is set to prevent double posts
     results[uid] = results.get(uid) or {}
@@ -6530,11 +6527,11 @@ async def claimdaily_cmd(interaction: discord.Interaction):
     
     # Post to the channel (public)
     await interaction.channel.send(
-        content=f"{interaction.user.mention} completed today's daily!",
+        content=None,
         embed=outcome.embed,
         file=file,
     )
-    await interaction.followup.send("Daily announcement recovered and posted!", ephemeral=True)
+    await interaction.followup.send(f"Daily announcement recovered and posted for {target_user.mention}!", ephemeral=True)
 
 
 @bot.tree.command(name="shop", description="Spend sponges at the Krusty Shop")
