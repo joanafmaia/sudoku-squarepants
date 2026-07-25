@@ -33,11 +33,11 @@ DEFAULT_DIFFICULTY = "medium"
 # key → target clue count (unique solution), display label, coin multiplier on win
 # Clue targets follow human-style bands — NEVER "fewer clues = more solutions".
 DIFFICULTY_TIERS: dict[str, dict] = {
-    "very_easy": {"label": "Very Easy", "clues": 50, "multiplier": 0.50},
-    "easy": {"label": "Easy", "clues": 44, "multiplier": 0.75},
-    "medium": {"label": "Medium", "clues": 38, "multiplier": 1.00},
-    "hard": {"label": "Hard", "clues": 32, "multiplier": 1.50},
-    "very_hard": {"label": "Very Hard", "clues": 30, "multiplier": 2.00},
+    "very_easy": {"label": "Very Easy", "clues": 50, "multiplier": 0.80},
+    "easy": {"label": "Easy", "clues": 44, "multiplier": 1.00},
+    "medium": {"label": "Medium", "clues": 38, "multiplier": 1.25},
+    "hard": {"label": "Hard", "clues": 32, "multiplier": 1.60},
+    "very_hard": {"label": "Very Hard", "clues": 30, "multiplier": 2.20},
     "expertttt": {"label": "Expertttt", "clues": 28, "multiplier": 3.00},
 }
 
@@ -46,9 +46,9 @@ DIFFICULTY_CHOICES = [
     for key, meta in DIFFICULTY_TIERS.items()
 ]
 
-BASE_WIN_REWARD = 50
-DAILY_BONUS = 40
-STREAK_BONUS_PER = 5
+BASE_WIN_REWARD = 75
+DAILY_BONUS = 60
+STREAK_BONUS_PER = 10
 CHALLENGE_WIN_MULT = 2.0  # extra multiplier for speedrun winners
 MAX_CHALLENGE_PLAYERS = 5  # challenger + up to 4 opponents
 CHALLENGE_LOSER_COINS = 15
@@ -175,70 +175,70 @@ WIN_TAUNTS = (
 # Titles = header flair only. One free starter; rest are a longer sponge grind.
 SHOP_TITLES = {
     "rookie": {"label": "🪼 Jellyfisher", "cost": 0, "pin": "Jellyfisher", "emoji": "🪼"},
-    "patrick": {"label": "⭐ Starfish Genius", "cost": 120, "pin": "Starfish", "emoji": "⭐"},
-    "solver": {"label": "🍔 Fry Cook", "cost": 220, "pin": "Fry Cook", "emoji": "🍔"},
-    "larry": {"label": "💪 Larry Lobster", "cost": 350, "pin": "Larry", "emoji": "💪"},
-    "barnacle": {"label": "🦸 Barnacle Boy", "cost": 500, "pin": "Barnacle", "emoji": "🦸"},
-    "row_master": {"label": "🚗 Boatmobile Ace", "cost": 700, "pin": "Boatmobile", "emoji": "🚗"},
-    "puff": {"label": "⛵ Boating School Grad", "cost": 950, "pin": "Boating Grad", "emoji": "⛵"},
-    "dutchman": {"label": "👻 Flying Dutchman", "cost": 1250, "pin": "Dutchman", "emoji": "👻"},
-    "sudoku_pro": {"label": "🍦 Goofy Goober", "cost": 1600, "pin": "Goober", "emoji": "🍦"},
-    "plankton": {"label": "🦠 Plankton Plotter", "cost": 2100, "pin": "Plankton", "emoji": "🦠"},
-    "mermaid": {"label": "🧜 Mermaid Man", "cost": 2700, "pin": "Mermaid Man", "emoji": "🧜"},
-    "legend": {"label": "🍍 Pineapple Legend", "cost": 3500, "pin": "Legend", "emoji": "🍍"},
-    "neptune": {"label": "👑 King Neptune", "cost": 4500, "pin": "Neptune", "emoji": "👑"},
+    "patrick": {"label": "⭐ Starfish Genius", "cost": 60, "pin": "Starfish", "emoji": "⭐"},
+    "solver": {"label": "🍔 Fry Cook", "cost": 120, "pin": "Fry Cook", "emoji": "🍔"},
+    "larry": {"label": "💪 Larry Lobster", "cost": 200, "pin": "Larry", "emoji": "💪"},
+    "barnacle": {"label": "🦸 Barnacle Boy", "cost": 300, "pin": "Barnacle", "emoji": "🦸"},
+    "row_master": {"label": "🚗 Boatmobile Ace", "cost": 420, "pin": "Boatmobile", "emoji": "🚗"},
+    "puff": {"label": "⛵ Boating School Grad", "cost": 550, "pin": "Boating Grad", "emoji": "⛵"},
+    "dutchman": {"label": "👻 Flying Dutchman", "cost": 700, "pin": "Dutchman", "emoji": "👻"},
+    "sudoku_pro": {"label": "🍦 Goofy Goober", "cost": 900, "pin": "Goober", "emoji": "🍦"},
+    "plankton": {"label": "🦠 Plankton Plotter", "cost": 1150, "pin": "Plankton", "emoji": "🦠"},
+    "mermaid": {"label": "🧜 Mermaid Man", "cost": 1450, "pin": "Mermaid Man", "emoji": "🧜"},
+    "legend": {"label": "🍍 Pineapple Legend", "cost": 1800, "pin": "Legend", "emoji": "🍍"},
+    "neptune": {"label": "👑 King Neptune", "cost": 2200, "pin": "Neptune", "emoji": "👑"},
     # Crew tributes — Bikini Bottom shout-outs
-    "darkstriker": {"label": "🦹 Dark Striker", "cost": 900, "pin": "Striker", "emoji": "🦹"},
-    "behindyou": {"label": "👀 Behind You", "cost": 1400, "pin": "Shadow", "emoji": "👀"},
-    "glock_sheets": {"label": "📊 Glock Sheets", "cost": 1600, "pin": "Sheets", "emoji": "📊"},
-    "bookie": {"label": "📚 Book Queen", "cost": 1800, "pin": "Bookie", "emoji": "📚"},
-    "stacked": {"label": "😎 Stacked Smooth", "cost": 2000, "pin": "Stacked", "emoji": "😎"},
-    "drea_mom": {"label": "🫶 Mama Drea", "cost": 2400, "pin": "Mama", "emoji": "🫶"},
-    "hulk_r5": {"label": "🧌 Hulk Command", "cost": 2800, "pin": "Hulk", "emoji": "🧌"},
-    "apex_whale": {"label": "🐋 Apex Whale", "cost": 5000, "pin": "Apex", "emoji": "🐋"},
+    "darkstriker": {"label": "🦹 Dark Striker", "cost": 500, "pin": "Striker", "emoji": "🦹"},
+    "behindyou": {"label": "👀 Behind You", "cost": 750, "pin": "Shadow", "emoji": "👀"},
+    "glock_sheets": {"label": "📊 Glock Sheets", "cost": 900, "pin": "Sheets", "emoji": "📊"},
+    "bookie": {"label": "📚 Book Queen", "cost": 1050, "pin": "Bookie", "emoji": "📚"},
+    "stacked": {"label": "😎 Stacked Smooth", "cost": 1200, "pin": "Stacked", "emoji": "😎"},
+    "drea_mom": {"label": "🫶 Mama Drea", "cost": 1400, "pin": "Mama", "emoji": "🫶"},
+    "hulk_r5": {"label": "🧌 Hulk Command", "cost": 1650, "pin": "Hulk", "emoji": "🧌"},
+    "apex_whale": {"label": "🐋 Apex Whale", "cost": 2500, "pin": "Apex", "emoji": "🐋"},
 }
 
 # Pins = border stickers only. One free; paid pins scale up so cosmetics stay a chase.
 SHOP_PINS = {
     "wave": {"label": "🌊 Wave Pin", "pin": "Wave", "emoji": "🌊", "cost": 0},
     # Former title emojis → buyable border pins
-    "pin_jelly": {"label": "🪼 Jelly Pin", "pin": "Jelly", "emoji": "🪼", "cost": 80},
-    "pin_star": {"label": "⭐ Star Pin", "pin": "Star", "emoji": "⭐", "cost": 120},
-    "pin_burger": {"label": "🍔 Burger Pin", "pin": "Burger", "emoji": "🍔", "cost": 180},
-    "pin_flex": {"label": "💪 Flex Pin", "pin": "Flex", "emoji": "💪", "cost": 240},
-    "pin_hero": {"label": "🦸 Hero Pin", "pin": "Hero", "emoji": "🦸", "cost": 320},
-    "pin_boat": {"label": "🚗 Boat Pin", "pin": "Boat", "emoji": "🚗", "cost": 400},
-    "pin_sail": {"label": "⛵ Sail Pin", "pin": "Sail", "emoji": "⛵", "cost": 500},
-    "pin_ghost": {"label": "👻 Ghost Pin", "pin": "Ghost", "emoji": "👻", "cost": 620},
-    "pin_goober": {"label": "🍦 Goober Pin", "pin": "Goober", "emoji": "🍦", "cost": 760},
-    "pin_bug": {"label": "🦠 Bug Pin", "pin": "Bug", "emoji": "🦠", "cost": 920},
-    "pin_mermaid": {"label": "🧜 Mermaid Pin", "pin": "Mermaid", "emoji": "🧜", "cost": 1100},
-    "pin_pineapple": {"label": "🍍 Pineapple Pin", "pin": "Pineapple", "emoji": "🍍", "cost": 1350},
-    "pin_crown": {"label": "👑 Crown Pin", "pin": "Crown", "emoji": "👑", "cost": 1600},
+    "pin_jelly": {"label": "🪼 Jelly Pin", "pin": "Jelly", "emoji": "🪼", "cost": 40},
+    "pin_star": {"label": "⭐ Star Pin", "pin": "Star", "emoji": "⭐", "cost": 60},
+    "pin_burger": {"label": "🍔 Burger Pin", "pin": "Burger", "emoji": "🍔", "cost": 90},
+    "pin_flex": {"label": "💪 Flex Pin", "pin": "Flex", "emoji": "💪", "cost": 120},
+    "pin_hero": {"label": "🦸 Hero Pin", "pin": "Hero", "emoji": "🦸", "cost": 160},
+    "pin_boat": {"label": "🚗 Boat Pin", "pin": "Boat", "emoji": "🚗", "cost": 210},
+    "pin_sail": {"label": "⛵ Sail Pin", "pin": "Sail", "emoji": "⛵", "cost": 270},
+    "pin_ghost": {"label": "👻 Ghost Pin", "pin": "Ghost", "emoji": "👻", "cost": 340},
+    "pin_goober": {"label": "🍦 Goober Pin", "pin": "Goober", "emoji": "🍦", "cost": 420},
+    "pin_bug": {"label": "🦠 Bug Pin", "pin": "Bug", "emoji": "🦠", "cost": 500},
+    "pin_mermaid": {"label": "🧜 Mermaid Pin", "pin": "Mermaid", "emoji": "🧜", "cost": 600},
+    "pin_pineapple": {"label": "🍍 Pineapple Pin", "pin": "Pineapple", "emoji": "🍍", "cost": 720},
+    "pin_crown": {"label": "👑 Crown Pin", "pin": "Crown", "emoji": "👑", "cost": 850},
     # Extra unique stickers
-    "coral": {"label": "🪸 Coral Pin", "pin": "Coral", "emoji": "🪸", "cost": 100},
-    "crab": {"label": "🦀 Crab Pin", "pin": "Crab", "emoji": "🦀", "cost": 160},
-    "bubble": {"label": "🫧 Bubble Pin", "pin": "Bubble", "emoji": "🫧", "cost": 220},
-    "shell": {"label": "🐚 Shell Pin", "pin": "Shell", "emoji": "🐚", "cost": 300},
-    "squid": {"label": "🦑 Squid Pin", "pin": "Squid", "emoji": "🦑", "cost": 380},
-    "sandy": {"label": "🐿️ Dome Pin", "pin": "Dome", "emoji": "🐿️", "cost": 480},
-    "pearl": {"label": "💎 Pearl Pin", "pin": "Pearl", "emoji": "💎", "cost": 600},
-    "anchor": {"label": "⚓ Anchor Pin", "pin": "Anchor", "emoji": "⚓", "cost": 750},
-    "shark": {"label": "🦈 Shark Pin", "pin": "Shark", "emoji": "🦈", "cost": 920},
-    "bucket": {"label": "🪣 Bucket Pin", "pin": "Bucket", "emoji": "🪣", "cost": 1100},
-    "sponge": {"label": "🧽 Sponge Pin", "pin": "Sponge", "emoji": "🧽", "cost": 1350},
-    "whirl": {"label": "🌀 Whirlpool Pin", "pin": "Whirlpool", "emoji": "🌀", "cost": 1600},
+    "coral": {"label": "🪸 Coral Pin", "pin": "Coral", "emoji": "🪸", "cost": 50},
+    "crab": {"label": "🦀 Crab Pin", "pin": "Crab", "emoji": "🦀", "cost": 80},
+    "bubble": {"label": "🫧 Bubble Pin", "pin": "Bubble", "emoji": "🫧", "cost": 110},
+    "shell": {"label": "🐚 Shell Pin", "pin": "Shell", "emoji": "🐚", "cost": 150},
+    "squid": {"label": "🦑 Squid Pin", "pin": "Squid", "emoji": "Squid", "cost": 200},
+    "sandy": {"label": "🐿️ Dome Pin", "pin": "Dome", "emoji": "🐿️", "cost": 260},
+    "pearl": {"label": "💎 Pearl Pin", "pin": "Pearl", "emoji": "💎", "cost": 330},
+    "anchor": {"label": "⚓ Anchor Pin", "pin": "Anchor", "emoji": "⚓", "cost": 410},
+    "shark": {"label": "🦈 Shark Pin", "pin": "Shark", "emoji": "🦈", "cost": 500},
+    "bucket": {"label": "🪣 Bucket Pin", "pin": "Bucket", "emoji": "🪣", "cost": 600},
+    "sponge": {"label": "🧽 Sponge Pin", "pin": "Sponge", "emoji": "🧽", "cost": 720},
+    "whirl": {"label": "🌀 Whirlpool Pin", "pin": "Whirlpool", "emoji": "🌀", "cost": 850},
     # Crew tribute pins
-    "pin_goof": {"label": "🦹 Thief Pin", "pin": "Thief", "emoji": "🦹", "cost": 450},
-    "pin_shadow": {"label": "👀 Shadow Pin", "pin": "Shadow", "emoji": "👀", "cost": 700},
-    "pin_sheets": {"label": "📊 Sheets Pin", "pin": "Sheets", "emoji": "📊", "cost": 850},
-    "pin_book": {"label": "📚 Book Pin", "pin": "Book", "emoji": "📚", "cost": 950},
-    "pin_smooth": {"label": "😎 Stacked Pin", "pin": "Stacked", "emoji": "😎", "cost": 1050},
-    "pin_mama": {"label": "🫶 Mama Pin", "pin": "Mama", "emoji": "🫶", "cost": 1200},
-    "pin_hulk": {"label": "🧌 Hulk Pin", "pin": "Hulk", "emoji": "🧌", "cost": 1450},
-    "pin_apex": {"label": "🐋 Apex Pin", "pin": "Apex", "emoji": "🐋", "cost": 1800},
-    "streak_shield": {"label": "🛡️ Krabby Shield", "pin": "Shield", "emoji": "🛡️", "cost": 300},
-    "xp_boost": {"label": "🔮 Puff's Crystal Ball (2x XP Boost)", "pin": "Crystal Ball", "emoji": "🔮", "cost": 200},
+    "pin_goof": {"label": "🦹 Thief Pin", "pin": "Thief", "emoji": "🦹", "cost": 250},
+    "pin_shadow": {"label": "👀 Shadow Pin", "pin": "Shadow", "emoji": "👀", "cost": 380},
+    "pin_sheets": {"label": "📊 Sheets Pin", "pin": "Sheets", "emoji": "📊", "cost": 460},
+    "pin_book": {"label": "📚 Book Pin", "pin": "Book", "emoji": "📚", "cost": 540},
+    "pin_smooth": {"label": "😎 Stacked Pin", "pin": "Stacked", "emoji": "😎", "cost": 620},
+    "pin_mama": {"label": "🫶 Mama Pin", "pin": "Mama", "emoji": "🫶", "cost": 700},
+    "pin_hulk": {"label": "🧌 Hulk Pin", "pin": "Hulk", "emoji": "🧌", "cost": 820},
+    "pin_apex": {"label": "🐋 Apex Pin", "pin": "Apex", "emoji": "🐋", "cost": 1000},
+    "streak_shield": {"label": "🛡️ Krabby Shield", "pin": "Shield", "emoji": "🛡️", "cost": 150},
+    "xp_boost": {"label": "🔮 Puff's Crystal Ball (2x XP Boost)", "pin": "Crystal Ball", "emoji": "🔮", "cost": 120},
 }
 
 ACHIEVEMENTS = {
