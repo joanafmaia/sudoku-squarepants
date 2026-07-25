@@ -1758,11 +1758,14 @@ def build_activity_win_embed(
     coins: int,
     xp: int,
     streak: int,
+    is_daily: bool = False,
 ) -> discord.Embed:
-    """Channel announcement when someone clears an Activity (/play) puzzle."""
+    """Channel announcement when someone clears a Sudoku puzzle."""
     mention = f"<@{user_id}>"
     tier = difficulty_label(difficulty)
-    embed = paper_embed(f"{SPONGE} {mention} completou o Sudoku!")
+    badge = PINEAPPLE if is_daily else SPONGE
+    label = "Daily Sudoku" if is_daily else "Sudoku"
+    embed = paper_embed(f"{badge} {mention} completed the {label}!")
     embed.description = (
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {streak}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
@@ -2049,7 +2052,9 @@ def finish_win(
         title = f"{SPONGE} Puzzle solved — yay!"
 
     tier = difficulty_label(game.get("difficulty"))
-    embed = paper_embed(f"{SPONGE} {user.mention} completou o Sudoku!")
+    badge = PINEAPPLE if is_daily else SPONGE
+    label = "Daily Sudoku" if is_daily else "Sudoku"
+    embed = paper_embed(f"{badge} {user.mention} completed the {label}!")
     embed.description = (
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {stats['streak']}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
@@ -2108,12 +2113,6 @@ async def finish_win_and_announce(
     except Exception as exc:  # noqa: BLE001
         print(f"try_claim_daily_win failed (local award kept): {exc}")
 
-    share = build_daily_share_text(
-        day=day,
-        difficulty=game.get("difficulty"),
-        elapsed=elapsed,
-    )
-    outcome.embed.add_field(name="Share", value=f"```\n{share}\n```", inline=False)
     return outcome
 
 

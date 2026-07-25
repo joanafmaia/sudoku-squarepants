@@ -437,7 +437,8 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                     pin_emojis=owned_pin_emojis(stats),
                     pin_seed=uid,
                 )
-                file = board_to_file(image)
+                session_kind = payload.get("session_kind") if isinstance(payload, dict) else None
+                is_daily = (session_kind == "daily")
                 embed = build_activity_win_embed(
                     user_id=uid,
                     difficulty=difficulty,
@@ -445,6 +446,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                     coins=coins,
                     xp=xp,
                     streak=int(stats["streak"]),
+                    is_daily=is_daily,
                 )
                 await channel.send(embed=embed, file=file)
                 posted = True
