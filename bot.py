@@ -4944,15 +4944,15 @@ def shop_item_equipped(stats: dict, item: dict) -> bool:
 
 def shop_item_status_text(stats: dict, item: dict) -> str:
     if item["kind"] == "boost":
-        return "Consumable"
+        return "🔮 Power-Up"
     owned = shop_item_owned(stats, item)
     if item["kind"] == "pin":
-        return "Owned" if owned else "Locked"
+        return "🟢 Owned" if owned else "🔒 Locked"
     if shop_item_equipped(stats, item):
-        return "Equipped"
+        return "✨ Equipped"
     if owned:
-        return "Owned"
-    return "Locked"
+        return "🟢 Owned"
+    return "🔒 Locked"
 
 
 def shop_item_price_text(item: dict) -> str:
@@ -5011,8 +5011,8 @@ def shop_page_embed(
     for it in page_items:
         mark = "▶ " if it["id"] == selected_id else "• "
         status = shop_item_status_text(stats, it)
-        if status == "Locked" and shop_item_can_buy(stats, it):
-            status = "Can buy"
+        if status == "🔒 Locked" and shop_item_can_buy(stats, it):
+            status = "⚡ Can Buy"
         price = shop_item_price_text(it)
         lines.append(f"{mark}**{it['label']}** — `{price}` ({status})")
         
@@ -5027,8 +5027,8 @@ def shop_page_embed(
 
     if selected:
         status = shop_item_status_text(stats, selected)
-        if status == "Locked" and shop_item_can_buy(stats, selected):
-            status = "Can buy"
+        if status == "🔒 Locked" and shop_item_can_buy(stats, selected):
+            status = "⚡ Can Buy"
         
         detail = f"**{selected['label']}** ({shop_item_price_text(selected)} · {status})"
         if selected["id"] == "xp_boost":
@@ -5372,8 +5372,8 @@ class KrustyShopView(discord.ui.View):
             options: list[discord.SelectOption] = []
             for it in page_items:
                 status = shop_item_status_text(stats, it)
-                if status == "Locked" and shop_item_can_buy(stats, it):
-                    status = "Can buy"
+                if status == "🔒 Locked" and shop_item_can_buy(stats, it):
+                    status = "⚡ Can Buy"
                 price = shop_item_price_text(it)
                 desc = f"{price} · {status}"[:100]
                 label = it["label"][:100]
