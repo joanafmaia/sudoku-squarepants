@@ -4879,7 +4879,21 @@ class SudokuView(discord.ui.View):
 
 def shop_catalog(kind: str) -> list[dict]:
     """Browseable catalog entries for the Krusty Shop."""
-    if kind == "titles":
+    boost_keys = ("xp_boost", "streak_shield")
+    if kind == "boosts":
+        return [
+            {
+                "kind": "boost",
+                "id": tid,
+                "label": meta["label"],
+                "emoji": meta.get("emoji", SPONGE),
+                "cost": int(meta["cost"]),
+                "pin": meta.get("pin") or cosmetic_pin_text(meta),
+            }
+            for tid, meta in SHOP_PINS.items()
+            if tid in boost_keys
+        ]
+    elif kind == "titles":
         return [
             {
                 "kind": "title",
@@ -4901,6 +4915,7 @@ def shop_catalog(kind: str) -> list[dict]:
             "pin": meta.get("pin") or cosmetic_pin_text(meta),
         }
         for tid, meta in SHOP_PINS.items()
+        if tid not in boost_keys
     ]
 
 
@@ -4908,6 +4923,8 @@ SHOP_PAGE_SIZE = 8
 
 
 def shop_item_owned(stats: dict, item: dict) -> bool:
+    if item["kind"] == "boost":
+        return False  # Consumables can always be bought again
     if item["kind"] == "title":
         return item["id"] in (stats.get("owned_titles") or [])
     return item["id"] in owned_pin_ids(stats)
@@ -4916,11 +4933,12 @@ def shop_item_owned(stats: dict, item: dict) -> bool:
 def shop_item_equipped(stats: dict, item: dict) -> bool:
     if item["kind"] == "title":
         return stats.get("title") == item["id"]
-    # Pins have no equip slot — all owned pins show on the border
     return shop_item_owned(stats, item)
 
 
 def shop_item_status_text(stats: dict, item: dict) -> str:
+    if item["kind"] == "boost":
+        return "Consumable"
     owned = shop_item_owned(stats, item)
     if item["kind"] == "pin":
         return "Owned" if owned else "Locked"
@@ -4937,7 +4955,7 @@ def shop_item_price_text(item: dict) -> str:
 
 
 def shop_item_can_buy(stats: dict, item: dict) -> bool:
-    if shop_item_owned(stats, item):
+    if item["kind"] != "boost" and shop_item_owned(stats, item):
         return False
     cost = int(item["cost"])
     return cost <= 0 or int(stats.get("coins") or 0) >= cost
@@ -4965,82 +4983,64 @@ def shop_page_embed(
     filt: str,
     filtered_total: int,
 ) -> discord.Embed:
-    """Paginated catalog embed with the selected item highlighted."""
-    tab = "Titles" if kind == "titles" else "Pins"
+    """Mobile-first paginated shop embed with active boosts and inventory status."""
+    tab_title = {"boosts": "🔮 Power-Ups", "pins": "🎨 Border Pins", "titles": "👑 Titles"}.get(kind, "🔮 Power-Ups")
     filter_label = {"all": "All", "afford": "Can buy", "owned": "Owned"}.get(filt, "All")
-    embed = paper_embed(f"{SPONGE} Krusty Shop · {tab}")
-    hint = (
-        "Pick an item in the menu, then **Buy** / **Equip**. "
-        "Pins also have **Preview**."
-        if kind == "pins"
-        else "Pick an item in the menu, then **Buy** or **Equip** for header flair."
+    
+    embed = paper_embed(f"{SPONGE} Krusty Shop · {tab_title}")
+    
+    boost_charges = int(stats.get("xp_boost_charges") or 0)
+    boost_str = f"🔮 **2x XP Boost:** {boost_charges} games active!" if boost_charges > 0 else "🔮 **Boost:** None active"
+    shields = int(stats.get("streak_shields") or 0)
+    eq_title = SHOP_TITLES[stats.get("title")]["label"] if stats.get("title") in SHOP_TITLES else "Civilian"
+    
+    status_banner = (
+        f"💰 **Pocket:** {format_sponges(stats.get('coins', 0))}\n"
+        f"{boost_str} · 🛡️ **Shields:** {shields}\n"
+        f"👑 **Title:** {eq_title} · 🎨 **Pins:** {len(owned_pin_emojis(stats))}\n"
     )
+    
     lines: list[str] = []
     selected_id = (selected or {}).get("id")
     for it in page_items:
-        mark = "▸ " if it["id"] == selected_id else "· "
+        mark = "▶ " if it["id"] == selected_id else "• "
         status = shop_item_status_text(stats, it)
-        # Affordable but locked → show Can buy instead of Locked
         if status == "Locked" and shop_item_can_buy(stats, it):
             status = "Can buy"
         price = shop_item_price_text(it)
-        lines.append(f"{mark}{it['label']} — **{price}** · {status}")
+        lines.append(f"{mark}**{it['label']}** — `{price}` ({status})")
+        
     if not lines:
         lines.append("_No items match this filter._")
 
     embed.description = (
-        f"{hint}\n"
-        f"*Filter: **{filter_label}** · Page **{page + 1}/{max(1, pages)}** "
-        f"({filtered_total} items)*\n\n"
+        f"{status_banner}\n"
+        f"─── *Page **{page + 1}/{max(1, pages)}** ({filtered_total} items) · Filter: **{filter_label}*** ───\n\n"
         + "\n".join(lines)
-        + f"\n\n*No refunds. Squidward is watching.*"
-    )
-    embed.add_field(
-        name=f"Pocket {SPONGE}",
-        value=f"**{format_sponges(stats.get('coins', 0))}**",
-        inline=True,
     )
 
     if selected:
         status = shop_item_status_text(stats, selected)
         if status == "Locked" and shop_item_can_buy(stats, selected):
             status = "Can buy"
-        embed.add_field(
-            name="Selected",
-            value=f"**{selected['label']}**\n{shop_item_price_text(selected)} · {status}",
-            inline=True,
-        )
-        if selected["kind"] == "title":
-            sample = titled_header_line(
-                "Easy",
-                selected.get("pin") or "Civilian",
-                emoji=str(selected.get("emoji") or ""),
-            )
-            embed.add_field(
-                name="What you get",
-                value=f"Header flair — e.g. `{sample}`",
-                inline=False,
-            )
+        
+        detail = f"**{selected['label']}** ({shop_item_price_text(selected)} · {status})"
+        if selected["id"] == "xp_boost":
+            detail += "\n⚡ *Grants +3 games of 2x XP & Sponges on win!*"
+        elif selected["id"] == "streak_shield":
+            detail += "\n🛡️ *Protects your daily streak if you miss a day!*"
+        elif selected["kind"] == "title":
+            sample = titled_header_line("Easy", selected.get("pin") or "Civilian", emoji=str(selected.get("emoji") or ""))
+            detail += f"\nHeader flair: `{sample}`"
         else:
-            embed.add_field(
-                name="What you get",
-                value=f"Border pin {selected['emoji']} on your boards.",
-                inline=False,
-            )
-    else:
-        embed.add_field(name="Selected", value="_Nothing_", inline=True)
+            detail += f"\nBorder pin sticker: {selected['emoji']}"
+            
+        embed.add_field(
+            name="🔍 Selected Item",
+            value=detail,
+            inline=False,
+        )
 
-    eq_title = (
-        SHOP_TITLES[stats["title"]]["label"]
-        if stats.get("title") in SHOP_TITLES
-        else "Civilian"
-    )
-    pin_n = len(owned_pin_emojis(stats))
-    embed.add_field(
-        name="Your look",
-        value=f"Title: {eq_title} · Border pins: **{pin_n}**",
-        inline=False,
-    )
     return embed
 
 
@@ -5226,7 +5226,7 @@ class KrustyShopView(discord.ui.View):
         self.bot = bot
         self.owner_id = owner_id
         self.guild_id = guild_id
-        self.kind = kind if kind in ("titles", "pins") else "titles"
+        self.kind = kind if kind in ("boosts", "titles", "pins") else "boosts"
         self.filt = filt if filt in ("all", "afford", "owned") else "all"
         self.page = max(0, page)
         self.selected_id = selected_id
@@ -5328,19 +5328,26 @@ class KrustyShopView(discord.ui.View):
         selected = self.selected_item()
         owned = shop_item_owned(stats, selected) if selected else False
 
-        # Row 0 — tabs
+        # Row 0 — 3 Mobile Category Tabs
+        boosts_btn = discord.ui.Button(
+            label="🔮 Power-Ups",
+            style=discord.ButtonStyle.primary if self.kind == "boosts" else discord.ButtonStyle.secondary,
+            row=0,
+        )
         titles_btn = discord.ui.Button(
-            label="Titles",
+            label="👑 Titles",
             style=discord.ButtonStyle.primary if self.kind == "titles" else discord.ButtonStyle.secondary,
             row=0,
         )
         pins_btn = discord.ui.Button(
-            label="Pins",
+            label="🎨 Pins",
             style=discord.ButtonStyle.primary if self.kind == "pins" else discord.ButtonStyle.secondary,
             row=0,
         )
+        boosts_btn.callback = self.on_boosts
         titles_btn.callback = self.on_titles
         pins_btn.callback = self.on_pins
+        self.add_item(boosts_btn)
         self.add_item(titles_btn)
         self.add_item(pins_btn)
 
@@ -5464,6 +5471,13 @@ class KrustyShopView(discord.ui.View):
         await interaction.response.edit_message(
             embed=self.build_embed(), view=self, attachments=[]
         )
+
+    async def on_boosts(self, interaction: discord.Interaction) -> None:
+        self.kind = "boosts"
+        self.page = 0
+        self.selected_id = None
+        self._ensure_selection()
+        await self._refresh(interaction)
 
     async def on_titles(self, interaction: discord.Interaction) -> None:
         self.kind = "titles"
@@ -6569,7 +6583,7 @@ async def shop_cmd(interaction: discord.Interaction):
         bot,
         owner_id=interaction.user.id,
         guild_id=interaction.guild.id,
-        kind="titles",
+        kind="boosts",
     )
     await interaction.response.send_message(
         embed=view.build_embed(),
