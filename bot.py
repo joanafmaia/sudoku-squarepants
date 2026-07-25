@@ -6085,12 +6085,12 @@ async def help_cmd(interaction: discord.Interaction):
     )
     embed.add_field(name="① Cell", value="Tap a square on the board", inline=True)
     embed.add_field(name="② Number", value="1–9 on the pad", inline=True)
-    embed.add_field(name="③ Clear", value="Apagar · Notes = Lápis", inline=True)
+    embed.add_field(name="③ Clear", value="Clear cell · Notes = Pencil", inline=True)
     embed.add_field(
         name=f"{JELLY} Rules",
         value=(
             "Red cells = clash in row / column / box.\n"
-            "**Lápis** = notes · solve to earn XP in chat."
+            "**Pencil mode** = draft notes · solve to earn XP in chat."
         ),
         inline=False,
     )

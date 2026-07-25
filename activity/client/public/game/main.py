@@ -109,7 +109,7 @@ class ThcokuGame:
         self.diff_index = DIFF_KEYS.index(DEFAULT_DIFFICULTY)
         self.selected = (0, 0)
         self.pencil_mode = False
-        self.status = "A gerar puzzle…"
+        self.status = "Generating puzzle…"
         self.won = False
         self.started_at = time.time()
         self.board: list = []
