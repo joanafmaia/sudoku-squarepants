@@ -466,6 +466,10 @@ class MongoMatchStore(MatchStore):
         return doc is not None
 
     async def count_daily_wins(self, guild_id: int, day: str) -> int:
+        if self._daily is None:
+            await self.connect()
+        if self._daily is None:
+            return 0
         return await self._daily.count_documents({"guild_id": guild_id, "date": day})
 
     async def save_leaderboard(self, data: dict) -> None:

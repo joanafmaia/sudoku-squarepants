@@ -2603,7 +2603,12 @@ async def launch_challenge_match(
     match_id: str | None = None
     player_ids: list[int] = []
     try:
-        assert interaction.guild is not None
+        if interaction.guild is None:
+            await interaction.followup.send(
+                "Use this in a server text channel.",
+                ephemeral=True,
+            )
+            return False
         home = challenge_home_channel(interaction.channel)
         if home is None:
             await interaction.followup.send(
@@ -2631,7 +2636,12 @@ async def launch_challenge_match(
         )
         match_id = await match_store.insert_match(doc)
         match = await match_store.get_match(match_id)
-        assert match is not None
+        if match is None:
+            await interaction.followup.send(
+                "Could not create challenge match in database.",
+                ephemeral=True,
+            )
+            return False
         start_time = float(match["start_time"])
         slots = match["player_slots"]
 
