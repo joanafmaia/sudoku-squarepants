@@ -437,7 +437,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                     pin_emojis=owned_pin_emojis(stats),
                     pin_seed=uid,
                 )
-                session_kind = payload.get("session_kind") if isinstance(payload, dict) else None
+                session_kind = body.get("session_kind") if isinstance(body, dict) else None
                 is_daily = (session_kind == "daily")
                 embed = build_activity_win_embed(
                     user_id=uid,
