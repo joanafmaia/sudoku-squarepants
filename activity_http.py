@@ -370,7 +370,9 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                 if channel is None:
                     channel = await bot.fetch_channel(channel_id)
                 if channel is not None:
-                    image = render_board(
+                    import asyncio
+                    image = await asyncio.to_thread(
+                        render_board,
                         board,
                         given,
                         solution=solution,

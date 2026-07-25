@@ -1382,9 +1382,15 @@ def load_emoji_pin(emoji: str, size: int = PIN_EMOJI_SIZE) -> Image.Image | None
         fetched = False
         for url in urls:
             try:
-                urllib.request.urlretrieve(url, path)
-                fetched = True
-                break
+                req = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                )
+                with urllib.request.urlopen(req, timeout=1.5) as resp:
+                    if resp.status == 200:
+                        path.write_bytes(resp.read())
+                        fetched = True
+                        break
             except Exception:
                 continue
         if not fetched:
@@ -6549,7 +6555,8 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
     gstats = guild_stats(bot.data, guild_id)
     stats = user_stats(gstats, user_id)
     
-    image = render_board(
+    image = await asyncio.to_thread(
+        render_board,
         solved_board,
         given,
         solution=solution,
