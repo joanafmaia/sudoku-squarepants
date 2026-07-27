@@ -856,6 +856,66 @@ def _client_spectate_session(doc: dict) -> dict:
     return payload
 
 
+SPECTATOR_PRESENCE_TTL_SEC = 15
+
+
+def _prune_watchers(watchers: dict | None) -> dict:
+    now = time.time()
+    cleaned: dict = {}
+    for viewer_id, meta in (watchers or {}).items():
+        if not isinstance(meta, dict):
+            continue
+        if now - float(meta.get("last_seen") or 0) > SPECTATOR_PRESENCE_TTL_SEC:
+            continue
+        cleaned[str(viewer_id)] = {
+            "name": str(meta.get("name") or "Player"),
+            "last_seen": float(meta.get("last_seen") or now),
+        }
+    return cleaned
+
+
+async def _touch_spectator_presence(
+    *,
+    session_id: str,
+    viewer_id: int,
+    viewer_name: str,
+) -> None:
+    from bot import match_store
+
+    session = await match_store.get_activity_session(session_id)
+    watchers = _prune_watchers((session or {}).get("watchers"))
+    watchers[str(viewer_id)] = {
+        "name": viewer_name or "Player",
+        "last_seen": time.time(),
+    }
+    await match_store.merge_activity_session(session_id, {"watchers": watchers})
+
+
+async def _load_activity_watchers(
+    bot: Any,
+    *,
+    user: dict,
+    guild_id: str,
+) -> dict:
+    from bot import match_store
+
+    uid = int(user["id"])
+    resolved_guild = await _resolve_activity_guild_id(guild_id, uid)
+    session_id = _activity_session_id(resolved_guild, uid)
+    session = await match_store.get_activity_session(session_id)
+    watchers = _prune_watchers((session or {}).get("watchers"))
+    if session and watchers != (session.get("watchers") or {}):
+        await match_store.merge_activity_session(session_id, {"watchers": watchers})
+    rows = [
+        {"user_id": viewer_id, "name": meta.get("name") or "Player"}
+        for viewer_id, meta in sorted(
+            watchers.items(),
+            key=lambda item: str(item[1].get("name") or ""),
+        )
+    ]
+    return {"ok": True, "watchers": rows, "count": len(rows)}
+
+
 async def _consume_spectate_intent(bot: Any, *, user: dict, guild_id: str) -> dict:
     from bot import match_store
 
@@ -895,6 +955,21 @@ async def _load_activity_spectate(
     session = await get_watch_session_for_spectator(session_id)
     if not session:
         return {"ok": True, "session": None, "ended": True}
+
+    viewer_name = (
+        user.get("global_name")
+        or user.get("username")
+        or user.get("display_name")
+        or "Player"
+    )
+    try:
+        await _touch_spectator_presence(
+            session_id=session_id,
+            viewer_id=viewer_id,
+            viewer_name=str(viewer_name),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"activity spectator presence failed: {exc}")
 
     board = session.get("board")
     given = session.get("given")
@@ -1943,6 +2018,10 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 self._activity_spectate_get()
                 return
 
+            if path in ("/api/activity/watchers", "/activity/watchers"):
+                self._activity_watchers_get()
+                return
+
             proxied = _proxy_cdn(path)
             if proxied is not None:
                 status, body, ctype = proxied
@@ -2224,6 +2303,24 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 return
             if not result.get("ok"):
                 self._send_json(400, result)
+                return
+            self._send_json(200, result)
+
+        def _activity_watchers_get(self) -> None:
+            bot = bot_getter()
+            user = _discord_user_from_bearer(self.headers.get("Authorization"), bot=bot)
+            if not user or not user.get("id"):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            guild_id = (qs.get("guild_id") or ["0"])[0]
+            try:
+                result = _run_coro(
+                    bot,
+                    _load_activity_watchers(bot, user=user, guild_id=str(guild_id)),
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._send_json(500, {"error": "watchers_load_failed", "message": str(exc)})
                 return
             self._send_json(200, result)
 

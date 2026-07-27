@@ -26,7 +26,9 @@ let sessionOpenedAt = 0;
 let hideEndWatchTimer = null;
 let spectating = false;
 let spectatorPollTimer = null;
+let watcherPollTimer = null;
 const SPECTATOR_POLL_MS = 3500;
+const WATCHERS_POLL_MS = 5000;
 const HIDE_END_WATCH_DELAY_MS = 120000;
 
 function setStatus(message) {
@@ -286,6 +288,7 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
       playerSlot: gameOptions.playerSlot || null,
       initialDiffIndex: gameOptions.initialDiffIndex ?? null,
       onQuit: () => {
+        stopWatcherPolling();
         if (spectating) {
           stopSpectatorPolling();
           closeDiscordActivity();
@@ -294,6 +297,7 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
         quitAndClose();
       },
       onWin: () => {
+        stopWatcherPolling();
         setTimeout(() => closeDiscordActivity(), 2500);
       },
       onNewGame: () => {
@@ -756,6 +760,66 @@ function stopSpectatorPolling() {
   }
 }
 
+function formatWatchersLabel(watchers) {
+  if (!watchers?.length) return "";
+  const names = watchers.map((w) => w.name || "Player");
+  if (names.length === 1) return `👀 ${names[0]} is watching`;
+  if (names.length === 2) return `👀 ${names[0]} & ${names[1]} are watching`;
+  const head = names.slice(0, 2).join(", ");
+  return `👀 ${head} +${names.length - 2} watching`;
+}
+
+function renderWatchers(watchers) {
+  const el = document.getElementById("spectator-list");
+  if (!el) return;
+  if (!watchers?.length) {
+    el.hidden = true;
+    el.textContent = "";
+    el.removeAttribute("title");
+    return;
+  }
+  el.hidden = false;
+  el.textContent = formatWatchersLabel(watchers);
+  el.title = watchers.map((w) => w.name || "Player").join(", ");
+}
+
+function stopWatcherPolling() {
+  if (watcherPollTimer) {
+    clearInterval(watcherPollTimer);
+    watcherPollTimer = null;
+  }
+  renderWatchers([]);
+}
+
+async function fetchWatchers() {
+  if (!window.__DISCORD_ACCESS_TOKEN__ || spectating) return [];
+  try {
+    const immediate = cachedGuildId || guildId();
+    const gid =
+      immediate && immediate !== "0" ? immediate : await resolveGuildId(2000);
+    const res = await apiFetch(
+      `/api/activity/watchers?guild_id=${encodeURIComponent(gid)}`
+    );
+    if (!res?.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data?.watchers) ? data.watchers : [];
+  } catch (err) {
+    console.warn("[Thcoku] watchers poll failed", err);
+    return [];
+  }
+}
+
+function startWatcherPolling() {
+  stopWatcherPolling();
+  const tick = async () => {
+    renderWatchers(await fetchWatchers());
+  };
+  void tick();
+  watcherPollTimer = setInterval(() => {
+    void tick();
+  }, WATCHERS_POLL_MS);
+}
+
 async function consumeSpectateIntent() {
   if (!window.__DISCORD_ACCESS_TOKEN__) return null;
   try {
@@ -813,6 +877,7 @@ function startSpectatorPolling(targetUserId) {
 
 async function beginSpectate(targetUserId) {
   spectating = true;
+  stopWatcherPolling();
   stopAutosave();
   if (bootEl) bootEl.hidden = true;
   if (gameHintEl) gameHintEl.hidden = true;
@@ -859,6 +924,7 @@ async function beginPlay({ resumeSession = null, initialDiffIndex = null } = {})
   }
   startAutosave();
   await reportSessionActive();
+  startWatcherPolling();
 
   // Diff stays available for /play; daily/challenge hide it via syncControls (compact row).
   if (sessionKind === "daily" || sessionKind === "challenge") {

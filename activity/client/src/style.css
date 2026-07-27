@@ -205,6 +205,23 @@ body {
   z-index: 2;
 }
 
+#spectator-list {
+  margin: 0;
+  padding: 6px 12px;
+  text-align: center;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--header);
+  background: rgba(255, 248, 220, 0.92);
+  border: 2px solid rgba(245, 158, 11, 0.65);
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(15, 118, 110, 0.12);
+}
+
+#spectator-list[hidden] {
+  display: none !important;
+}
+
 #game-controls {
   width: 100%;
   margin: 0 auto;
@@ -454,6 +471,12 @@ body.theme-dark #theme-toggle {
   background: rgba(30, 41, 59, 0.9);
   border-color: #38bdf8;
   color: #fff;
+}
+
+body.theme-dark #spectator-list {
+  background: rgba(15, 23, 42, 0.9);
+  border-color: rgba(56, 189, 248, 0.45);
+  color: #38bdf8;
 }
 
 body.theme-dark #game-controls {
