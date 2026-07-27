@@ -7608,7 +7608,8 @@ async def restore_challenge_games_from_match(bot: "SudokuBot", match: dict) -> b
         raw_board = player.get("current_board") or template
         if not raw_board:
             continue
-        channel_id = player.get("thread_id") or match.get("channel_id")
+        # Prefer parent text channel for Activity launch; keep thread_id separately.
+        channel_id = match.get("channel_id") or player.get("thread_id")
         if not channel_id:
             continue
 
@@ -7631,12 +7632,46 @@ async def restore_challenge_games_from_match(bot: "SudokuBot", match: dict) -> b
             started_at=start_time,
             pin_emojis=owned_pin_emojis(pstats),
         )
+        if player.get("thread_id"):
+            games[key]["thread_id"] = int(player["thread_id"])
         games[key]["hints_used"] = int(player.get("hints_used") or 0)
         await persist_game(key, games[key])
         restored_any = True
         print(f"Rehydrated challenge game {serialize_game_key(key)} from match {mid}")
 
     return restored_any
+
+
+async def resolve_challenge_launch_channel(
+    bot: "SudokuBot",
+    game: dict,
+    match_id: str | None = None,
+) -> discord.TextChannel | None:
+    """Parent text channel where Play-in-Activity must be posted (not private threads)."""
+    channel = await resolve_channel(bot, game.get("channel_id"))
+    if isinstance(channel, discord.Thread) and isinstance(channel.parent, discord.TextChannel):
+        return channel.parent
+    if isinstance(channel, discord.TextChannel):
+        return channel
+
+    mid = match_id or game.get("match_id")
+    if mid:
+        try:
+            match = await match_store.get_match(str(mid))
+        except Exception:
+            match = None
+        if match:
+            home = await resolve_channel(bot, match.get("channel_id"))
+            if isinstance(home, discord.Thread) and isinstance(home.parent, discord.TextChannel):
+                return home.parent
+            if isinstance(home, discord.TextChannel):
+                return home
+
+    if ACTIVITY_WATCH_CHANNEL_ID:
+        home = await resolve_channel(bot, ACTIVITY_WATCH_CHANNEL_ID)
+        if isinstance(home, discord.TextChannel):
+            return home
+    return None
 
 
 async def reattach_challenge_launch_panels(bot: "SudokuBot", match_id: str) -> int:
@@ -7652,27 +7687,18 @@ async def reattach_challenge_launch_panels(bot: "SudokuBot", match_id: str) -> i
             and game.get("mode") == "challenge"
         ):
             continue
-        channel = await resolve_channel(bot, game.get("channel_id"))
-        # Prefer parent text channel — Activities cannot launch from private threads.
-        if isinstance(channel, discord.Thread) and isinstance(channel.parent, discord.TextChannel):
-            channel = channel.parent
-        if channel is None and game.get("guild_id"):
-            try:
-                match = await match_store.get_match(match_id)
-            except Exception:
-                match = None
-            if match:
-                channel = await resolve_channel(bot, match.get("channel_id"))
+        channel = await resolve_challenge_launch_channel(bot, game, match_id)
         if channel is None:
             print(
-                f"Challenge session {serialize_game_key(key)} channel missing "
-                f"({game.get('channel_id')}) — keeping match entry, no auto-forfeit"
+                f"Challenge session {serialize_game_key(key)} launch channel missing "
+                f"(was {game.get('channel_id')}) — keeping match, use /quit"
             )
             attached += 1
             continue
 
+        game["channel_id"] = channel.id
         reattached = False
-        if game.get("message_id") and not isinstance(channel, discord.Thread):
+        if game.get("message_id"):
             try:
                 msg = await channel.fetch_message(int(game["message_id"]))
                 await msg.edit(view=launch_view)
@@ -7684,14 +7710,20 @@ async def reattach_challenge_launch_panels(bot: "SudokuBot", match_id: str) -> i
                 tier = difficulty_label(game.get("difficulty"))
                 launch_msg = await channel.send(
                     f"<@{game.get('owner_id')}> Speedrun · **{tier}**\n"
-                    "Bot restarted — click below to reopen the Activity!",
+                    "Tap below to open the Activity (must be this channel — not a thread)!",
                     view=launch_view,
                 )
                 game["message_id"] = launch_msg.id
-                game["channel_id"] = getattr(channel, "id", game.get("channel_id"))
                 await persist_game(key, game)
+                print(
+                    f"challenge launch re-posted in #{getattr(channel, 'name', channel.id)} "
+                    f"for {serialize_game_key(key)}"
+                )
             except discord.HTTPException as exc:
                 print(f"challenge launch re-post failed for {serialize_game_key(key)}: {exc}")
+                await persist_game(key, game)
+        else:
+            await persist_game(key, game)
         attached += 1
     return attached
 
@@ -7734,24 +7766,32 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
 
         channel = await resolve_channel(bot, game.get("channel_id"))
 
-        # Activity challenges only need the private thread + in-memory game state.
-        # Never forfeit just because there is no SudokuView panel / message_id.
+        # Challenge boards live in Activity; Play button must be on a text channel
+        # (Discord error 50024 if launched from a private thread).
         if game.get("mode") == "challenge":
-            if channel is None:
+            mid = None
+            if isinstance(key, tuple) and len(key) >= 2:
+                mid = key[1]
+            launch_ch = await resolve_challenge_launch_channel(bot, game, mid)
+            games[key] = game
+            if launch_ch is None:
                 print(
-                    f"Challenge session {serialize_game_key(key)} channel missing "
-                    f"({game.get('channel_id')}) — keeping match entry, no auto-forfeit"
+                    f"Challenge session {serialize_game_key(key)} launch channel missing "
+                    f"(was {game.get('channel_id')}) — keeping match, use /quit"
                 )
-                games[key] = game
                 restored += 1
                 continue
-
-            games[key] = game
+            if game.get("channel_id") != launch_ch.id:
+                print(
+                    f"Challenge session {serialize_game_key(key)} remapped launch "
+                    f"{game.get('channel_id')} → {launch_ch.id}"
+                )
+                game["channel_id"] = launch_ch.id
             launch_view = ChallengeLaunchActivityView()
             reattached = False
             if game.get("message_id"):
                 try:
-                    msg = await channel.fetch_message(int(game["message_id"]))
+                    msg = await launch_ch.fetch_message(int(game["message_id"]))
                     await msg.edit(view=launch_view)
                     reattached = True
                 except discord.HTTPException:
@@ -7759,15 +7799,18 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
             if not reattached:
                 try:
                     tier = difficulty_label(game.get("difficulty"))
-                    launch_msg = await channel.send(
+                    launch_msg = await launch_ch.send(
                         f"<@{game.get('owner_id')}> Speedrun · **{tier}**\n"
-                        "Bot restarted — click below to reopen the Activity!",
+                        "Tap below to open the Activity (this channel — not a thread)!",
                         view=launch_view,
                     )
                     game["message_id"] = launch_msg.id
                     await persist_game(key, game)
                 except discord.HTTPException as exc:
                     print(f"challenge launch re-post failed for {serialize_game_key(key)}: {exc}")
+                    await persist_game(key, game)
+            else:
+                await persist_game(key, game)
             restored += 1
             continue
 
@@ -7803,34 +7846,57 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
             # Keep in memory so /quit still works; player may Refresh later
             print(f"reattach panel failed for {serialize_game_key(key)}: {exc}")
 
-    # Abandon challenge matches with no live sessions left
+    # Abandon / repair challenge matches after restart
     try:
         active_matches = await match_store.list_matches(status="active")
     except Exception as exc:  # noqa: BLE001
         print(f"list active matches failed: {exc}")
         active_matches = []
 
+    stale_after = float(ACTIVITY_BLOCKING_MAX_AGE_SEC)  # 2h
     for match in active_matches:
         mid = match.get("_id")
         if not mid:
             continue
-        any_live = any(
-            isinstance(k, tuple) and len(k) >= 3 and k[0] == "ch" and k[1] == mid
-            for k in games
-        )
-        if any_live:
-            continue
-        # Refresh match after any forfeit marks from dropped sessions
         try:
             fresh = await match_store.get_match(mid)
         except Exception:
             fresh = match
-        if fresh and challenge_ready_to_settle(fresh):
-            await settle_challenge_match(bot, fresh, reason="restart — no live boards")
-        else:
-            rehydrated = False
+        if not fresh:
+            continue
+
+        age = time.time() - float(fresh.get("start_time") or 0)
+        if age > stale_after:
+            print(f"challenge match {mid} stale ({int(age)}s) — settling abandoned")
+            for slot, player in match_player_entries(fresh):
+                if player.get("forfeit") or player.get("finished_time") is not None:
+                    continue
+                try:
+                    await match_store.update_player(mid, slot, {"forfeit": True})
+                except Exception as ff_exc:  # noqa: BLE001
+                    print(f"stale forfeit {mid}/{slot} failed: {ff_exc}")
+                uid = int(player.get("user_id") or 0)
+                if uid:
+                    ck = challenge_game_key(str(mid), uid)
+                    if ck in games:
+                        await remove_game(ck)
+            try:
+                fresh = await match_store.get_match(mid)
+            except Exception:
+                fresh = None
             if fresh:
-                rehydrated = await restore_challenge_games_from_match(bot, fresh)
+                await settle_challenge_match(bot, fresh, reason="restart — stale match")
+            continue
+
+        any_live = any(
+            isinstance(k, tuple) and len(k) >= 3 and k[0] == "ch" and k[1] == mid
+            for k in games
+        )
+        if fresh and challenge_ready_to_settle(fresh):
+            await settle_challenge_match(bot, fresh, reason="restart — ready to settle")
+            continue
+        if not any_live:
+            rehydrated = await restore_challenge_games_from_match(bot, fresh)
             if rehydrated:
                 await reattach_challenge_launch_panels(bot, mid)
                 schedule_challenge_live_update(mid)
@@ -7840,32 +7906,31 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
                     f"challenge match {mid} has no live boards after restart "
                     f"(could not rehydrate); auto-forfeiting unfinished players"
                 )
-                if fresh:
-                    for slot, player in match_player_entries(fresh):
-                        if player.get("forfeit") or player.get("finished_time") is not None:
-                            continue
-                        try:
-                            await match_store.update_player(
-                                mid,
-                                slot,
-                                {"forfeit": True},
-                            )
-                        except Exception as ff_exc:  # noqa: BLE001
-                            print(
-                                f"restart forfeit {mid}/{slot} failed: {ff_exc}"
-                            )
+                for slot, player in match_player_entries(fresh):
+                    if player.get("forfeit") or player.get("finished_time") is not None:
+                        continue
                     try:
-                        fresh = await match_store.get_match(mid)
-                    except Exception:
-                        fresh = None
-                    if fresh and challenge_ready_to_settle(fresh):
-                        await settle_challenge_match(
-                            bot, fresh, reason="restart — abandoned"
+                        await match_store.update_player(
+                            mid,
+                            slot,
+                            {"forfeit": True},
                         )
-                    else:
-                        schedule_challenge_live_update(mid)
+                    except Exception as ff_exc:  # noqa: BLE001
+                        print(f"restart forfeit {mid}/{slot} failed: {ff_exc}")
+                try:
+                    fresh = await match_store.get_match(mid)
+                except Exception:
+                    fresh = None
+                if fresh and challenge_ready_to_settle(fresh):
+                    await settle_challenge_match(
+                        bot, fresh, reason="restart — abandoned"
+                    )
                 else:
                     schedule_challenge_live_update(mid)
+        else:
+            # Live boards may still point at a dead private thread — remap Play to home.
+            await reattach_challenge_launch_panels(bot, mid)
+            schedule_challenge_live_update(mid)
 
     print(
         f"Restored {restored} active game panel(s); dropped {dropped} unrecoverable; "
