@@ -292,10 +292,14 @@ LEVEL_RANKS = [
 
 def evaluate_user_level(xp: int) -> tuple[int, str]:
     """Return (level_num, rank_label) based on total XP."""
+    try:
+        xp_n = int(xp or 0)
+    except (TypeError, ValueError):
+        xp_n = 0
     current_lvl = 1
     current_rank = "🍔 Fry Cook"
     for threshold, lvl, title in LEVEL_RANKS:
-        if xp >= threshold:
+        if xp_n >= threshold:
             current_lvl = lvl
             current_rank = title
         else:
@@ -305,16 +309,28 @@ def evaluate_user_level(xp: int) -> tuple[int, str]:
 
 def evaluate_user_achievements(stats: dict) -> list[str]:
     unlocked = set(stats.get("badges") or [])
-    best_time = float(stats.get("best_time") if stats.get("best_time") is not None else 0)
+    try:
+        best_time = float(stats.get("best_time") if stats.get("best_time") is not None else 0)
+    except (TypeError, ValueError):
+        best_time = 0.0
     if best_time > 0 and best_time <= 180:
         unlocked.add("speed_demon")
-    streak = max(int(stats.get("streak") or 0), int(stats.get("best_streak") or 0))
+    try:
+        streak = max(int(stats.get("streak") or 0), int(stats.get("best_streak") or 0))
+    except (TypeError, ValueError):
+        streak = 0
     if streak >= 7:
         unlocked.add("streak_master")
-    coins = int(stats.get("coins") or 0) + int(stats.get("sponges_spent") or 0)
+    try:
+        coins = int(stats.get("coins") or 0) + int(stats.get("sponges_spent") or 0)
+    except (TypeError, ValueError):
+        coins = 0
     if coins >= 1000:
         unlocked.add("sponge_boss")
-    wins = max(int(stats.get("wins") or 0), int(stats.get("activity_wins") or 0))
+    try:
+        wins = max(int(stats.get("wins") or 0), int(stats.get("activity_wins") or 0))
+    except (TypeError, ValueError):
+        wins = 0
     if wins >= 25:
         unlocked.add("puzzle_master")
     stats["badges"] = list(unlocked)
@@ -8471,60 +8487,71 @@ async def stats_cmd(interaction: discord.Interaction, member: discord.Member | N
     if interaction.guild is None:
         await interaction.response.send_message("Server only.", ephemeral=True)
         return
-    target = member or interaction.user
-    gstats = guild_stats(bot.data, interaction.guild.id)
-    s = user_stats(gstats, target.id)
-    s["name"] = target.display_name
-    evaluate_user_achievements(s)
-    save_data(bot.data)
-    best = format_time(s["best_time"]) if s.get("best_time") is not None else "— not yet!"
-    title = SHOP_TITLES[s["title"]]["label"] if s.get("title") in SHOP_TITLES else "Civilian"
-    streak = int(s.get("streak", 0))
-    best_streak = int(s.get("best_streak", 0))
-    wins = int(s.get("wins", 0))
-    losses = int(s.get("losses", 0))
-    games_n = int(s.get("games", 0)) or (wins + losses)
-    win_rate = f"{(100 * wins / games_n):.0f}%" if games_n else "—"
-
-    shields = int(s.get("streak_shields") or 0)
-    unlocked_badges = [ACHIEVEMENTS[b]["label"] for b in s.get("badges", []) if b in ACHIEVEMENTS]
-    badge_str = " · ".join(unlocked_badges) if unlocked_badges else "None yet — keep playing!"
-
-    lvl_num, lvl_title = evaluate_user_level(s.get("xp", 0))
-    embed = paper_embed(f"{SPONGE} {display_name(s)}")
-    embed.description = (
-        f"{WAVE} **Rank:** Lvl {lvl_num} · {lvl_title}\n"
-        f"**Title:** {title} · **Form:** {streak_flavor(streak)}"
-    )
     try:
-        embed.set_thumbnail(url=target.display_avatar.url)
-    except Exception:
-        pass
+        target = member or interaction.user
+        gstats = guild_stats(bot.data, interaction.guild.id)
+        s = user_stats(gstats, target.id)
+        s["name"] = target.display_name
+        evaluate_user_achievements(s)
+        save_data(bot.data)
+        best = format_time(s["best_time"]) if s.get("best_time") is not None else "— not yet!"
+        title = SHOP_TITLES[s["title"]]["label"] if s.get("title") in SHOP_TITLES else "Civilian"
+        streak = int(s.get("streak", 0) or 0)
+        best_streak = int(s.get("best_streak", 0) or 0)
+        wins = int(s.get("wins", 0) or 0)
+        losses = int(s.get("losses", 0) or 0)
+        games_n = int(s.get("games", 0) or 0) or (wins + losses)
+        win_rate = f"{(100 * wins / games_n):.0f}%" if games_n else "—"
 
-    embed.add_field(name=f"Career XP {XP}", value=f"**{format_xp(s.get('xp', 0))}**", inline=True)
-    embed.add_field(name=f"Pocket {SPONGE}", value=f"**{format_sponges(s['coins'])}**", inline=True)
-    embed.add_field(
-        name=f"Spent {SPONGE}",
-        value=f"**{format_sponges(s.get('sponges_spent', 0))}**",
-        inline=True,
-    )
-    embed.add_field(name=f"Daily streak {STAR}", value=f"**{streak}** (best {best_streak})", inline=True)
-    embed.add_field(name="Shields 🛡️", value=f"**{shields}**", inline=True)
-    embed.add_field(name="Win rate", value=f"**{win_rate}**", inline=True)
-    embed.add_field(name="Wins", value=f"**{wins}**", inline=True)
-    embed.add_field(name="Losses", value=f"**{losses}**", inline=True)
-    embed.add_field(name="Best time", value=f"**{best}**", inline=True)
-    embed.add_field(name=f"Daily {PINEAPPLE}", value=f"**{s.get('daily_wins', 0)}** clears", inline=True)
-    embed.add_field(name=f"Challenge {JELLY}", value=f"**{s.get('challenge_wins', 0)}** wins", inline=True)
-    embed.add_field(name="Boards played", value=f"**{games_n}**", inline=True)
-    embed.add_field(name="Badges & Achievements 🏆", value=f"**{badge_str}**", inline=False)
-    await interaction.response.send_message(embed=embed, silent=True)
+        shields = int(s.get("streak_shields") or 0)
+        unlocked_badges = [ACHIEVEMENTS[b]["label"] for b in s.get("badges", []) if b in ACHIEVEMENTS]
+        badge_str = " · ".join(unlocked_badges) if unlocked_badges else "None yet — keep playing!"
+
+        lvl_num, lvl_title = evaluate_user_level(s.get("xp", 0))
+        embed = paper_embed(f"{SPONGE} {display_name(s)}")
+        embed.description = (
+            f"{WAVE} **Rank:** Lvl {lvl_num} · {lvl_title}\n"
+            f"**Title:** {title} · **Form:** {streak_flavor(streak)}"
+        )
+        try:
+            embed.set_thumbnail(url=target.display_avatar.url)
+        except Exception:
+            pass
+
+        embed.add_field(name=f"Career XP {XP}", value=f"**{format_xp(s.get('xp', 0))}**", inline=True)
+        embed.add_field(name=f"Pocket {SPONGE}", value=f"**{format_sponges(s.get('coins', 0))}**", inline=True)
+        embed.add_field(
+            name=f"Spent {SPONGE}",
+            value=f"**{format_sponges(s.get('sponges_spent', 0))}**",
+            inline=True,
+        )
+        embed.add_field(name=f"Daily streak {STAR}", value=f"**{streak}** (best {best_streak})", inline=True)
+        embed.add_field(name="Shields 🛡️", value=f"**{shields}**", inline=True)
+        embed.add_field(name="Win rate", value=f"**{win_rate}**", inline=True)
+        embed.add_field(name="Wins", value=f"**{wins}**", inline=True)
+        embed.add_field(name="Losses", value=f"**{losses}**", inline=True)
+        embed.add_field(name="Best time", value=f"**{best}**", inline=True)
+        embed.add_field(name=f"Daily {PINEAPPLE}", value=f"**{int(s.get('daily_wins', 0) or 0)}** clears", inline=True)
+        embed.add_field(name=f"Challenge {JELLY}", value=f"**{int(s.get('challenge_wins', 0) or 0)}** wins", inline=True)
+        embed.add_field(name="Boards played", value=f"**{games_n}**", inline=True)
+        embed.add_field(name="Badges & Achievements 🏆", value=f"**{badge_str}**", inline=False)
+        await interaction.response.send_message(embed=embed, silent=True)
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+
+        traceback.print_exc()
+        print(f"/stats failed: {type(exc).__name__}: {exc}")
+        msg = f"Couldn't load profile right now (`{type(exc).__name__}`)."
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
 
 
 @bot.tree.command(name="profile", description="View your profile, badges, and achievements")
 @app_commands.describe(member="Peek at a neighbor's profile")
 async def profile_cmd(interaction: discord.Interaction, member: discord.Member | None = None):
-    await stats_cmd(interaction, member=member)
+    await stats_cmd.callback(interaction, member=member)
 
 
 if __name__ == "__main__":
