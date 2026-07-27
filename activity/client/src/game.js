@@ -380,11 +380,11 @@ function ensureControls(shell) {
     <div class="ctrl-actions ctrl-actions-edit" role="group" aria-label="Editing Actions">
       <button type="button" data-action="undo" id="ctrl-undo" title="Undo move">↩ Undo</button>
       <button type="button" data-action="clear" class="ctrl-clear">Clear</button>
-      <button type="button" data-action="hint" id="ctrl-hint" title="Get a hint">💡 Hint</button>
+      <button type="button" data-action="pencil" id="ctrl-pencil">Notes</button>
     </div>
     <div class="ctrl-actions ctrl-actions-meta" id="ctrl-meta" role="group" aria-label="Game Setup Actions">
       <button type="button" data-action="quit" id="ctrl-quit" class="btn-danger">🚪 Quit</button>
-      <button type="button" data-action="pencil" id="ctrl-pencil">Notes</button>
+      <button type="button" data-action="hint" id="ctrl-hint" title="Get a hint">💡 Hint</button>
       <button type="button" data-action="diff" id="ctrl-diff">Medium</button>
     </div>
   `;
