@@ -760,27 +760,8 @@ function stopSpectatorPolling() {
   }
 }
 
-function formatWatchersLabel(watchers) {
-  if (!watchers?.length) return "";
-  const names = watchers.map((w) => w.name || "Player");
-  if (names.length === 1) return `👀 ${names[0]} is watching`;
-  if (names.length === 2) return `👀 ${names[0]} & ${names[1]} are watching`;
-  const head = names.slice(0, 2).join(", ");
-  return `👀 ${head} +${names.length - 2} watching`;
-}
-
 function renderWatchers(watchers) {
-  const el = document.getElementById("spectator-list");
-  if (!el) return;
-  if (!watchers?.length) {
-    el.hidden = true;
-    el.textContent = "";
-    el.removeAttribute("title");
-    return;
-  }
-  el.hidden = false;
-  el.textContent = formatWatchersLabel(watchers);
-  el.title = watchers.map((w) => w.name || "Player").join(", ");
+  gameApi?.setWatchers?.(watchers);
 }
 
 function stopWatcherPolling() {

@@ -380,6 +380,7 @@ export function startThcokuGame(canvas, options = {}) {
     spectatorMode: Boolean(options.spectatorMode),
     spectatorName: "",
     spectatorTargetId: null,
+    watchers: [],
   };
 
   const diffBtn = controls.querySelector("#ctrl-diff");
@@ -458,6 +459,17 @@ export function startThcokuGame(canvas, options = {}) {
     }
   }
 
+  function watchersBadge() {
+    const list = Array.isArray(state.watchers) ? state.watchers : [];
+    if (!list.length || state.spectatorMode) return "";
+    if (list.length === 1) {
+      const name = String(list[0]?.name || "Player").trim();
+      const short = name.length > 10 ? `${name.slice(0, 9)}…` : name;
+      return `👀 ${short}`;
+    }
+    return `👀 ${list.length}`;
+  }
+
   function drawHeader() {
     ctx.fillStyle = RGB.panel;
     roundRect(ctx, 20, 14, WIDTH - 40, 64, 14);
@@ -475,7 +487,21 @@ export function startThcokuGame(canvas, options = {}) {
     ctx.font = "600 15px Fredoka, Segoe UI, Apple Color Emoji, Segoe UI Emoji, sans-serif";
     ctx.fillText(headerTitleLine().slice(0, 48), 130, 34);
     ctx.font = "500 14px Fredoka, Segoe UI, sans-serif";
-    ctx.fillText(String(state.status).slice(0, 42), 36, 58);
+    const badge = watchersBadge();
+    const statusLimit = badge ? 28 : 42;
+    ctx.textAlign = "left";
+    ctx.fillText(String(state.status).slice(0, statusLimit), 36, 58);
+    if (badge) {
+      ctx.textAlign = "right";
+      ctx.font = "600 12px Fredoka, Segoe UI, Apple Color Emoji, Segoe UI Emoji, sans-serif";
+      ctx.fillText(badge, WIDTH - 36, 58);
+      ctx.textAlign = "left";
+    }
+  }
+
+  function setWatchers(watchers) {
+    state.watchers = Array.isArray(watchers) ? watchers.slice() : [];
+    draw();
   }
 
   function getSnapshot({ allowReporting = false } = {}) {
@@ -1438,5 +1464,6 @@ export function startThcokuGame(canvas, options = {}) {
     loadSnapshot,
     loadSpectatorSnapshot,
     syncControls,
+    setWatchers,
   };
 }
