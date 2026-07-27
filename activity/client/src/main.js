@@ -3,7 +3,7 @@
  * Initializes Discord session, then starts the Canvas puzzle (no leaderboard UI).
  * Saves in-progress boards to Mongo and offers Resume / New puzzle on next /play.
  */
-import { DiscordSDK } from "@discord/embedded-app-sdk";
+import { DiscordSDK, RPCCloseCodes } from "@discord/embedded-app-sdk";
 import { startThcokuGame } from "./game.js";
 import { difficultyLabel } from "./sudoku-core.js";
 
@@ -16,6 +16,9 @@ const resumeEl = document.getElementById("resume");
 const resumeCopyEl = document.getElementById("resume-copy");
 const resumeContinueBtn = document.getElementById("resume-continue");
 const resumeNewBtn = document.getElementById("resume-new");
+const quitScreenEl = document.getElementById("quit-screen");
+const quitCopyEl = document.getElementById("quit-copy");
+const quitSpinnerEl = quitScreenEl?.querySelector(".spinner") ?? null;
 
 let gameStarted = false;
 let gameApi = null;
@@ -26,11 +29,22 @@ let sessionOpenedAt = 0;
 let hideEndWatchTimer = null;
 let spectating = false;
 let spectatorPollTimer = null;
+let quitting = false;
 const SPECTATOR_POLL_MS = 3500;
 const HIDE_END_WATCH_DELAY_MS = 120000;
+const QUIT_CLEANUP_TIMEOUT_MS = 4000;
+const QUIT_GUILD_WAIT_MS = 1500;
+const QUIT_CLOSE_GRACE_MS = 1500;
 
 function setStatus(message) {
   if (statusEl) statusEl.textContent = message;
+}
+
+function showQuitScreen(message, { spinner = true } = {}) {
+  if (!quitScreenEl) return;
+  if (quitCopyEl && message) quitCopyEl.textContent = message;
+  if (quitSpinnerEl) quitSpinnerEl.hidden = !spinner;
+  quitScreenEl.hidden = false;
 }
 
 function guildId() {
@@ -280,6 +294,7 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
     gameApi = startThcokuGame(canvas, {
       cosmetics: cosmetics || { title: null, pins: [], seed: 1 },
       autoStart: gameOptions.autoStart !== false,
+      spectatorMode: Boolean(gameOptions.spectatorMode),
       sessionKind: gameOptions.sessionKind || null,
       dailyDate: gameOptions.dailyDate || null,
       matchId: gameOptions.matchId || null,
@@ -288,13 +303,13 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
       onQuit: () => {
         if (spectating) {
           stopSpectatorPolling();
-          closeDiscordActivity();
+          void quitAndClose({ cleanup: false });
           return;
         }
-        quitAndClose();
+        void quitAndClose();
       },
       onWin: () => {
-        setTimeout(() => closeDiscordActivity(), 2500);
+        setTimeout(() => closeDiscordActivity("Puzzle solved"), 2500);
       },
       onNewGame: () => {
         clearLocalSession();
@@ -494,6 +509,8 @@ function currentSessionSnap() {
 }
 
 async function saveSessionNow({ keepalive = false, force = false, snap = null } = {}) {
+  // Quit clears the session; a late save would resurrect the puzzle we just dropped.
+  if (quitting) return;
   if (!snap) {
     snap = currentSessionSnap();
   }
@@ -603,6 +620,9 @@ function cancelEndWatchOnHide() {
 }
 
 function flushSessionOnExit({ endWatch = false } = {}) {
+  // Quit already cleared the session and ended the watch — do not re-save it
+  // when Discord tears the frame down.
+  if (quitting) return;
   const snap = currentSessionSnap();
   // Never forfeit on unload/remount — only Quit may.
   const run = async () => {
@@ -666,52 +686,63 @@ function startAutosave() {
   document.addEventListener("freeze", () => flushSessionOnExit({ endWatch: true }));
 }
 
-export function closeDiscordActivity() {
-  try {
-    if (window.discordSdk && typeof window.discordSdk.close === "function") {
-      window.discordSdk.close();
-    } else if (window.discordSdk?.commands && typeof window.discordSdk.commands.closeActivity === "function") {
-      window.discordSdk.commands.closeActivity().catch(() => {});
-    } else {
-      window.close();
+export function closeDiscordActivity(message = "Player left Thcoku") {
+  const sdk = window.__DISCORD_SDK__;
+  if (sdk && typeof sdk.close === "function") {
+    try {
+      // CLOSE_NORMAL closes silently; any other code shows `message` to the player.
+      sdk.close(RPCCloseCodes.CLOSE_NORMAL, message);
+      return true;
+    } catch (err) {
+      console.warn("closeDiscordActivity: sdk.close failed", err);
     }
-  } catch (err) {
-    console.warn("closeDiscordActivity error:", err);
-    try { window.close(); } catch {}
   }
+  try {
+    window.close();
+  } catch (err) {
+    console.warn("closeDiscordActivity: window.close failed", err);
+  }
+  return false;
 }
 
-async function quitAndClose() {
-  try {
-    const snap = currentSessionSnap();
-    const isChallenge = snap?.session_kind === "challenge";
-    clearLocalSession();
-    if (window.__DISCORD_ACCESS_TOKEN__) {
-      const gid = await resolveGuildId();
-      if (isChallenge) {
-        await apiFetch("/api/activity/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            challenge_forfeit: true,
-            end_watch: true,
-            force: true,
-            guild_id: gid,
-          }),
-        });
-      } else {
-        await apiFetch("/api/activity/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "clear", guild_id: gid }),
-        });
-      }
+async function sendQuitCleanup() {
+  const snap = currentSessionSnap();
+  const isChallenge = snap?.session_kind === "challenge";
+  clearLocalSession();
+  if (!window.__DISCORD_ACCESS_TOKEN__) return;
+  const gid = await resolveGuildId(QUIT_GUILD_WAIT_MS);
+  const body = isChallenge
+    ? { challenge_forfeit: true, end_watch: true, force: true, guild_id: gid }
+    : { action: "clear", guild_id: gid };
+  // keepalive so the request survives Discord tearing the frame down mid-flight.
+  await apiFetch("/api/activity/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    keepalive: true,
+  });
+}
+
+async function quitAndClose({ cleanup = true } = {}) {
+  if (quitting) return;
+  quitting = true;
+  stopAutosave();
+  showQuitScreen("Wiping down the grill…");
+  if (cleanup) {
+    try {
+      await withTimeout(sendQuitCleanup(), QUIT_CLEANUP_TIMEOUT_MS, "quit cleanup");
+    } catch (err) {
+      // Never let a slow session write keep the player trapped in the Activity.
+      console.warn("quitAndClose cleanup skipped:", err);
     }
-  } catch (err) {
-    console.warn("quitAndClose failed:", err);
-  } finally {
-    closeDiscordActivity();
   }
+  closeDiscordActivity("Player quit Thcoku");
+  // A closed Activity tears down this frame. If we are still alive, the host
+  // ignored the close (or this is a plain browser tab) — say so instead of
+  // leaving a frozen board behind.
+  setTimeout(() => {
+    showQuitScreen("You've clocked out. Close this window to finish.", { spinner: false });
+  }, QUIT_CLOSE_GRACE_MS);
 }
 
 function stopAutosave() {
