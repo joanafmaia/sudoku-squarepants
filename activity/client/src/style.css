@@ -47,11 +47,15 @@ body {
 
 #boot[hidden],
 #win-toast[hidden],
-#resume[hidden] {
+#resume[hidden],
+#quit-overlay[hidden],
+#quit-spinner[hidden],
+#quit-restart[hidden] {
   display: none !important;
 }
 
-#resume {
+#resume,
+#quit-overlay {
   position: fixed;
   inset: 0;
   z-index: 40;
@@ -65,7 +69,12 @@ body {
   animation: fade-in 0.35s ease;
 }
 
-#resume-copy {
+#quit-overlay {
+  z-index: 60;
+}
+
+#resume-copy,
+#quit-copy {
   margin: 0 auto;
   max-width: 22rem;
   padding: 14px 18px;
@@ -85,7 +94,8 @@ body {
   margin: 0 auto;
 }
 
-.resume-actions button {
+.resume-actions button,
+#quit-restart {
   appearance: none;
   border: 2px solid var(--header);
   border-radius: 14px;
@@ -99,11 +109,18 @@ body {
   touch-action: manipulation;
 }
 
-#resume-continue {
+#resume-continue,
+#quit-restart {
   background: var(--gold);
 }
 
-.resume-actions button:active {
+#quit-restart {
+  width: min(100%, 22rem);
+  margin: 0 auto;
+}
+
+.resume-actions button:active,
+#quit-restart:active {
   transform: translateY(1px);
 }
 

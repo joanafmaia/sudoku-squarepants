@@ -3,7 +3,7 @@
  * Initializes Discord session, then starts the Canvas puzzle (no leaderboard UI).
  * Saves in-progress boards to Mongo and offers Resume / New puzzle on next /play.
  */
-import { DiscordSDK } from "@discord/embedded-app-sdk";
+import { DiscordSDK, RPCCloseCodes } from "@discord/embedded-app-sdk";
 import { startThcokuGame } from "./game.js";
 import { difficultyLabel } from "./sudoku-core.js";
 
@@ -16,6 +16,10 @@ const resumeEl = document.getElementById("resume");
 const resumeCopyEl = document.getElementById("resume-copy");
 const resumeContinueBtn = document.getElementById("resume-continue");
 const resumeNewBtn = document.getElementById("resume-new");
+const quitEl = document.getElementById("quit-overlay");
+const quitCopyEl = document.getElementById("quit-copy");
+const quitSpinnerEl = document.getElementById("quit-spinner");
+const quitRestartBtn = document.getElementById("quit-restart");
 
 let gameStarted = false;
 let gameApi = null;
@@ -26,8 +30,12 @@ let sessionOpenedAt = 0;
 let hideEndWatchTimer = null;
 let spectating = false;
 let spectatorPollTimer = null;
+let quitFallbackTimer = null;
+let quitting = false;
 const SPECTATOR_POLL_MS = 3500;
 const HIDE_END_WATCH_DELAY_MS = 120000;
+const QUIT_CLEANUP_TIMEOUT_MS = 2500;
+const QUIT_FALLBACK_DELAY_MS = 1500;
 
 function setStatus(message) {
   if (statusEl) statusEl.textContent = message;
@@ -288,13 +296,22 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
       onQuit: () => {
         if (spectating) {
           stopSpectatorPolling();
-          closeDiscordActivity();
+          showQuitOverlay("Leaving the spectator view…");
+          closeDiscordActivity({
+            reason: "Spectator left",
+            fallback: "You stopped watching — you can close this window.",
+          });
           return;
         }
-        quitAndClose();
+        void quitAndClose();
       },
       onWin: () => {
-        setTimeout(() => closeDiscordActivity(), 2500);
+        setTimeout(() => {
+          closeDiscordActivity({
+            reason: "Puzzle solved",
+            fallback: "Order up! You can close this window.",
+          });
+        }, 2500);
       },
       onNewGame: () => {
         clearLocalSession();
@@ -666,51 +683,95 @@ function startAutosave() {
   document.addEventListener("freeze", () => flushSessionOnExit({ endWatch: true }));
 }
 
-export function closeDiscordActivity() {
-  try {
-    if (window.discordSdk && typeof window.discordSdk.close === "function") {
-      window.discordSdk.close();
-    } else if (window.discordSdk?.commands && typeof window.discordSdk.commands.closeActivity === "function") {
-      window.discordSdk.commands.closeActivity().catch(() => {});
-    } else {
-      window.close();
+function showQuitOverlay(message) {
+  if (!quitEl) return;
+  quitEl.hidden = false;
+  if (quitCopyEl) quitCopyEl.textContent = message;
+  if (quitSpinnerEl) quitSpinnerEl.hidden = false;
+  if (quitRestartBtn) quitRestartBtn.hidden = true;
+}
+
+function hideQuitOverlay() {
+  if (quitFallbackTimer) {
+    clearTimeout(quitFallbackTimer);
+    quitFallbackTimer = null;
+  }
+  if (quitEl) quitEl.hidden = true;
+}
+
+/** Outside a real Discord frame nothing can close the window — say so instead of looking dead. */
+function armQuitFallback(message) {
+  if (quitFallbackTimer) clearTimeout(quitFallbackTimer);
+  quitFallbackTimer = setTimeout(() => {
+    quitFallbackTimer = null;
+    if (!quitEl) return;
+    quitEl.hidden = false;
+    if (quitCopyEl) quitCopyEl.textContent = message;
+    if (quitSpinnerEl) quitSpinnerEl.hidden = true;
+    if (quitRestartBtn) quitRestartBtn.hidden = false;
+  }, QUIT_FALLBACK_DELAY_MS);
+}
+
+quitRestartBtn?.addEventListener("click", () => {
+  hideQuitOverlay();
+  window.location.reload();
+});
+
+export function closeDiscordActivity({
+  reason = "Player quit",
+  fallback = "The Krusty Krab is closed — you can close this window.",
+} = {}) {
+  armQuitFallback(fallback);
+  const sdk = window.__DISCORD_SDK__;
+  if (sdk && typeof sdk.close === "function") {
+    try {
+      sdk.close(RPCCloseCodes.CLOSE_NORMAL, reason);
+      return;
+    } catch (err) {
+      console.warn("discordSdk.close failed:", err);
     }
+  }
+  try {
+    window.close();
   } catch (err) {
     console.warn("closeDiscordActivity error:", err);
-    try { window.close(); } catch {}
   }
 }
 
+// The legacy pygame build calls this through js.closeDiscordActivity().
+window.closeDiscordActivity = closeDiscordActivity;
+
+async function releaseSessionOnQuit() {
+  const snap = currentSessionSnap();
+  const isChallenge = snap?.session_kind === "challenge";
+  clearLocalSession();
+  if (!window.__DISCORD_ACCESS_TOKEN__) return;
+  const gid = cachedGuildId || (await resolveGuildId(1500));
+  const body = isChallenge
+    ? { challenge_forfeit: true, end_watch: true, force: true, guild_id: gid }
+    : { action: "clear", guild_id: gid };
+  // keepalive so the forfeit still lands if the frame tears down right after.
+  await apiFetch("/api/activity/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    keepalive: true,
+  });
+}
+
 async function quitAndClose() {
+  if (quitting) return;
+  quitting = true;
+  showQuitOverlay("Closing the kitchen…");
   try {
-    const snap = currentSessionSnap();
-    const isChallenge = snap?.session_kind === "challenge";
-    clearLocalSession();
-    if (window.__DISCORD_ACCESS_TOKEN__) {
-      const gid = await resolveGuildId();
-      if (isChallenge) {
-        await apiFetch("/api/activity/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            challenge_forfeit: true,
-            end_watch: true,
-            force: true,
-            guild_id: gid,
-          }),
-        });
-      } else {
-        await apiFetch("/api/activity/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "clear", guild_id: gid }),
-        });
-      }
-    }
+    await withTimeout(releaseSessionOnQuit(), QUIT_CLEANUP_TIMEOUT_MS, "quit cleanup");
   } catch (err) {
-    console.warn("quitAndClose failed:", err);
+    console.warn("quitAndClose cleanup failed:", err);
   } finally {
-    closeDiscordActivity();
+    closeDiscordActivity({
+      reason: "Player quit",
+      fallback: "You left the puzzle — you can close this window.",
+    });
   }
 }
 
