@@ -8302,13 +8302,13 @@ async def _launch_activity_window(
 
 @bot.tree.command(
     name="play",
-    description="Open the Thcoku game window in this channel (like Wordle)",
+    description="Pick a difficulty, then open the Thcoku game window",
 )
-@app_commands.describe(difficulty="Difficulty for this game (choose before opening)")
+@app_commands.describe(difficulty="Required — choose the level before the game opens")
 @app_commands.choices(difficulty=DIFFICULTY_CHOICES)
 async def play_cmd(
     interaction: discord.Interaction,
-    difficulty: app_commands.Choice[str] | None = None,
+    difficulty: app_commands.Choice[str],
 ):
     if interaction.guild is not None:
         # Allow reopening an in-progress /play Activity (resume). Only daily
@@ -8348,7 +8348,7 @@ async def play_cmd(
                 ephemeral=True,
             )
             return
-    diff_idx = difficulty_index(difficulty.value) if difficulty else None
+    diff_idx = difficulty_index(difficulty.value)
     await _launch_activity_window(interaction, preferred_diff_index=diff_idx)
 
 
