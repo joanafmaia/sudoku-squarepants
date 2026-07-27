@@ -82,6 +82,22 @@ DISCORD_GUILD_ID = _env_int("DISCORD_GUILD_ID", 0)
 ACTIVITY_WATCH_CHANNEL_ID = _env_int("ACTIVITY_WATCH_CHANNEL_ID", 1527293243434209300)
 DAILY_ANNOUNCE_CHANNEL_ID = _env_int("DAILY_ANNOUNCE_CHANNEL_ID", 1527293243434209300)
 
+# Hard-coded bot admins for /resetdaily and /claimdaily (not Discord role-based).
+BOT_ADMIN_IDS = frozenset(
+    {
+        507706734035599360,
+        1500912704280596571,
+    }
+)
+
+
+def is_bot_admin(user_id: int | None) -> bool:
+    try:
+        return int(user_id or 0) in BOT_ADMIN_IDS
+    except (TypeError, ValueError):
+        return False
+
+
 # Fixed weekly difficulty for /daily (Monday=0 … Sunday=6)
 DAILY_WEEKDAY_DIFFICULTY = {
     0: "very_easy",   # Monday
@@ -6889,6 +6905,17 @@ async def reply_ephemeral(interaction: discord.Interaction, content: str) -> Non
         await interaction.response.send_message(content, ephemeral=True)
 
 
+async def require_bot_admin(interaction: discord.Interaction) -> bool:
+    """Ephemeral deny unless the caller is a hard-coded bot admin. True = allowed."""
+    if is_bot_admin(interaction.user.id):
+        return True
+    await reply_ephemeral(
+        interaction,
+        "Only the bot admins can use this command.",
+    )
+    return False
+
+
 async def restore_challenge_games_from_match(bot: "SudokuBot", match: dict) -> bool:
     """Rebuild in-memory challenge boards when a match is active but games were lost on restart."""
     mid = match.get("_id")
@@ -7900,10 +7927,11 @@ async def daily_cmd(interaction: discord.Interaction):
     name="resetdaily",
     description="Admin: clear today's daily so everyone can play again (this server)",
 )
-@app_commands.checks.has_permissions(administrator=True)
 async def resetdaily_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+    if not await require_bot_admin(interaction):
         return
 
     await interaction.response.defer(ephemeral=True)
@@ -7977,6 +8005,8 @@ async def resetdaily_cmd(interaction: discord.Interaction):
 async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Member | None = None):
     if interaction.guild is None:
         await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+    if not await require_bot_admin(interaction):
         return
 
     target_user = member or interaction.user
