@@ -517,6 +517,7 @@ ACTIVITY_WATCH_MAX_AGE_SEC = 180
 ACTIVITY_WATCH_END_GRACE_SEC = 20
 ACTIVITY_BLOCKING_MAX_AGE_SEC = 7200  # 2h — abandoned /play shouldn't block challenge all day
 WATCH_LIST_MAX_AGE_SEC = 7200
+WATCH_IDLE_HIDE_SEC = 900  # hide idle boards from /watch after 15 min without moves
 WATCH_RESTORE_MAX_AGE_SEC = 86400
 CHALLENGE_BOARD_CELLS = 81
 match_store = create_match_store()
@@ -4234,6 +4235,35 @@ def activity_session_elapsed(session: dict) -> int:
     if started > 0:
         return max(0, int(time.time() - started))
     return max(0, int(session.get("elapsed") or 0))
+
+
+async def lookup_user_activity_session(
+    guild_id: int,
+    user_id: int,
+) -> tuple[dict | None, str | None]:
+    """Primary activity session for a user, including orphan fallback."""
+    session_id = daily_watch_session_id(guild_id, user_id)
+    session = await match_store.get_activity_session(session_id)
+    if session:
+        return session, session_id
+    orphan_id = daily_watch_session_id(0, user_id)
+    orphan = await match_store.get_activity_session(orphan_id)
+    if orphan:
+        orphan_gid = str(orphan.get("guild_id") or "0")
+        if orphan_gid in ("", "0", str(guild_id)):
+            return orphan, orphan_id
+    alt = await match_store.find_activity_session_by_user_id(user_id, guild_id=guild_id)
+    if alt:
+        return alt, str(alt.get("_id") or session_id)
+    return None, None
+
+
+def activity_session_watch_visible(session: dict) -> bool:
+    """False when a board has been idle too long for /watch listings."""
+    last = float(session.get("last_move_at") or session.get("updated_at") or 0)
+    if last <= 0:
+        return True
+    return (time.time() - last) <= WATCH_IDLE_HIDE_SEC
 
 
 def play_puzzle_fingerprint(
@@ -8491,6 +8521,7 @@ async def watch_cmd(interaction: discord.Interaction):
     playable = [
         s for s in sessions
         if activity_session_spectatable(s)
+        and activity_session_watch_visible(s)
     ]
 
     # Also surface active challenge matches in this guild.
@@ -8562,7 +8593,9 @@ async def help_cmd(interaction: discord.Interaction):
             "`/play` — pick a **difficulty**, then open the game window\n"
             "`/daily` — one pineapple puzzle a day\n"
             "`/challenge` — race your pals on the same puzzle\n"
-            "`/watch` — spectate active `/play`, `/daily`, and challenge races"
+            "`/watch` — spectate active `/play`, `/daily`, and challenge races\n"
+            "`/recover` — reopen a saved puzzle (e.g. almost finished)\n"
+            "`/cleargame` — abandon a stuck puzzle · `/quit` — leave any active game"
         ),
         inline=False,
     )
@@ -8598,7 +8631,7 @@ async def help_cmd(interaction: discord.Interaction):
     )
     embed.add_field(
         name=f"{PINEAPPLE} More",
-        value="`/shop` · `/stats` · `/achievements` · `/leaderboard` · `/quit`",
+        value="`/shop` · `/stats` · `/achievements` · `/leaderboard` · `/recover` · `/cleargame` · `/quit`",
         inline=False,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -9066,6 +9099,56 @@ async def resetdaily_cmd(interaction: discord.Interaction):
 
 
 @bot.tree.command(
+    name="clearstale",
+    description="Admin: remove idle Activity sessions from /watch (this server)",
+)
+async def clearstale_cmd(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+    if not await require_bot_admin(interaction):
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild.id
+    try:
+        sessions = await match_store.list_activity_sessions(
+            guild_id,
+            max_age_sec=WATCH_LIST_MAX_AGE_SEC,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"clearstale list_activity_sessions failed: {exc}")
+        sessions = []
+
+    cleared = 0
+    now = time.time()
+    for session in sessions:
+        sid = str(session.get("_id") or "")
+        if not sid:
+            continue
+        if session.get("won_at"):
+            continue
+        last = float(session.get("last_move_at") or session.get("updated_at") or 0)
+        if last > 0 and now - last <= WATCH_IDLE_HIDE_SEC:
+            continue
+        try:
+            await end_activity_watch(bot, sid, force=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"clearstale end_watch failed for {sid}: {exc}")
+        try:
+            await clear_activity_session(bot, sid)
+            cleared += 1
+        except Exception as exc:  # noqa: BLE001
+            print(f"clearstale clear session failed for {sid}: {exc}")
+
+    await interaction.followup.send(
+        f"{BUBBLE} Cleared **{cleared}** idle Activity session(s) from `/watch` "
+        f"(no moves for {WATCH_IDLE_HIDE_SEC // 60}+ min).",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(
     name="resetchallenge",
     description="Admin: zero challenge wins and wipe matches for this server",
 )
@@ -9424,6 +9507,109 @@ async def giftpin_autocomplete(
     return choices
 
 
+@bot.tree.command(
+    name="recover",
+    description="Reopen your saved in-progress puzzle in the Activity",
+)
+async def recover_cmd(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+
+    guild_id = interaction.guild.id
+    uid = interaction.user.id
+
+    if find_challenge_game_for_user(uid):
+        await interaction.response.send_message(
+            "Finish or `/quit` your speedrun challenge first.",
+            ephemeral=True,
+        )
+        return
+    block = await challenge_blocks_user(uid)
+    if block:
+        await interaction.response.send_message(block, ephemeral=True)
+        return
+
+    session, _session_id = await lookup_user_activity_session(guild_id, uid)
+    if not session or not session.get("board"):
+        await interaction.response.send_message(
+            f"{BUBBLE} No saved puzzle found. Start with `/play` or `/daily`.",
+            ephemeral=True,
+        )
+        return
+    if session.get("won_at"):
+        await interaction.response.send_message(
+            "That puzzle is already finished — use `/play` for a new game.",
+            ephemeral=True,
+        )
+        return
+
+    filled = int(session.get("filled") or 0)
+    kind = session.get("session_kind") or "play"
+    tier = difficulty_label(session.get("difficulty"))
+    elapsed = activity_session_elapsed(session)
+    print(
+        f"/recover user={uid} guild={guild_id} kind={kind} "
+        f"filled={filled}/81 elapsed={elapsed}s"
+    )
+    await _launch_activity_window(interaction, skip_watch_notify=True)
+
+
+@bot.tree.command(
+    name="cleargame",
+    description="Abandon your saved puzzle and remove it from /watch",
+)
+async def cleargame_cmd(interaction: discord.Interaction):
+    """Same as /quit for Activity sessions, with clearer wording for stuck boards."""
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+
+    guild_id = interaction.guild.id
+    ch_key = find_challenge_game_for_user(interaction.user.id)
+    if ch_key is not None:
+        await interaction.response.send_message(
+            "Abandon this speedrun?",
+            view=ConfirmQuitView(ch_key, bot, None),
+            ephemeral=True,
+        )
+        return
+
+    session, session_id = await lookup_user_activity_session(
+        guild_id, interaction.user.id
+    )
+    if session and session.get("session_kind") == "daily":
+        await interaction.response.send_message(
+            "Abandon today's daily? This locks your attempt and resets your streak.",
+            view=ConfirmQuitActivityDailyView(
+                session_id or daily_watch_session_id(guild_id, interaction.user.id),
+                bot,
+            ),
+            ephemeral=True,
+        )
+        return
+    if session and (session.get("session_kind") or "play") == "play" and (
+        session.get("board") or session.get("solution")
+    ):
+        filled = int(session.get("filled") or 0)
+        await interaction.response.send_message(
+            f"Abandon this puzzle ({filled}/81)? It will be removed from `/watch`. "
+            "Your `/play` streak will reset.",
+            view=ConfirmQuitActivityPlayView(
+                session_id or daily_watch_session_id(guild_id, interaction.user.id),
+                bot,
+            ),
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        f"{BUBBLE} No saved puzzle to clear. If `/watch` still shows an old game, "
+        "an admin can run `/clearstale`.",
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="quit", description="Leave your active Sudoku game or challenge")
 async def quit_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -9476,16 +9662,11 @@ async def quit_cmd(interaction: discord.Interaction):
             return
 
     # Check for active daily/play Activity session (primary + orphan).
-    session_id = f"activity:{guild_id}:{interaction.user.id}"
-    session = await match_store.get_activity_session(session_id)
+    session, session_id = await lookup_user_activity_session(
+        guild_id, interaction.user.id
+    )
     if not session:
-        orphan_id = f"activity:0:{interaction.user.id}"
-        orphan = await match_store.get_activity_session(orphan_id)
-        if orphan:
-            orphan_gid = str(orphan.get("guild_id") or "0")
-            if orphan_gid in ("", "0", str(guild_id)):
-                session = orphan
-                session_id = orphan_id
+        session_id = f"activity:{guild_id}:{interaction.user.id}"
     if session and session.get("session_kind") == "daily":
         await interaction.response.send_message(
             "Quit today's daily? This locks your attempt and resets your streak.",
