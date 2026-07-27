@@ -3,7 +3,7 @@
  * Initializes Discord session, then starts the Canvas puzzle (no leaderboard UI).
  * Saves in-progress boards to Mongo and offers Resume / New puzzle on next /play.
  */
-import { DiscordSDK } from "@discord/embedded-app-sdk";
+import { DiscordSDK, RPCCloseCodes } from "@discord/embedded-app-sdk";
 import { startThcokuGame } from "./game.js";
 import { difficultyLabel } from "./sudoku-core.js";
 
@@ -667,12 +667,12 @@ function startAutosave() {
 }
 
 export function closeDiscordActivity() {
+  const sdk = window.__DISCORD_SDK__;
   try {
-    if (window.discordSdk && typeof window.discordSdk.close === "function") {
-      window.discordSdk.close();
-    } else if (window.discordSdk?.commands && typeof window.discordSdk.commands.closeActivity === "function") {
-      window.discordSdk.commands.closeActivity().catch(() => {});
+    if (sdk && typeof sdk.close === "function") {
+      sdk.close(RPCCloseCodes.CLOSE_NORMAL, "Player closed the game");
     } else {
+      // Local preview (no Discord frame) — best effort.
       window.close();
     }
   } catch (err) {
@@ -687,25 +687,29 @@ async function quitAndClose() {
     const isChallenge = snap?.session_kind === "challenge";
     clearLocalSession();
     if (window.__DISCORD_ACCESS_TOKEN__) {
-      const gid = await resolveGuildId();
-      if (isChallenge) {
-        await apiFetch("/api/activity/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+      const gid = await withTimeout(resolveGuildId(), 4000, "resolveGuildId").catch(
+        () => cachedGuildId || guildId()
+      );
+      const body = isChallenge
+        ? {
             challenge_forfeit: true,
             end_watch: true,
             force: true,
             guild_id: gid,
-          }),
-        });
-      } else {
-        await apiFetch("/api/activity/session", {
+          }
+        : { action: "clear", guild_id: gid };
+      // keepalive lets the request survive the Activity closing; the timeout
+      // guarantees the close below never hangs on a slow network.
+      await withTimeout(
+        apiFetch("/api/activity/session", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "clear", guild_id: gid }),
-        });
-      }
+          body: JSON.stringify(body),
+          keepalive: true,
+        }),
+        4000,
+        "quit session update"
+      );
     }
   } catch (err) {
     console.warn("quitAndClose failed:", err);
