@@ -6750,7 +6750,10 @@ async def on_app_command_error(
     """Never leave a slash command hanging on an uncaught exception."""
     root = error.original if isinstance(error, app_commands.CommandInvokeError) else error
     print(f"app command error: {root}")
-    msg = "Something went wrong — try again in a moment."
+    if isinstance(error, app_commands.MissingPermissions):
+        msg = "You need **Administrator** permission for that command."
+    else:
+        msg = "Something went wrong — try again in a moment."
     try:
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
@@ -7891,6 +7894,82 @@ async def daily_cmd(interaction: discord.Interaction):
                 f"Couldn't start the daily board: {exc}. Try again.",
                 ephemeral=True,
             )
+
+
+@bot.tree.command(
+    name="resetdaily",
+    description="Admin: clear today's daily so everyone can play again (this server)",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def resetdaily_cmd(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild.id
+    daily = get_guild_daily(bot.data, guild_id)
+    day = str(daily.get("date") or utc_today())
+    prior_results = dict(daily.get("results") or {})
+    n_results = len(prior_results)
+
+    daily["results"] = {}
+    save_data(bot.data)
+
+    claims_cleared = 0
+    try:
+        claims_cleared = await match_store.clear_daily_completions_for_day(guild_id, day)
+    except Exception as exc:  # noqa: BLE001
+        print(f"resetdaily clear_daily_completions failed: {exc}")
+
+    sessions_cleared = 0
+    try:
+        sessions = await match_store.list_activity_sessions(
+            guild_id, max_age_sec=86400 * 2
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"resetdaily list_activity_sessions failed: {exc}")
+        sessions = []
+    for session in sessions:
+        if (session.get("session_kind") or "") != "daily":
+            continue
+        session_day = str(session.get("daily_date") or "")
+        if session_day and session_day != day:
+            continue
+        sid = str(session.get("_id") or "")
+        if not sid:
+            continue
+        try:
+            await end_activity_watch(bot, sid, force=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"resetdaily end_watch failed for {sid}: {exc}")
+        try:
+            await clear_activity_session(bot, sid)
+            sessions_cleared += 1
+        except Exception as exc:  # noqa: BLE001
+            print(f"resetdaily clear session failed for {sid}: {exc}")
+
+    games_cleared = 0
+    for key, game in list(games.items()):
+        if not key or key[0] != guild_id:
+            continue
+        if game.get("mode") != "daily":
+            continue
+        if str(game.get("daily_date") or day) != day:
+            continue
+        await remove_game(key)
+        games_cleared += 1
+
+    await interaction.followup.send(
+        f"{PINEAPPLE} Daily **`{day}`** reset for this server.\n"
+        f"• Cleared **{n_results}** local result(s)\n"
+        f"• Cleared **{claims_cleared}** durable claim(s)\n"
+        f"• Cleared **{sessions_cleared}** Activity daily session(s)\n"
+        f"• Cleared **{games_cleared}** in-memory daily game(s)\n\n"
+        f"Everyone can run `/daily` again. "
+        f"**Note:** XP/sponges already awarded are not removed.",
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="claimdaily", description="Recover/claim today's completed daily win announcement")

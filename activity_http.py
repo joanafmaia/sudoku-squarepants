@@ -483,8 +483,8 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
         if not session and lookup_id != lock_id:
             session = await match_store.get_activity_session(lock_id)
         session_id = lookup_id if session else lock_id
-        # Prefer session-stored channel; client channel_id only if same guild.
-        channel_id_raw = (session or {}).get("channel_id") or body.get("channel_id")
+        # Prefer client channel on win (SDK may be ready now); keep session as fallback.
+        channel_id_raw = body.get("channel_id") or (session or {}).get("channel_id")
 
         # Require a persisted session — prevents forged win POSTs with no game.
         if not session:
@@ -665,8 +665,15 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                             _save(bot.data)
                         except Exception as flag_exc:  # noqa: BLE001
                             print(f"activity daily announced_debug set failed: {flag_exc}")
+                    else:
+                        post_error = "no_announce_channel"
+                        print(
+                            f"activity daily win: no announce channel user={uid} "
+                            f"guild={gid_key} channel_raw={channel_id_raw}"
+                        )
                 except Exception as exc:
                     post_error = f"send_daily_announce: {exc}"
+                    print(f"activity daily win chat post failed: {exc}")
 
             return {
                 "ok": True,
@@ -774,6 +781,12 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                     )
                     await channel.send(embed=embed, file=file)
                     posted = True
+                else:
+                    post_error = "no_announce_channel"
+                    print(
+                        f"activity play win: no announce channel user={uid} "
+                        f"guild={gid_key} channel_raw={channel_id_raw}"
+                    )
         except Exception as exc:  # noqa: BLE001
             post_error = str(exc)
             print(f"activity win chat post failed: {exc}")
@@ -975,15 +988,34 @@ async def _resolve_win_announce_channel(
 ) -> Any | None:
     """Resolve a win-announce channel that belongs to the puzzle's guild."""
     candidates: list[int] = []
-    for raw in (channel_id_raw, (session or {}).get("channel_id")):
+
+    def _push(raw: Any) -> None:
         if raw is None or raw == "":
-            continue
+            return
         try:
             cid = int(raw)
         except (TypeError, ValueError):
-            continue
-        if cid not in candidates:
+            return
+        if cid and cid not in candidates:
             candidates.append(cid)
+
+    # Prefer the channel from the win POST (freshest), then session, then guild defaults.
+    _push(channel_id_raw)
+    _push((session or {}).get("channel_id"))
+    _push((session or {}).get("watch_channel_id"))
+    try:
+        from bot import ACTIVITY_WATCH_CHANNEL_ID
+
+        _push(ACTIVITY_WATCH_CHANNEL_ID)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from bot import guild_stats
+
+        gstats = guild_stats(getattr(bot, "data", None) or {}, guild_id)
+        _push(gstats.get("daily_channel_id"))
+    except Exception:  # noqa: BLE001
+        pass
 
     for cid in candidates:
         channel = bot.get_channel(cid)
@@ -994,6 +1026,10 @@ async def _resolve_win_announce_channel(
                 channel = None
         if channel is not None and _channel_belongs_to_guild(channel, guild_id):
             return channel
+    print(
+        f"activity win announce channel unresolved guild={guild_id} "
+        f"candidates={candidates} session_channel={(session or {}).get('channel_id')}"
+    )
     return None
 
 
@@ -1196,13 +1232,19 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         or user.get("global_name")
         or user.get("username")
         or "Unknown",
-        "channel_id": str(channel_id_raw) if channel_id_raw else None,
         "session_kind": session_kind,
         "daily_date": daily_date,
         "started_at": started_at,
         "last_move_at": time.time(),
         "hints_used": hints_used,
     }
+    # Keep a known channel_id — never wipe it with null from a save without SDK channel.
+    if channel_id_raw:
+        doc["channel_id"] = str(channel_id_raw)
+    elif existing and existing.get("channel_id"):
+        doc["channel_id"] = existing.get("channel_id")
+    else:
+        doc["channel_id"] = None
     # New play puzzle must drop a leftover won_at from a prior failed clear.
     if existing and session_kind == "play":
         existing_given = _normalize_activity_given(existing.get("given"), board)

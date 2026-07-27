@@ -121,6 +121,10 @@ class MatchStore:
     async def list_daily_completions(self) -> list[dict]:
         return []
 
+    async def clear_daily_completions_for_day(self, guild_id: int, day: str) -> int:
+        """Delete durable daily win/forfeit claims for a guild+day. Returns deleted count."""
+        return 0
+
     async def upsert_activity_session(self, doc: dict) -> None:
         """Save in-progress Activity puzzle (keyed by guild+user)."""
         raise NotImplementedError
@@ -484,6 +488,15 @@ class MemoryMatchStore(MatchStore):
 
     async def list_daily_completions(self) -> list[dict]:
         return [_clone(d) for d in self._daily.values()]
+
+    async def clear_daily_completions_for_day(self, guild_id: int, day: str) -> int:
+        prefix = f"{guild_id}:{day}:"
+        to_drop = [k for k in self._daily if str(k).startswith(prefix)]
+        for key in to_drop:
+            del self._daily[key]
+        if to_drop:
+            self._persist_daily_disk()
+        return len(to_drop)
 
 
 class MongoMatchStore(MatchStore):
@@ -859,6 +872,22 @@ class MongoMatchStore(MatchStore):
             await self.connect()
         cursor = self._daily.find({})
         return await cursor.to_list(length=5000)
+
+    async def clear_daily_completions_for_day(self, guild_id: int, day: str) -> int:
+        if self._daily is None:
+            await self.connect()
+        if self._daily is None:
+            return 0
+        result = await self._daily.delete_many(
+            {
+                "$or": [
+                    {"guild_id": guild_id, "date": day},
+                    {"guild_id": str(guild_id), "date": day},
+                    {"_id": {"$regex": f"^{guild_id}:{day}:"}},
+                ]
+            }
+        )
+        return int(result.deleted_count or 0)
 
 
 def create_match_store() -> MatchStore:
