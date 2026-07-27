@@ -610,12 +610,6 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
 
             posted = False
             post_error = None
-            share_text = None
-            for field in outcome.embed.fields:
-                if field.name == "Share":
-                    raw = str(field.value or "").strip()
-                    share_text = raw.strip("`").strip()
-                    break
             if board and given:
                 try:
                     channel = await _resolve_win_announce_channel(
@@ -645,7 +639,6 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                             streak=int(stats.get("streak") or 0),
                             is_daily=True,
                             user_stats_dict=stats,
-                            share_text=share_text,
                         )
                         await channel.send(
                             embed=announce_embed,

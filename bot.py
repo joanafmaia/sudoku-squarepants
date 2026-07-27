@@ -2014,7 +2014,6 @@ def build_activity_win_embed(
     streak: int,
     is_daily: bool = False,
     user_stats_dict: dict | None = None,
-    share_text: str | None = None,
 ) -> discord.Embed:
     """Channel announcement when someone clears a Sudoku puzzle."""
     mention = f"<@{user_id}>"
@@ -2035,8 +2034,6 @@ def build_activity_win_embed(
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
         f"{badge_line}"
     )
-    if share_text:
-        embed.add_field(name="Share", value=f"```\n{share_text}\n```", inline=False)
     return embed
 
 
@@ -2231,28 +2228,6 @@ def daily_puzzle_number(day: str | None = None) -> int:
     raw = day or utc_today()
     d = datetime.fromisoformat(raw).date()
     return (d - DAILY_EPOCH).days + 1
-
-
-def daily_share_emoji_grid() -> str:
-    """3×3 Wordle-like preview for a cleared daily."""
-    row = "🟩🟩🟩"
-    return "\n".join([row, row, row])
-
-
-def build_daily_share_text(
-    *,
-    day: str,
-    difficulty: str | None,
-    elapsed: float,
-) -> str:
-    number = daily_puzzle_number(day)
-    tier = difficulty_label(difficulty)
-    grid = daily_share_emoji_grid()
-    return (
-        f"Daily Sudoku #{number}\n"
-        f"{tier} · {format_time(elapsed)}\n"
-        f"{grid}"
-    )
 
 
 def finish_win(
@@ -2468,13 +2443,6 @@ async def finish_win_and_announce(
                 )
 
         outcome = finish_win(bot.data, guild_id, user, game)
-
-        share = build_daily_share_text(
-            day=day,
-            difficulty=game.get("difficulty"),
-            elapsed=elapsed,
-        )
-        outcome.embed.add_field(name="Share", value=f"```\n{share}\n```", inline=False)
         return outcome
 
 
