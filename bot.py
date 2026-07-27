@@ -2291,13 +2291,28 @@ WIN_BANNER_LINES = (
 )
 
 
-def win_reward_caption(coins: int, xp: int | None = None) -> str:
+def format_xp_boost_win_line(*, used: bool, remaining: int | None = None) -> str:
+    """Optional win footer when Puff's Crystal Ball doubled the payout."""
+    if not used:
+        return ""
+    rem = f" · **{remaining}** left" if remaining is not None else ""
+    return f"\n🔮 **Crystal Ball 2×** active{rem}"
+
+
+def win_reward_caption(
+    coins: int,
+    xp: int | None = None,
+    *,
+    xp_boost_used: bool = False,
+    xp_boost_remaining: int | None = None,
+) -> str:
     """Readable win line under the board image (XP + sponges)."""
     line = random.choice(WIN_BANNER_LINES)
     gained_xp = int(coins if xp is None else xp)
+    boost_line = format_xp_boost_win_line(used=xp_boost_used, remaining=xp_boost_remaining)
     return (
         f"{BUBBLE} **{line} {format_xp(gained_xp, signed=True)} · "
-        f"{format_sponges(max(int(coins), 0), signed=True)}!**"
+        f"{format_sponges(max(int(coins), 0), signed=True)}!**{boost_line}"
     )
 
 
@@ -2311,6 +2326,8 @@ def build_activity_win_embed(
     streak: int,
     is_daily: bool = False,
     user_stats_dict: dict | None = None,
+    xp_boost_used: bool = False,
+    xp_boost_remaining: int | None = None,
 ) -> discord.Embed:
     """Channel announcement when someone clears a Sudoku puzzle."""
     mention = f"<@{user_id}>"
@@ -2322,13 +2339,14 @@ def build_activity_win_embed(
     badges = evaluate_user_achievements(stats_ref) if stats_ref else []
     badge_str = " ".join(ACHIEVEMENTS[b]["label"].split()[0] for b in badges if b in ACHIEVEMENTS)
     badge_line = f"\n🎖️ **Badges:** {badge_str}" if badge_str else ""
+    boost_line = format_xp_boost_win_line(used=xp_boost_used, remaining=xp_boost_remaining)
 
     embed = paper_embed(f"{badge} {mention} completed the {label}!")
     embed.description = (
         f"🏆 **Rank:** {format_rank_line(total_xp)}\n"
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {streak}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
-        f"{badge_line}"
+        f"{boost_line}{badge_line}"
     )
     return embed
 
@@ -2512,6 +2530,8 @@ class WinOutcome:
     xp: int = 0
     rank: int | None = None
     quiet: bool = False
+    xp_boost_used: bool = False
+    xp_boost_remaining: int = 0
 
 
 def selected_cell(game: dict) -> tuple[int, int]:
@@ -2616,10 +2636,12 @@ def finish_win(
 
     # 🔮 Puff's Crystal Ball Consumable (2x XP & Sponge Boost - 3 Games)
     boost_charges = int(stats.get("xp_boost_charges") or 0)
-    if boost_charges > 0:
+    xp_boost_used = boost_charges > 0
+    if xp_boost_used:
         coins *= 2
         xp *= 2
         stats["xp_boost_charges"] = boost_charges - 1
+    xp_boost_remaining = int(stats.get("xp_boost_charges") or 0)
 
     stats["coins"] += coins
     stats["xp"] = int(stats.get("xp") or 0) + xp
@@ -2665,15 +2687,27 @@ def finish_win(
     user_badges = evaluate_user_achievements(stats)
     badge_str = " ".join(ACHIEVEMENTS[b]["label"].split()[0] for b in user_badges if b in ACHIEVEMENTS)
     badge_line = f"\n🎖️ **Badges:** {badge_str}" if badge_str else ""
+    boost_line = format_xp_boost_win_line(
+        used=xp_boost_used,
+        remaining=xp_boost_remaining if xp_boost_used else None,
+    )
 
     embed = paper_embed(f"{badge} {user.mention} completed the {label}!")
     embed.description = (
         f"🏆 **Rank:** {format_rank_line(int(stats.get('xp') or 0))}\n"
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {stats['streak']}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
-        f"{badge_line}"
+        f"{boost_line}{badge_line}"
     )
-    return WinOutcome(embed=embed, coins=coins, xp=xp, rank=rank, quiet=False)
+    return WinOutcome(
+        embed=embed,
+        coins=coins,
+        xp=xp,
+        rank=rank,
+        quiet=False,
+        xp_boost_used=xp_boost_used,
+        xp_boost_remaining=xp_boost_remaining,
+    )
 
 
 async def finish_win_and_announce(
@@ -6361,6 +6395,8 @@ class SudokuView(discord.ui.View):
                 return
 
             # 1) Award XP + sponges first
+            xp_boost_used = False
+            xp_boost_remaining = None
             if not game.get("rewarded"):
                 mode_n = normalize_game_mode(game.get("mode"))
                 if mode_n == "solo" or game.get("mode") == "play":
@@ -6386,6 +6422,12 @@ class SudokuView(discord.ui.View):
                         if outcome is not None:
                             coins = int(outcome.coins)
                             xp = int(outcome.xp)
+                            xp_boost_used = bool(outcome.xp_boost_used)
+                            xp_boost_remaining = (
+                                int(outcome.xp_boost_remaining)
+                                if outcome.xp_boost_used
+                                else None
+                            )
                         else:
                             coins = 0
                             xp = 0
@@ -6401,6 +6443,10 @@ class SudokuView(discord.ui.View):
                     )
                     coins = int(outcome.coins)
                     xp = int(outcome.xp)
+                    xp_boost_used = bool(outcome.xp_boost_used)
+                    xp_boost_remaining = (
+                        int(outcome.xp_boost_remaining) if outcome.xp_boost_used else None
+                    )
                 game["rewarded"] = True
                 try:
                     await persist_game(key, game)
@@ -6424,7 +6470,12 @@ class SudokuView(discord.ui.View):
                 )
             )
             caption = (
-                win_reward_caption(coins, xp)
+                win_reward_caption(
+                    coins,
+                    xp,
+                    xp_boost_used=xp_boost_used,
+                    xp_boost_remaining=xp_boost_remaining,
+                )
                 if coins > 0 or xp > 0
                 else f"{BUBBLE} **Board complete!**"
             )
@@ -6500,6 +6551,8 @@ class SudokuView(discord.ui.View):
             guild_id = interaction.guild.id
             coins = 0
             xp = 0
+            xp_boost_used = False
+            xp_boost_remaining = None
             try:
                 if not game.get("rewarded"):
                     mode_n = normalize_game_mode(game.get("mode"))
@@ -6526,17 +6579,32 @@ class SudokuView(discord.ui.View):
                             if outcome is not None:
                                 coins = int(outcome.coins)
                                 xp = int(outcome.xp)
+                                xp_boost_used = bool(outcome.xp_boost_used)
+                                xp_boost_remaining = (
+                                    int(outcome.xp_boost_remaining)
+                                    if outcome.xp_boost_used
+                                    else None
+                                )
                     else:
                         outcome = await finish_win_and_announce(
                             self.bot, guild_id, interaction.user, game
                         )
                         coins = int(outcome.coins)
                         xp = int(outcome.xp)
+                        xp_boost_used = bool(outcome.xp_boost_used)
+                        xp_boost_remaining = (
+                            int(outcome.xp_boost_remaining) if outcome.xp_boost_used else None
+                        )
                     game["rewarded"] = True
             except Exception as exc:  # noqa: BLE001
                 print(f"on_forfeit solved award failed: {exc}")
             caption = (
-                win_reward_caption(coins, xp)
+                win_reward_caption(
+                    coins,
+                    xp,
+                    xp_boost_used=xp_boost_used,
+                    xp_boost_remaining=xp_boost_remaining,
+                )
                 if coins > 0 or xp > 0
                 else f"{BUBBLE} **Board complete!**"
             )

@@ -1222,8 +1222,13 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boa
     const xp = data.xp ?? 0;
     const coins = data.coins ?? 0;
     const streak = data.streak ?? "?";
+    const boostNote = data.xp_boost_used
+      ? ` · 🔮 2× boost${
+          data.xp_boost_remaining != null ? ` (${data.xp_boost_remaining} left)` : ""
+        }`
+      : "";
     showWinToast(
-      `Order up! +${xp} XP · +${coins} sponges · streak ${streak} · ${shown}${chatNote}`
+      `Order up! +${xp} XP · +${coins} sponges · streak ${streak} · ${shown}${boostNote}${chatNote}`
     );
     return data;
   } catch (err) {

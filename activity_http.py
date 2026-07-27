@@ -627,6 +627,8 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                             streak=int(stats.get("streak") or 0),
                             is_daily=True,
                             user_stats_dict=stats,
+                            xp_boost_used=bool(outcome.xp_boost_used),
+                            xp_boost_remaining=int(outcome.xp_boost_remaining),
                         )
                         await channel.send(
                             embed=announce_embed,
@@ -665,6 +667,8 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                 "elapsed": elapsed,
                 "posted": posted,
                 "post_error": post_error,
+                "xp_boost_used": bool(outcome.xp_boost_used),
+                "xp_boost_remaining": int(outcome.xp_boost_remaining),
             }
 
         from bot import award_play_win
@@ -759,6 +763,8 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                         xp=xp,
                         streak=int(stats["streak"]),
                         user_stats_dict=stats,
+                        xp_boost_used=bool(outcome.xp_boost_used),
+                        xp_boost_remaining=int(outcome.xp_boost_remaining),
                     )
                     await channel.send(embed=embed, file=file)
                     posted = True
@@ -790,6 +796,8 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
             "guild_id": guild_id,
             "user_id": str(uid),
             "posted": posted,
+            "xp_boost_used": bool(outcome.xp_boost_used),
+            "xp_boost_remaining": int(outcome.xp_boost_remaining),
         }
         if post_error and not posted:
             result["post_error"] = post_error
