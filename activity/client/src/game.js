@@ -204,8 +204,11 @@ function roundRect(ctx, x, y, w, h, r) {
 import {
   armProceduralBgm,
   configureProceduralBgm,
+  getOceanPresetCount,
+  getOceanPresetMeta,
   pauseProceduralBgm,
   resumeProceduralBgm,
+  setOceanPreset,
   stopProceduralBgm,
   syncProceduralBgmEnabled,
 } from "./procedural-bgm.js";
@@ -226,27 +229,82 @@ function readStoredBool(key, fallback) {
   return fallback;
 }
 
-function readInitialAudioPrefs() {
+function readInitialMusicPreset() {
   try {
+    const stored = localStorage.getItem(MUSIC_STORAGE_KEY);
+    if (stored === "off" || stored === "false") return -1;
+    if (stored === "on" || stored === "true") return 0;
     const legacy = localStorage.getItem(LEGACY_SOUND_KEY);
-    if (legacy === "off" || legacy === "0") {
-      return { music: false, sfx: false };
-    }
+    if (legacy === "off" || legacy === "0") return -1;
+    const n = Number.parseInt(String(stored ?? ""), 10);
+    if (Number.isFinite(n) && n >= 0 && n < getOceanPresetCount()) return n;
   } catch {
     /* localStorage disabled */
   }
+  return 0;
+}
+
+function readInitialAudioPrefs() {
   return {
-    music: readStoredBool(MUSIC_STORAGE_KEY, true),
+    musicPreset: readInitialMusicPreset(),
     sfx: readStoredBool(SFX_STORAGE_KEY, true),
   };
 }
 
 const initialAudio = readInitialAudioPrefs();
-let musicEnabled = initialAudio.music;
+let musicPreset = initialAudio.musicPreset;
 let sfxEnabled = initialAudio.sfx;
 
 export function isMusicEnabled() {
-  return musicEnabled;
+  return musicPreset >= 0;
+}
+
+export function getMusicPreset() {
+  return musicPreset;
+}
+
+export function getMusicPresetMeta() {
+  if (musicPreset < 0) return null;
+  return getOceanPresetMeta(musicPreset);
+}
+
+export function cycleMusicPreset() {
+  const count = getOceanPresetCount();
+  if (musicPreset < 0) {
+    setMusicPreset(0);
+    return;
+  }
+  if (musicPreset >= count - 1) {
+    setMusicPreset(-1);
+    return;
+  }
+  setMusicPreset(musicPreset + 1);
+}
+
+export function setMusicPreset(index) {
+  const count = getOceanPresetCount();
+  if (index == null || index < 0) {
+    musicPreset = -1;
+    try {
+      localStorage.setItem(MUSIC_STORAGE_KEY, "off");
+    } catch {
+      /* localStorage disabled */
+    }
+    syncProceduralBgmEnabled(false);
+    pauseProceduralBgm();
+    return;
+  }
+  musicPreset = Math.max(0, Math.min(count - 1, Number(index) || 0));
+  try {
+    localStorage.setItem(MUSIC_STORAGE_KEY, String(musicPreset));
+  } catch {
+    /* localStorage disabled */
+  }
+  setOceanPreset(musicPreset);
+  getAudioCtx();
+  syncProceduralBgmEnabled(true);
+  ensureBgmStarted();
+  resumeProceduralBgm();
 }
 
 export function isSfxEnabled() {
@@ -254,20 +312,11 @@ export function isSfxEnabled() {
 }
 
 export function setMusicEnabled(enabled) {
-  musicEnabled = Boolean(enabled);
-  try {
-    localStorage.setItem(MUSIC_STORAGE_KEY, musicEnabled ? "on" : "off");
-  } catch {
-    /* localStorage disabled */
-  }
-  if (musicEnabled) {
-    getAudioCtx();
-    syncProceduralBgmEnabled(true);
-    ensureBgmStarted();
-    resumeProceduralBgm();
+  if (enabled) {
+    if (musicPreset < 0) setMusicPreset(0);
+    else setMusicPreset(musicPreset);
   } else {
-    syncProceduralBgmEnabled(false);
-    pauseProceduralBgm();
+    setMusicPreset(-1);
   }
 }
 
@@ -294,7 +343,8 @@ function getAudioCtx() {
 
 configureProceduralBgm({
   getCtx: getAudioCtx,
-  isEnabled: () => musicEnabled,
+  isEnabled: () => musicPreset >= 0,
+  initialPreset: musicPreset >= 0 ? musicPreset : 0,
 });
 
 function ensureBgmStarted() {
@@ -306,7 +356,7 @@ export function playFx(type) {
   try {
     const ctx = getAudioCtx();
     if (!ctx) return;
-    if (musicEnabled) ensureBgmStarted();
+    if (musicPreset >= 0) ensureBgmStarted();
     const now = ctx.currentTime;
 
     if (type === "pop") {
@@ -1521,7 +1571,7 @@ export function startThcokuGame(canvas, options = {}) {
 
   canvas.addEventListener("pointerdown", (evt) => {
     getAudioCtx();
-    if (musicEnabled) ensureBgmStarted();
+    if (musicPreset >= 0) ensureBgmStarted();
     const { x, y } = canvasPos(evt);
     handleBoardPointer(x, y);
   });

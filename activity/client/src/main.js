@@ -8,7 +8,8 @@ import {
   startThcokuGame,
   isMusicEnabled,
   isSfxEnabled,
-  setMusicEnabled,
+  cycleMusicPreset,
+  getMusicPresetMeta,
   setSfxEnabled,
 } from "./game.js";
 import { pauseProceduralBgm, resumeProceduralBgm } from "./procedural-bgm.js";
@@ -271,15 +272,22 @@ function applyTheme(theme) {
   }
 }
 
-function applyMusic(enabled) {
-  setMusicEnabled(enabled);
+function applyMusicUi() {
   const btn = document.getElementById("music-toggle");
-  if (btn) {
-    btn.textContent = enabled ? "🌊" : "🌊";
-    btn.title = enabled ? "Música do oceano ligada (clica para desligar)" : "Música desligada (clica para ligar)";
-    btn.setAttribute("aria-pressed", enabled ? "false" : "true");
-    btn.classList.toggle("is-muted", !enabled);
+  if (!btn) return;
+  const enabled = isMusicEnabled();
+  const meta = getMusicPresetMeta();
+  if (!enabled || !meta) {
+    btn.textContent = "🔇";
+    btn.title = "Ocean ambience off — click to start (Calm lagoon)";
+    btn.setAttribute("aria-pressed", "true");
+    btn.classList.add("is-muted");
+    return;
   }
+  btn.textContent = meta.emoji;
+  btn.title = `${meta.label} — click for next ambience (or mute)`;
+  btn.setAttribute("aria-pressed", "false");
+  btn.classList.remove("is-muted");
 }
 
 function applySfx(enabled) {
@@ -295,7 +303,8 @@ function applySfx(enabled) {
 document.getElementById("music-toggle")?.addEventListener("click", (e) => {
   e.preventDefault();
   e.stopPropagation();
-  applyMusic(!isMusicEnabled());
+  cycleMusicPreset();
+  applyMusicUi();
 });
 
 document.getElementById("sfx-toggle")?.addEventListener("click", (e) => {
@@ -304,7 +313,7 @@ document.getElementById("sfx-toggle")?.addEventListener("click", (e) => {
   applySfx(!isSfxEnabled());
 });
 
-applyMusic(isMusicEnabled());
+applyMusicUi();
 applySfx(isSfxEnabled());
 
 document.addEventListener("visibilitychange", () => {
