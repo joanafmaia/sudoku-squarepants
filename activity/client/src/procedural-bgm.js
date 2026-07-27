@@ -134,6 +134,9 @@ export function armProceduralBgm() {
 }
 
 export function syncProceduralBgmEnabled(enabled) {
+  if (masterGain) {
+    masterGain.gain.value = enabled ? 0.38 : 0;
+  }
   if (enabled && armed && !paused) startScheduler();
   else stopScheduler();
 }

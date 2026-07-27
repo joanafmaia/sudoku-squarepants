@@ -236,8 +236,15 @@ export function setSoundEnabled(enabled) {
   } catch {
     /* localStorage disabled */
   }
-  syncProceduralBgmEnabled(soundEnabled);
-  if (soundEnabled) ensureBgmStarted();
+  if (soundEnabled) {
+    getAudioCtx();
+    syncProceduralBgmEnabled(true);
+    ensureBgmStarted();
+    resumeProceduralBgm();
+  } else {
+    syncProceduralBgmEnabled(false);
+    pauseProceduralBgm();
+  }
 }
 
 function getAudioCtx() {
@@ -672,10 +679,23 @@ export function startThcokuGame(canvas, options = {}) {
     draw();
   }
 
+  function countUserFilled() {
+    let n = 0;
+    for (let r = 0; r < 9; r++) {
+      for (let c = 0; c < 9; c++) {
+        if (state.given[r]?.[c]) continue;
+        if (cellValue(state.board, r, c) !== 0) n++;
+      }
+    }
+    return n;
+  }
+
   function difficultyLocked() {
     if (state.spectatorMode) return true;
     const k = state.sessionKind;
-    return k === "daily" || k === "challenge";
+    if (k === "daily" || k === "challenge") return true;
+    // /play: allow changing difficulty after the slash-command pick until the first move.
+    return countUserFilled() > 0;
   }
 
   function syncControls() {
@@ -824,6 +844,7 @@ export function startThcokuGame(canvas, options = {}) {
     );
     state.status = "Move undone ↩";
     playFx("pop");
+    syncControls();
     draw();
     if (typeof options.onProgress === "function") {
       try {
@@ -1054,6 +1075,7 @@ export function startThcokuGame(canvas, options = {}) {
         console.warn("[Thcoku] onProgress", err);
       }
     }
+    syncControls();
   }
 
   function cellAt(x, y) {

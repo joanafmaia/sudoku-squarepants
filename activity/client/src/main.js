@@ -275,7 +275,9 @@ function applySound(enabled) {
   }
 }
 
-document.getElementById("sound-toggle")?.addEventListener("click", () => {
+document.getElementById("sound-toggle")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
   applySound(!isSoundEnabled());
 });
 
