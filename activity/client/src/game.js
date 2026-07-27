@@ -679,23 +679,11 @@ export function startThcokuGame(canvas, options = {}) {
     draw();
   }
 
-  function countUserFilled() {
-    let n = 0;
-    for (let r = 0; r < 9; r++) {
-      for (let c = 0; c < 9; c++) {
-        if (state.given[r]?.[c]) continue;
-        if (cellValue(state.board, r, c) !== 0) n++;
-      }
-    }
-    return n;
-  }
-
   function difficultyLocked() {
     if (state.spectatorMode) return true;
     const k = state.sessionKind;
-    if (k === "daily" || k === "challenge") return true;
-    // /play: allow changing difficulty after the slash-command pick until the first move.
-    return countUserFilled() > 0;
+    // /play picks difficulty in the slash command — no in-game changes.
+    return k === "play" || k === "daily" || k === "challenge";
   }
 
   function syncControls() {
