@@ -26,6 +26,7 @@ let sessionOpenedAt = 0;
 let hideEndWatchTimer = null;
 let spectating = false;
 let spectatorPollTimer = null;
+let quitInProgress = false;
 const SPECTATOR_POLL_MS = 3500;
 const HIDE_END_WATCH_DELAY_MS = 120000;
 
@@ -494,6 +495,7 @@ function currentSessionSnap() {
 }
 
 async function saveSessionNow({ keepalive = false, force = false, snap = null } = {}) {
+  if (quitInProgress) return;
   if (!snap) {
     snap = currentSessionSnap();
   }
@@ -603,6 +605,7 @@ function cancelEndWatchOnHide() {
 }
 
 function flushSessionOnExit({ endWatch = false } = {}) {
+  if (quitInProgress) return;
   const snap = currentSessionSnap();
   // Never forfeit on unload/remount — only Quit may.
   const run = async () => {
@@ -668,10 +671,11 @@ function startAutosave() {
 
 export function closeDiscordActivity() {
   try {
-    if (window.discordSdk && typeof window.discordSdk.close === "function") {
-      window.discordSdk.close();
-    } else if (window.discordSdk?.commands && typeof window.discordSdk.commands.closeActivity === "function") {
-      window.discordSdk.commands.closeActivity().catch(() => {});
+    const sdk = window.__DISCORD_SDK__ || window.discordSdk;
+    if (sdk && typeof sdk.close === "function") {
+      sdk.close(1000, "Quit game");
+    } else if (sdk?.commands && typeof sdk.commands.closeActivity === "function") {
+      sdk.commands.closeActivity().catch(() => {});
     } else {
       window.close();
     }
@@ -682,36 +686,34 @@ export function closeDiscordActivity() {
 }
 
 async function quitAndClose() {
+  if (quitInProgress) return;
+  quitInProgress = true;
+  stopAutosave();
+  cancelEndWatchOnHide();
   try {
     const snap = currentSessionSnap();
     const isChallenge = snap?.session_kind === "challenge";
+    const gid = cachedGuildId || guildId();
     clearLocalSession();
     if (window.__DISCORD_ACCESS_TOKEN__) {
-      const gid = await resolveGuildId();
-      if (isChallenge) {
-        await apiFetch("/api/activity/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+      const payload = isChallenge
+        ? {
             challenge_forfeit: true,
             end_watch: true,
             force: true,
             guild_id: gid,
-          }),
-        });
-      } else {
-        await apiFetch("/api/activity/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "clear", guild_id: gid }),
-        });
-      }
+          }
+        : { action: "clear", guild_id: gid };
+      void apiFetch("/api/activity/session", {
+        method: "POST",
+        body: JSON.stringify(payload),
+        keepalive: true,
+      }).catch((err) => console.warn("quitAndClose failed:", err));
     }
   } catch (err) {
     console.warn("quitAndClose failed:", err);
-  } finally {
-    closeDiscordActivity();
   }
+  closeDiscordActivity();
 }
 
 function stopAutosave() {
