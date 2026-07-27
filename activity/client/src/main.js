@@ -3,7 +3,7 @@
  * Initializes Discord session, then starts the Canvas puzzle (no leaderboard UI).
  * Saves in-progress boards to Mongo and offers Resume / New puzzle on next /play.
  */
-import { DiscordSDK } from "@discord/embedded-app-sdk";
+import { DiscordSDK, RPCCloseCodes } from "@discord/embedded-app-sdk";
 import { startThcokuGame } from "./game.js";
 import { difficultyLabel } from "./sudoku-core.js";
 
@@ -26,6 +26,7 @@ let sessionOpenedAt = 0;
 let hideEndWatchTimer = null;
 let spectating = false;
 let spectatorPollTimer = null;
+let quitting = false;
 const SPECTATOR_POLL_MS = 3500;
 const HIDE_END_WATCH_DELAY_MS = 120000;
 
@@ -291,7 +292,9 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
           closeDiscordActivity();
           return;
         }
-        quitAndClose();
+        if (quitting) return;
+        quitting = true;
+        void quitAndClose();
       },
       onWin: () => {
         setTimeout(() => closeDiscordActivity(), 2500);
@@ -666,47 +669,62 @@ function startAutosave() {
   document.addEventListener("freeze", () => flushSessionOnExit({ endWatch: true }));
 }
 
-export function closeDiscordActivity() {
+export function closeDiscordActivity(message = "Quit") {
   try {
-    if (window.discordSdk && typeof window.discordSdk.close === "function") {
-      window.discordSdk.close();
-    } else if (window.discordSdk?.commands && typeof window.discordSdk.commands.closeActivity === "function") {
-      window.discordSdk.commands.closeActivity().catch(() => {});
-    } else {
-      window.close();
+    // SDK instance is stored as __DISCORD_SDK__ (see setupDiscordSdk).
+    const sdk = window.__DISCORD_SDK__ || window.discordSdk;
+    if (sdk && typeof sdk.close === "function") {
+      sdk.close(RPCCloseCodes.CLOSE_NORMAL, message);
+      return;
     }
+    if (sdk?.commands && typeof sdk.commands.closeActivity === "function") {
+      sdk.commands.closeActivity().catch(() => {});
+      return;
+    }
+    window.close();
   } catch (err) {
     console.warn("closeDiscordActivity error:", err);
-    try { window.close(); } catch {}
+    try {
+      window.close();
+    } catch {
+      /* ignore */
+    }
   }
 }
 
 async function quitAndClose() {
-  try {
+  const cleanup = async () => {
     const snap = currentSessionSnap();
     const isChallenge = snap?.session_kind === "challenge";
     clearLocalSession();
-    if (window.__DISCORD_ACCESS_TOKEN__) {
-      const gid = await resolveGuildId();
-      if (isChallenge) {
-        await apiFetch("/api/activity/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            challenge_forfeit: true,
-            end_watch: true,
-            force: true,
-            guild_id: gid,
-          }),
-        });
-      } else {
-        await apiFetch("/api/activity/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "clear", guild_id: gid }),
-        });
-      }
+    if (!window.__DISCORD_ACCESS_TOKEN__) return;
+    // Short guild wait — Quit must not stall for the full SDK settle window.
+    const gid = await resolveGuildId(2000);
+    if (isChallenge) {
+      await apiFetch("/api/activity/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          challenge_forfeit: true,
+          end_watch: true,
+          force: true,
+          guild_id: gid,
+        }),
+      });
+    } else {
+      await apiFetch("/api/activity/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "clear", guild_id: gid }),
+      });
     }
+  };
+  try {
+    // Cap cleanup so a hung fetch cannot leave the Activity open forever.
+    await Promise.race([
+      cleanup(),
+      new Promise((resolve) => setTimeout(resolve, 2500)),
+    ]);
   } catch (err) {
     console.warn("quitAndClose failed:", err);
   } finally {
