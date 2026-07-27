@@ -13,10 +13,6 @@
     </div>
 
     <main id="app">
-      <div id="app-toolbar" aria-label="Game settings">
-        <button type="button" id="sound-toggle" title="Sound on" aria-pressed="false">🔊</button>
-        <button type="button" id="theme-toggle" title="Toggle theme">🌙</button>
-      </div>
       <div id="resume" hidden>
         <p id="resume-copy">You've got a puzzle in progress.</p>
         <div class="resume-actions">
@@ -25,8 +21,14 @@
         </div>
       </div>
       <div id="game-shell">
-        <canvas id="canvas" width="720" height="980"></canvas>
-        <p id="game-hint">Cooking up a Sudoku…</p>
+        <div id="game-board-stack">
+          <div id="app-toolbar" aria-label="Game settings">
+            <button type="button" id="sound-toggle" title="Sound on" aria-pressed="false">🔊</button>
+            <button type="button" id="theme-toggle" title="Toggle theme">🌙</button>
+          </div>
+          <canvas id="canvas" width="720" height="980"></canvas>
+          <p id="game-hint">Cooking up a Sudoku…</p>
+        </div>
       </div>
       <div id="win-toast" hidden></div>
     </main>
