@@ -668,10 +668,11 @@ function startAutosave() {
 
 export function closeDiscordActivity() {
   try {
-    if (window.discordSdk && typeof window.discordSdk.close === "function") {
-      window.discordSdk.close();
-    } else if (window.discordSdk?.commands && typeof window.discordSdk.commands.closeActivity === "function") {
-      window.discordSdk.commands.closeActivity().catch(() => {});
+    const sdk = window.__DISCORD_SDK__;
+    if (sdk && typeof sdk.close === "function") {
+      sdk.close();
+    } else if (sdk?.commands && typeof sdk.commands.closeActivity === "function") {
+      sdk.commands.closeActivity().catch(() => {});
     } else {
       window.close();
     }
@@ -687,7 +688,7 @@ async function quitAndClose() {
     const isChallenge = snap?.session_kind === "challenge";
     clearLocalSession();
     if (window.__DISCORD_ACCESS_TOKEN__) {
-      const gid = await resolveGuildId();
+      const gid = await resolveGuildId(1500);
       if (isChallenge) {
         await apiFetch("/api/activity/session", {
           method: "POST",
