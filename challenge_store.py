@@ -147,6 +147,21 @@ class MatchStore:
     ) -> dict | None:
         raise NotImplementedError
 
+    async def set_spectate_intent(
+        self,
+        viewer_id: int,
+        *,
+        guild_id: int,
+        target_user_id: int,
+        ttl_sec: int = 120,
+    ) -> None:
+        """Remember that viewer_id wants to spectate target_user_id in guild (pre-launch)."""
+        raise NotImplementedError
+
+    async def consume_spectate_intent(self, viewer_id: int) -> dict | None:
+        """Return and delete pending spectate intent if not expired."""
+        raise NotImplementedError
+
 
 class MemoryMatchStore(MatchStore):
     def __init__(self) -> None:
@@ -154,6 +169,7 @@ class MemoryMatchStore(MatchStore):
         self._daily: dict[str, dict] = {}
         self._active: dict[str, dict] = {}
         self._activity: dict[str, dict] = {}
+        self._spectate_intents: dict[str, dict] = {}
         self._play_wins: set[str] = set()
         self._leaderboard: dict | None = None
 
@@ -332,6 +348,31 @@ class MemoryMatchStore(MatchStore):
                 best_with_board = doc
         chosen = best_with_board or best
         return _clone(chosen) if chosen else None
+
+    async def set_spectate_intent(
+        self,
+        viewer_id: int,
+        *,
+        guild_id: int,
+        target_user_id: int,
+        ttl_sec: int = 120,
+    ) -> None:
+        self._spectate_intents[str(viewer_id)] = {
+            "guild_id": guild_id,
+            "target_user_id": target_user_id,
+            "expires_at": time.time() + ttl_sec,
+        }
+
+    async def consume_spectate_intent(self, viewer_id: int) -> dict | None:
+        doc = self._spectate_intents.pop(str(viewer_id), None)
+        if not doc:
+            return None
+        if time.time() > float(doc.get("expires_at") or 0):
+            return None
+        return {
+            "guild_id": int(doc["guild_id"]),
+            "target_user_id": int(doc["target_user_id"]),
+        }
 
     def _daily_key(self, guild_id: int, user_id: int, day: str) -> str:
         return f"{guild_id}:{day}:{user_id}"
@@ -610,6 +651,43 @@ class MongoMatchStore(MatchStore):
         if doc:
             return doc
         return await self._activity.find_one(query, sort=sort)
+
+    async def set_spectate_intent(
+        self,
+        viewer_id: int,
+        *,
+        guild_id: int,
+        target_user_id: int,
+        ttl_sec: int = 120,
+    ) -> None:
+        if self._activity is None:
+            await self.connect()
+        key = f"spectate_intent:{viewer_id}"
+        await self._activity.update_one(
+            {"_id": key},
+            {
+                "$set": {
+                    "guild_id": str(guild_id),
+                    "target_user_id": str(target_user_id),
+                    "expires_at": time.time() + ttl_sec,
+                }
+            },
+            upsert=True,
+        )
+
+    async def consume_spectate_intent(self, viewer_id: int) -> dict | None:
+        if self._activity is None:
+            await self.connect()
+        key = f"spectate_intent:{viewer_id}"
+        doc = await self._activity.find_one_and_delete({"_id": key})
+        if not doc:
+            return None
+        if time.time() > float(doc.get("expires_at") or 0):
+            return None
+        return {
+            "guild_id": int(doc["guild_id"]),
+            "target_user_id": int(doc["target_user_id"]),
+        }
 
     async def try_claim_daily_win(
         self,

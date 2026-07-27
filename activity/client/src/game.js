@@ -377,6 +377,9 @@ export function startThcokuGame(canvas, options = {}) {
     hintsUsed: 0,
     hintsMax: options.sessionKind === "daily" ? 3 : 10,
     serverHints: false,
+    spectatorMode: Boolean(options.spectatorMode),
+    spectatorName: "",
+    spectatorTargetId: null,
   };
 
   const diffBtn = controls.querySelector("#ctrl-diff");
@@ -560,6 +563,29 @@ export function startThcokuGame(canvas, options = {}) {
     return true;
   }
 
+  function loadSpectatorSnapshot(snap) {
+    state.spectatorMode = true;
+    state.spectatorName = snap.player_name || snap.name || "Player";
+    state.spectatorTargetId = snap.player_id || null;
+    state.serverHints = true;
+    state.solution = [];
+    if (snap.board && snap.given) {
+      loadSnapshot(snap);
+    }
+    const filled = snap.board ? filledCount(snap.board) : Number(snap.filled) || 0;
+    if (snap.won_at || filled >= 81) {
+      state.status = `${state.spectatorName} finished the puzzle!`;
+      state.won = true;
+    } else if (snap.board && snap.given) {
+      state.status = `Watching ${state.spectatorName} · ${filled}/81`;
+    } else {
+      state.status = `Watching ${state.spectatorName} — waiting for board…`;
+    }
+    syncControls();
+    draw();
+    return true;
+  }
+
   function setCosmetics(next) {
     cosmetics.title = next?.title || null;
     cosmetics.pins = Array.isArray(next?.pins) ? next.pins.slice() : [];
@@ -573,6 +599,26 @@ export function startThcokuGame(canvas, options = {}) {
       pencilBtn.textContent = state.pencilMode ? "Notes ON" : "Notes";
       pencilBtn.classList.toggle("is-active", state.pencilMode);
     }
+    const spec = state.spectatorMode;
+    if (diffBtn) diffBtn.style.display = spec ? "none" : "";
+    if (pencilBtn) pencilBtn.style.display = spec ? "none" : "";
+    const newBtn = controls.querySelector('[data-action="new"]');
+    if (newBtn) newBtn.style.display = spec ? "none" : "";
+    controls.querySelectorAll("[data-action]").forEach((btn) => {
+      const action = btn.getAttribute("data-action");
+      const allow = !spec || action === "quit";
+      btn.disabled = spec && !allow;
+      btn.style.opacity = spec && !allow ? "0.45" : "";
+    });
+    controls.querySelectorAll(".ctrl-digit").forEach((btn) => {
+      if (spec) {
+        btn.disabled = true;
+        btn.style.opacity = "0.45";
+      } else {
+        btn.disabled = false;
+        btn.style.opacity = "";
+      }
+    });
   }
 
   function spawnBubbles() {
@@ -606,6 +652,7 @@ export function startThcokuGame(canvas, options = {}) {
   }
 
   function newGame() {
+    if (state.spectatorMode) return;
     if (state.sessionKind === "daily" || state.sessionKind === "challenge") {
       return;
     }
@@ -670,7 +717,7 @@ export function startThcokuGame(canvas, options = {}) {
   }
 
   function undo() {
-    if (state.won || state.reportingWin || !state.undoStack.length) return;
+    if (state.spectatorMode || state.won || state.reportingWin || !state.undoStack.length) return;
     const prev = state.undoStack.pop();
     state.board = prev.map((row) =>
       row.map((cell) => ({
@@ -747,7 +794,7 @@ export function startThcokuGame(canvas, options = {}) {
   }
 
   async function hint() {
-    if (state.won || state.reportingWin || !state.board) return;
+    if (state.spectatorMode || state.won || state.reportingWin || !state.board) return;
     if (state.hintsUsed >= state.hintsMax) {
       state.status = "No hints left!";
       draw();
@@ -850,7 +897,7 @@ export function startThcokuGame(canvas, options = {}) {
   }
 
   function place(digit) {
-    if (state.won || state.reportingWin) return;
+    if (state.spectatorMode || state.won || state.reportingWin) return;
     const [r, c] = state.selected;
     if (state.given[r][c]) {
       state.status = "Fixed clue — barnacles!";
@@ -1329,7 +1376,7 @@ export function startThcokuGame(canvas, options = {}) {
     }
   });
 
-  if (options.autoStart !== false) {
+  if (options.autoStart !== false && !options.spectatorMode) {
     newGame();
     if (typeof options.onBoardReady === "function") {
       try {
@@ -1339,7 +1386,8 @@ export function startThcokuGame(canvas, options = {}) {
       }
     }
   } else {
-    state.status = "Loading…";
+    state.status = options.spectatorMode ? "Connecting spectator view…" : "Loading…";
+    if (options.spectatorMode) syncControls();
     draw();
   }
   function setTheme(themeName) {
@@ -1357,5 +1405,15 @@ export function startThcokuGame(canvas, options = {}) {
     draw();
   }
 
-  return { newGame, place, draw, setCosmetics, setTheme, getSnapshot, getStartSnapshot, loadSnapshot };
+  return {
+    newGame,
+    place,
+    draw,
+    setCosmetics,
+    setTheme,
+    getSnapshot,
+    getStartSnapshot,
+    loadSnapshot,
+    loadSpectatorSnapshot,
+  };
 }

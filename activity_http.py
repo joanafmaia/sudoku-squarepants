@@ -855,6 +855,69 @@ def _client_activity_session(doc: dict, *, strip_solution: bool = True) -> dict:
     return payload
 
 
+def _client_spectate_session(doc: dict) -> dict:
+    """Read-only board snapshot for Activity spectators (never includes solution)."""
+    payload = _client_activity_session(doc, strip_solution=True)
+    payload["spectating"] = True
+    payload["player_name"] = str(doc.get("name") or "Player")
+    payload["player_id"] = str(doc.get("user_id") or "")
+    return payload
+
+
+async def _consume_spectate_intent(bot: Any, *, user: dict, guild_id: str) -> dict:
+    from bot import match_store
+
+    uid = int(user["id"])
+    intent = await match_store.consume_spectate_intent(uid)
+    if not intent:
+        return {"ok": True, "intent": None}
+    return {
+        "ok": True,
+        "intent": {
+            "guild_id": str(intent["guild_id"]),
+            "target_user_id": str(intent["target_user_id"]),
+        },
+    }
+
+
+async def _load_activity_spectate(
+    bot: Any,
+    *,
+    user: dict,
+    guild_id: str,
+    target_user_id: str,
+) -> dict:
+    from bot import get_watch_session_for_spectator
+
+    viewer_id = int(user["id"])
+    try:
+        target_id = int(target_user_id)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "invalid_target"}
+
+    if target_id == viewer_id:
+        return {"ok": False, "error": "self_spectate"}
+
+    resolved_guild = await _resolve_activity_guild_id(guild_id, viewer_id)
+    session_id = _activity_session_id(resolved_guild, target_id)
+    session = await get_watch_session_for_spectator(session_id)
+    if not session:
+        return {"ok": True, "session": None, "ended": True}
+
+    board = session.get("board")
+    given = session.get("given")
+    if not board or not isinstance(given, list) or len(given) != 9:
+        return {"ok": True, "session": None, "ended": False, "waiting": True}
+
+    filled = int(session.get("filled") or 0)
+    ended = bool(session.get("won_at")) or filled >= 81
+    return {
+        "ok": True,
+        "session": _client_spectate_session(session),
+        "ended": ended,
+    }
+
+
 def _pick_hint_cell(
     board: list[list[dict]],
     given: list[list[bool]],
@@ -1751,6 +1814,14 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 self._activity_session_get()
                 return
 
+            if path in ("/api/activity/spectate/pending", "/activity/spectate/pending"):
+                self._activity_spectate_pending()
+                return
+
+            if path in ("/api/activity/spectate", "/activity/spectate"):
+                self._activity_spectate_get()
+                return
+
             proxied = _proxy_cdn(path)
             if proxied is not None:
                 status, body, ctype = proxied
@@ -1985,6 +2056,53 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 result = _run_coro(bot, _delete_activity_session(bot, user=user, guild_id=str(guild_id)))
             except Exception as exc:  # noqa: BLE001
                 self._send_json(500, {"error": "session_delete_failed", "message": str(exc)})
+                return
+            self._send_json(200, result)
+
+        def _activity_spectate_pending(self) -> None:
+            bot = bot_getter()
+            user = _discord_user_from_bearer(self.headers.get("Authorization"), bot=bot)
+            if not user or not user.get("id"):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            guild_id = (qs.get("guild_id") or ["0"])[0]
+            try:
+                result = _run_coro(
+                    bot, _consume_spectate_intent(bot, user=user, guild_id=str(guild_id))
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._send_json(500, {"error": "spectate_intent_failed", "message": str(exc)})
+                return
+            self._send_json(200, result)
+
+        def _activity_spectate_get(self) -> None:
+            bot = bot_getter()
+            user = _discord_user_from_bearer(self.headers.get("Authorization"), bot=bot)
+            if not user or not user.get("id"):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            guild_id = (qs.get("guild_id") or ["0"])[0]
+            target_user_id = (qs.get("target_user_id") or [""])[0]
+            if not str(target_user_id).strip():
+                self._send_json(400, {"error": "target_user_id_required"})
+                return
+            try:
+                result = _run_coro(
+                    bot,
+                    _load_activity_spectate(
+                        bot,
+                        user=user,
+                        guild_id=str(guild_id),
+                        target_user_id=str(target_user_id),
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._send_json(500, {"error": "spectate_load_failed", "message": str(exc)})
+                return
+            if not result.get("ok"):
+                self._send_json(400, result)
                 return
             self._send_json(200, result)
 

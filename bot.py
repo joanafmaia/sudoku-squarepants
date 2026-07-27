@@ -325,8 +325,6 @@ WATCH_ACTIVE_SEC = 45
 CHALLENGE_LIVE_DEBOUNCE_SEC = 4.0
 ACTIVITY_WATCH_MAX_AGE_SEC = 180
 ACTIVITY_WATCH_END_GRACE_SEC = 20
-ACTIVITY_LIVE_REFRESH_SEC = 3.5
-ACTIVITY_LIVE_SPECTATOR_TIMEOUT_SEC = 900
 ACTIVITY_BLOCKING_MAX_AGE_SEC = 7200  # 2h — abandoned /play shouldn't block challenge all day
 WATCH_LIST_MAX_AGE_SEC = 7200
 WATCH_RESTORE_MAX_AGE_SEC = 86400
@@ -3565,12 +3563,12 @@ def build_activity_live_embed(
             f"{marker}{mention} — **{tier}** · {filled}/{CHALLENGE_BOARD_CELLS} · "
             f"{format_time(elapsed)}"
         )
-    embed = paper_embed("Live games")
+    embed = paper_embed("Watch games")
     kinds = {(s.get("session_kind") or "play") for s in sessions}
     if kinds == {"daily"}:
-        embed.title = f"{PINEAPPLE} Live daily"
+        embed.title = f"{PINEAPPLE} Daily in progress"
     elif kinds <= {"play"}:
-        embed.title = f"{SPONGE} Live /play"
+        embed.title = f"{SPONGE} /play in progress"
     embed.description = "\n".join(lines) or "Nobody playing right now."
     if active_uid:
         for session in sessions:
@@ -4094,7 +4092,7 @@ async def restore_activity_play_watch_views(bot_ref: "SudokuBot") -> None:
 
 
 class ActivityPlayWatchView(discord.ui.View):
-    """Persistent Live button on the channel watch announcement."""
+    """Persistent Watch button on the channel watch announcement."""
 
     def __init__(self, session_id: str, bot_ref: "SudokuBot"):
         super().__init__(timeout=None)
@@ -4102,269 +4100,89 @@ class ActivityPlayWatchView(discord.ui.View):
         self.bot = bot_ref
         self.message: discord.Message | None = None
 
-        live_btn = discord.ui.Button(
-            label="Live",
+        watch_btn = discord.ui.Button(
+            label="Watch",
             style=discord.ButtonStyle.primary,
-            custom_id=f"watchplay:{session_id}:live",
+            custom_id=f"watchplay:{session_id}:watch",
         )
-        live_btn.callback = self._on_live
-        self.add_item(live_btn)
+        watch_btn.callback = self._on_watch
+        self.add_item(watch_btn)
 
-    async def _on_live(self, interaction: discord.Interaction) -> None:
-        await open_activity_live_spectator(interaction, self.session_id, self.bot)
+    async def _on_watch(self, interaction: discord.Interaction) -> None:
+        await open_activity_spectator_in_activity(interaction, self.session_id, self.bot)
 
 
-def build_activity_spectator_payload(
-    session: dict,
-    *,
-    bot_ref: "SudokuBot | None" = None,
-) -> tuple[str, discord.File] | None:
-    board_raw = session.get("board")
+def activity_session_spectatable(session: dict | None) -> bool:
+    """True when a session has enough board data for Activity spectators."""
+    if not session:
+        return False
+    board = session.get("board")
     given = session.get("given")
-    if not board_raw or not isinstance(given, list) or len(given) != 9:
-        return None
-    board = normalize_board(board_raw)
-    name = str(session.get("name") or "Player")
-    filled = int(session.get("filled") or 0)
-    tier = difficulty_label(session.get("difficulty"))
-    elapsed = activity_session_elapsed(session)
-    title_id = None
-    pin_emojis: list[str] = []
-    pin_seed = 1
-    try:
-        uid = int(session.get("user_id") or 0)
-        gid = int(session.get("guild_id") or 0)
-        pin_seed = uid or 1
-        if bot_ref is not None and uid and gid:
-            pstats = user_stats(guild_stats(bot_ref.data, gid), uid)
-            title_id = equipped_title_id(pstats)
-            pin_emojis = owned_pin_emojis(pstats)
-    except (TypeError, ValueError):
-        pass
-    image = render_board(
-        board,
-        given,
-        difficulty=session.get("difficulty"),
-        title_id=title_id,
-        pin_emojis=pin_emojis,
-        pin_seed=pin_seed,
-    )
-    file = board_to_file(image)
-    if filled >= CHALLENGE_BOARD_CELLS:
-        status = (
-            "submitting win…"
-            if not session.get("won_at")
-            else "puzzle complete"
-        )
-    else:
-        status = "live — updates every few seconds"
-    if session.get("session_kind") == "daily":
-        day = session.get("daily_date") or "today"
-        content = (
-            f"**{name}** — Daily `{day}` · {tier} · {filled}/{CHALLENGE_BOARD_CELLS} · "
-            f"{format_time(elapsed)} · {status}"
-        )
-    else:
-        content = (
-            f"**{name}** — {tier} · {filled}/{CHALLENGE_BOARD_CELLS} · "
-            f"{format_time(elapsed)} · {status}"
-        )
-    return content, file
+    return bool(board) and isinstance(given, list) and len(given) == 9
 
 
 async def get_watch_session_for_spectator(session_id: str) -> dict | None:
     """Load the watch session, falling back to any board saved for the same player."""
     session = await match_store.get_activity_session(session_id)
-    if session and build_activity_spectator_payload(session) is not None:
+    if session and activity_session_spectatable(session):
         return session
     parts = str(session_id).split(":")
     if len(parts) >= 3:
         alt = await match_store.find_activity_session_by_user_id(
             parts[2], guild_id=parts[1]
         )
-        if alt and build_activity_spectator_payload(alt) is not None:
+        if alt and activity_session_spectatable(alt):
             return alt
     return session
 
 
-async def wait_for_activity_board(session_id: str, *, attempts: int = 10) -> dict | None:
-    session: dict | None = None
-    for attempt in range(attempts):
-        session = await get_watch_session_for_spectator(session_id)
-        if not session:
-            return None
-        if build_activity_spectator_payload(session) is not None:
-            return session
-        if attempt < attempts - 1:
-            await asyncio.sleep(2.0)
-    return session
-
-
-class ActivityPlayLiveSpectatorView(discord.ui.View):
-    """Ephemeral auto-refreshing board for /play spectators."""
-
-    def __init__(self, session_id: str, bot_ref: "SudokuBot"):
-        super().__init__(timeout=ACTIVITY_LIVE_SPECTATOR_TIMEOUT_SEC)
-        self.session_id = session_id
-        self.bot = bot_ref
-        self.message: discord.Message | None = None
-        self._poll_task: asyncio.Task | None = None
-        self._closed = False
-        self._last_move_at = 0.0
-        self._last_filled = -1
-        self._last_elapsed = -1
-
-        refresh_btn = discord.ui.Button(
-            label="Refresh",
-            style=discord.ButtonStyle.primary,
-            row=0,
-        )
-        refresh_btn.callback = self._on_refresh
-        self.add_item(refresh_btn)
-
-        stop_btn = discord.ui.Button(
-            label="Stop",
-            style=discord.ButtonStyle.secondary,
-            row=0,
-        )
-        stop_btn.callback = self._on_stop
-        self.add_item(stop_btn)
-
-    def start_polling(self) -> None:
-        if self._poll_task is None or self._poll_task.done():
-            self._poll_task = asyncio.create_task(self._poll_loop())
-
-    def _stop_polling(self) -> None:
-        self._closed = True
-        if self._poll_task is not None and not self._poll_task.done():
-            self._poll_task.cancel()
-        self._poll_task = None
-
-    async def _poll_loop(self) -> None:
-        try:
-            while not self._closed:
-                await asyncio.sleep(ACTIVITY_LIVE_REFRESH_SEC)
-                if self._closed or self.message is None:
-                    break
-                await self._refresh_message()
-        except asyncio.CancelledError:
-            return
-        except Exception as exc:  # noqa: BLE001
-            print(f"activity live spectator poll failed for {self.session_id}: {exc}")
-
-    def _session_changed(self, session: dict) -> bool:
-        move_at = float(session.get("last_move_at") or session.get("updated_at") or 0)
-        filled = int(session.get("filled") or 0)
-        elapsed = activity_session_elapsed(session)
-        changed = (
-            move_at != self._last_move_at
-            or filled != self._last_filled
-            or elapsed != self._last_elapsed
-        )
-        if changed:
-            self._last_move_at = move_at
-            self._last_filled = filled
-            self._last_elapsed = elapsed
-        return changed
-
-    async def _refresh_message(self, *, force: bool = False) -> bool:
-        if self.message is None or self._closed:
-            return False
-        session = await get_watch_session_for_spectator(self.session_id)
-        if not session:
-            self._stop_polling()
-            try:
-                await self.message.edit(content="This game has ended.", attachments=[], view=None)
-            except discord.HTTPException:
-                pass
-            self.stop()
-            return False
-        if session.get("won_at"):
-            self._stop_polling()
-            try:
-                await self.message.edit(content="This game has ended.", attachments=[], view=None)
-            except discord.HTTPException:
-                pass
-            self.stop()
-            return False
-        payload = build_activity_spectator_payload(session, bot_ref=self.bot)
-        if payload is None:
-            return False
-        if not force and not self._session_changed(session):
-            return True
-        content, file = payload
-        try:
-            await self.message.edit(content=content, attachments=[file], view=self)
-        except discord.HTTPException as exc:
-            print(f"activity live spectator edit failed for {self.session_id}: {exc}")
-            self._stop_polling()
-            self.stop()
-            return False
-        if session.get("won_at"):
-            self._stop_polling()
-            self.stop()
-        return True
-
-    async def _on_refresh(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
-        await self._refresh_message(force=True)
-
-    async def _on_stop(self, interaction: discord.Interaction) -> None:
-        self._stop_polling()
-        self.stop()
-        try:
-            await interaction.response.edit_message(
-                content="Stopped watching.",
-                attachments=[],
-                view=None,
-            )
-        except discord.HTTPException:
-            pass
-
-    async def on_timeout(self) -> None:
-        self._stop_polling()
-        if self.message is not None:
-            try:
-                await self.message.edit(view=None)
-            except discord.HTTPException:
-                pass
-
-
-async def open_activity_live_spectator(
+async def open_activity_spectator_in_activity(
     interaction: discord.Interaction,
     session_id: str,
     bot_ref: "SudokuBot",
 ) -> None:
-    await interaction.response.defer(ephemeral=True)
-    session = await wait_for_activity_board(session_id)
-    if not session:
-        await interaction.followup.send("This game has ended.", ephemeral=True)
+    """Open the Embedded App in read-only spectator mode for another player's session."""
+    guild_id, target_user_id = parse_watch_session_ids(session_id)
+    if not guild_id or not target_user_id:
+        await interaction.response.send_message("Invalid session.", ephemeral=True)
         return
-    payload = build_activity_spectator_payload(session, bot_ref=bot_ref)
-    if payload is None:
-        name = str(session.get("name") or "Player")
-        await interaction.followup.send(
-            f"**{name}** is playing, but the board hasn't synced yet — try **Live** again.",
+    if interaction.user.id == target_user_id:
+        await interaction.response.send_message(
+            "That's your own game — use `/play` to continue playing.",
             ephemeral=True,
         )
         return
-    content, file = payload
-    view = ActivityPlayLiveSpectatorView(session_id, bot_ref)
-    view._last_move_at = float(session.get("last_move_at") or session.get("updated_at") or 0)
-    view._last_filled = int(session.get("filled") or 0)
-    view._last_elapsed = activity_session_elapsed(session)
-    msg = await interaction.followup.send(
-        content=content,
-        file=file,
-        view=view,
-        ephemeral=True,
+    session = await get_watch_session_for_spectator(session_id)
+    if not session:
+        await interaction.response.send_message("This game has ended.", ephemeral=True)
+        return
+    await match_store.set_spectate_intent(
+        interaction.user.id,
+        guild_id=guild_id,
+        target_user_id=target_user_id,
     )
-    view.message = msg
-    view.start_polling()
+    try:
+        await interaction.response.launch_activity()
+    except Exception as exc:  # noqa: BLE001
+        print(f"launch_activity spectate failed: {type(exc).__name__}: {exc}")
+        msg = "Couldn't open the Activity right now — try again in a moment."
+        code = getattr(exc, "code", None)
+        if code == 50234:
+            msg = (
+                "Activities aren't enabled for this app yet. "
+                "Ask the server owner to enable **Enable Activities** in the Developer Portal."
+            )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
 
 class ActivityWatchMenuView(discord.ui.View):
-    """Ephemeral /watch menu — Live for /play/daily and challenge races."""
+    """Ephemeral /watch menu — Activity spectator for /play/daily and challenge races."""
 
     def __init__(
         self,
@@ -4384,10 +4202,10 @@ class ActivityWatchMenuView(discord.ui.View):
             if not sid:
                 continue
             btn = discord.ui.Button(
-                label=f"Live — {name}",
+                label=f"Watch — {name}",
                 style=discord.ButtonStyle.primary,
             )
-            btn.callback = self._make_live_cb(sid)
+            btn.callback = self._make_watch_cb(sid)
             self.add_item(btn)
 
     def rebuild_challenge_buttons(self, matches: list[dict]) -> None:
@@ -4404,9 +4222,9 @@ class ActivityWatchMenuView(discord.ui.View):
             btn.callback = self._make_challenge_cb(match_id)
             self.add_item(btn)
 
-    def _make_live_cb(self, session_id: str):
+    def _make_watch_cb(self, session_id: str):
         async def _cb(interaction: discord.Interaction) -> None:
-            await open_activity_live_spectator(interaction, session_id, self.bot)
+            await open_activity_spectator_in_activity(interaction, session_id, self.bot)
 
         return _cb
 
@@ -7611,7 +7429,7 @@ async def watch_cmd(interaction: discord.Interaction):
     # Prefer sessions that still have a board to spectate.
     playable = [
         s for s in sessions
-        if build_activity_spectator_payload(s) is not None
+        if activity_session_spectatable(s)
     ]
 
     # Also surface active challenge matches in this guild.

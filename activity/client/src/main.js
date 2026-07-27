@@ -24,6 +24,9 @@ let saving = false;
 let exitHooksBound = false;
 let sessionOpenedAt = 0;
 let hideEndWatchTimer = null;
+let spectating = false;
+let spectatorPollTimer = null;
+const SPECTATOR_POLL_MS = 3500;
 const HIDE_END_WATCH_DELAY_MS = 120000;
 
 function setStatus(message) {
@@ -283,6 +286,11 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
       playerSlot: gameOptions.playerSlot || null,
       initialDiffIndex: gameOptions.initialDiffIndex ?? null,
       onQuit: () => {
+        if (spectating) {
+          stopSpectatorPolling();
+          closeDiscordActivity();
+          return;
+        }
         quitAndClose();
       },
       onWin: () => {
@@ -696,6 +704,87 @@ function askResume(session) {
   });
 }
 
+function stopSpectatorPolling() {
+  if (spectatorPollTimer) {
+    clearInterval(spectatorPollTimer);
+    spectatorPollTimer = null;
+  }
+}
+
+async function consumeSpectateIntent() {
+  if (!window.__DISCORD_ACCESS_TOKEN__) return null;
+  try {
+    const gid = await resolveGuildId(5000);
+    cachedGuildId = gid;
+    const res = await apiFetch(
+      `/api/activity/spectate/pending?guild_id=${encodeURIComponent(gid)}`
+    );
+    if (!res?.ok) return null;
+    const data = await res.json();
+    return data?.intent || null;
+  } catch (err) {
+    console.warn("[Thcoku] spectate intent failed", err);
+    return null;
+  }
+}
+
+async function fetchSpectateBoard(targetUserId) {
+  if (!window.__DISCORD_ACCESS_TOKEN__) return null;
+  try {
+    const gid = await resolveGuildId();
+    const res = await apiFetch(
+      `/api/activity/spectate?guild_id=${encodeURIComponent(gid)}&target_user_id=${encodeURIComponent(targetUserId)}`
+    );
+    if (!res?.ok) return null;
+    return res.json();
+  } catch (err) {
+    console.warn("[Thcoku] spectate poll failed", err);
+    return null;
+  }
+}
+
+function startSpectatorPolling(targetUserId) {
+  stopSpectatorPolling();
+  spectatorPollTimer = setInterval(async () => {
+    const data = await fetchSpectateBoard(targetUserId);
+    if (!data?.ok) return;
+    if (!data.session) {
+      if (data.ended && gameApi?.loadSpectatorSnapshot) {
+        gameApi.loadSpectatorSnapshot({
+          player_name: "Player",
+          player_id: targetUserId,
+          won_at: Date.now() / 1000,
+        });
+        stopSpectatorPolling();
+      }
+      return;
+    }
+    if (gameApi?.loadSpectatorSnapshot) {
+      gameApi.loadSpectatorSnapshot(data.session);
+      if (data.ended) stopSpectatorPolling();
+    }
+  }, SPECTATOR_POLL_MS);
+}
+
+async function beginSpectate(targetUserId) {
+  spectating = true;
+  stopAutosave();
+  if (bootEl) bootEl.hidden = true;
+  if (gameHintEl) gameHintEl.hidden = true;
+
+  startGameOnce(null, { autoStart: false, spectatorMode: true });
+
+  const data = await fetchSpectateBoard(targetUserId);
+  if (data?.session && gameApi?.loadSpectatorSnapshot) {
+    gameApi.loadSpectatorSnapshot(data.session);
+  }
+
+  startSpectatorPolling(targetUserId);
+
+  const cosmetics = await loadCosmetics();
+  if (cosmetics && gameApi?.setCosmetics) gameApi.setCosmetics(cosmetics);
+}
+
 async function beginPlay({ resumeSession = null, initialDiffIndex = null } = {}) {
   sessionOpenedAt = Date.now();
   const sessionKind = resumeSession?.session_kind || null;
@@ -748,6 +837,16 @@ async function prefetchSessionBoard(session) {
 
 async function showGame() {
   if (bootEl) bootEl.hidden = true;
+
+  const intent = await consumeSpectateIntent();
+  if (intent?.target_user_id) {
+    if (gameHintEl) {
+      gameHintEl.hidden = false;
+      gameHintEl.textContent = "Opening spectator view…";
+    }
+    await beginSpectate(intent.target_user_id);
+    return;
+  }
 
   if (gameHintEl) {
     gameHintEl.hidden = false;
