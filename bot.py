@@ -49,6 +49,12 @@ DIFFICULTY_CHOICES = [
 BASE_WIN_REWARD = 75
 DAILY_BONUS = 60
 STREAK_BONUS_PER = 10
+GARY_WISDOM_HINT_BONUS = 3
+GARY_WISDOM_GAMES_PER_PURCHASE = 2
+KRABBY_SNACK_MULT = 1.25
+GOLDEN_SPATULA_MULT = 1.50
+REWARD_BOOST_GAMES_PER_PURCHASE = 3
+HINT_SPONGE_COST = 15
 
 # Ordered list of difficulty keys (matches DIFF_KEYS in sudoku-core.js)
 DIFF_KEYS_LIST: list[str] = list(DIFFICULTY_TIERS.keys())
@@ -232,7 +238,10 @@ SHOP_TITLES = {
 # Pins = border stickers only. One free; paid pins scale up so cosmetics stay a chase.
 SHOP_PINS = {
     "xp_boost": {"label": "🔮 Puff's Crystal Ball (2x XP - 3 Games)", "pin": "Crystal Ball", "emoji": "🔮", "cost": 120},
-    "streak_shield": {"label": "🛡️ Krabby Shield (Protect Streak)", "pin": "Shield", "emoji": "🛡️", "cost": 150},
+    "streak_shield": {"label": "🛡️ Krabby Shield (missed daily days)", "pin": "Shield", "emoji": "🛡️", "cost": 150},
+    "gary_wisdom": {"label": "🐌 Gary's Wisdom (+3 free hints/game ×2)", "pin": "Gary", "emoji": "🐌", "cost": 60},
+    "krabby_snack": {"label": "🍟 Krabby Snack (+25% Sponges — 3 wins)", "pin": "Snack", "emoji": "🍟", "cost": 80},
+    "golden_spatula": {"label": "🥇 Golden Spatula (+50% XP — 3 wins)", "pin": "Spatula", "emoji": "🥇", "cost": 80},
     "wave": {"label": "🌊 Wave Pin", "pin": "Wave", "emoji": "🌊", "cost": 0, "theme": "ocean"},
     # Former title emojis → buyable border pins
     "pin_jelly": {"label": "🪼 Jelly Pin", "pin": "Jelly", "emoji": "🪼", "cost": 40, "theme": "ocean"},
@@ -273,7 +282,13 @@ SHOP_PINS = {
     "pin_fuzzy": {"label": "🌸 Fuzzy Pin", "pin": "Fuzzy", "emoji": "🌸", "cost": 880, "theme": "crew"},
 }
 
-SHOP_BOOST_KEYS = frozenset({"xp_boost", "streak_shield"})
+SHOP_BOOST_KEYS = frozenset({
+    "xp_boost",
+    "streak_shield",
+    "gary_wisdom",
+    "krabby_snack",
+    "golden_spatula",
+})
 SHOP_BUNDLE_DISCOUNT = 0.5  # 50% off one pin per UTC day
 SHOP_PAGE_SIZE = 11
 
@@ -2291,13 +2306,136 @@ WIN_BANNER_LINES = (
 )
 
 
-def win_reward_caption(coins: int, xp: int | None = None) -> str:
+def try_consume_gary_wisdom(stats: dict) -> int:
+    """Consume one Gary's Wisdom charge; return bonus hints for this game (0 if none)."""
+    charges = int(stats.get("gary_wisdom_charges") or 0)
+    if charges <= 0:
+        return 0
+    stats["gary_wisdom_charges"] = charges - 1
+    return GARY_WISDOM_HINT_BONUS
+
+
+def attach_gary_wisdom_to_session(
+    stats: dict,
+    doc: dict,
+    *,
+    existing: dict | None,
+    same_puzzle: bool,
+) -> None:
+    """Attach Gary's Wisdom hint bonus when a new Activity game session starts."""
+    if existing and int(existing.get("gary_wisdom_bonus") or 0) > 0:
+        if same_puzzle or (existing.get("session_kind") == "daily"):
+            doc["gary_wisdom_bonus"] = int(existing["gary_wisdom_bonus"])
+            return
+    bonus = try_consume_gary_wisdom(stats)
+    if bonus > 0:
+        doc["gary_wisdom_bonus"] = bonus
+
+
+def attach_gary_wisdom_to_game(stats: dict, game: dict) -> None:
+    """Attach Gary's Wisdom bonus to an in-memory game (challenge / panel)."""
+    if int(game.get("gary_wisdom_bonus") or 0) > 0:
+        return
+    bonus = try_consume_gary_wisdom(stats)
+    if bonus > 0:
+        game["gary_wisdom_bonus"] = bonus
+
+
+def hint_gary_free_remaining(container: dict) -> int:
+    total = int(container.get("gary_wisdom_bonus") or 0)
+    used = int(container.get("hints_gary_used") or 0)
+    return max(0, total - used)
+
+
+def apply_hint_charge(stats: dict, container: dict) -> dict:
+    """Spend Gary free hints first, otherwise pocket sponges. Mutates stats + container."""
+    gary_free = hint_gary_free_remaining(container)
+    if gary_free > 0:
+        container["hints_gary_used"] = int(container.get("hints_gary_used") or 0) + 1
+        return {
+            "ok": True,
+            "cost": 0,
+            "gary_free_left": gary_free - 1,
+            "paid_with": "gary",
+            "pocket": int(stats.get("coins") or 0),
+        }
+    pocket = int(stats.get("coins") or 0)
+    if pocket < HINT_SPONGE_COST:
+        return {
+            "ok": False,
+            "error": "insufficient_sponges",
+            "cost": HINT_SPONGE_COST,
+            "gary_free_left": 0,
+            "pocket": pocket,
+        }
+    stats["coins"] = pocket - HINT_SPONGE_COST
+    return {
+        "ok": True,
+        "cost": HINT_SPONGE_COST,
+        "gary_free_left": 0,
+        "paid_with": "sponges",
+        "pocket": int(stats.get("coins") or 0),
+    }
+
+
+def format_xp_boost_win_line(*, used: bool, remaining: int | None = None) -> str:
+    """Optional win footer when Puff's Crystal Ball doubled the payout."""
+    if not used:
+        return ""
+    rem = f" · **{remaining}** left" if remaining is not None else ""
+    return f"\n🔮 **Crystal Ball 2×** active{rem}"
+
+
+def format_win_boost_lines(
+    *,
+    xp_boost_used: bool = False,
+    xp_boost_remaining: int | None = None,
+    krabby_snack_used: bool = False,
+    krabby_snack_remaining: int | None = None,
+    golden_spatula_used: bool = False,
+    golden_spatula_remaining: int | None = None,
+) -> str:
+    """Readable multi-line footer for active win power-ups."""
+    lines: list[str] = []
+    if xp_boost_used:
+        rem = f" · **{xp_boost_remaining}** left" if xp_boost_remaining is not None else ""
+        lines.append(f"🔮 **Crystal Ball 2×** active{rem}")
+    if krabby_snack_used:
+        rem = f" · **{krabby_snack_remaining}** left" if krabby_snack_remaining is not None else ""
+        lines.append(f"🍟 **Krabby Snack +25%** sponges{rem}")
+    if golden_spatula_used:
+        rem = f" · **{golden_spatula_remaining}** left" if golden_spatula_remaining is not None else ""
+        lines.append(f"🥇 **Golden Spatula +50%** XP{rem}")
+    if not lines:
+        return ""
+    return "\n" + "\n".join(lines)
+
+
+def win_reward_caption(
+    coins: int,
+    xp: int | None = None,
+    *,
+    xp_boost_used: bool = False,
+    xp_boost_remaining: int | None = None,
+    krabby_snack_used: bool = False,
+    krabby_snack_remaining: int | None = None,
+    golden_spatula_used: bool = False,
+    golden_spatula_remaining: int | None = None,
+) -> str:
     """Readable win line under the board image (XP + sponges)."""
     line = random.choice(WIN_BANNER_LINES)
     gained_xp = int(coins if xp is None else xp)
+    boost_line = format_win_boost_lines(
+        xp_boost_used=xp_boost_used,
+        xp_boost_remaining=xp_boost_remaining,
+        krabby_snack_used=krabby_snack_used,
+        krabby_snack_remaining=krabby_snack_remaining,
+        golden_spatula_used=golden_spatula_used,
+        golden_spatula_remaining=golden_spatula_remaining,
+    )
     return (
         f"{BUBBLE} **{line} {format_xp(gained_xp, signed=True)} · "
-        f"{format_sponges(max(int(coins), 0), signed=True)}!**"
+        f"{format_sponges(max(int(coins), 0), signed=True)}!**{boost_line}"
     )
 
 
@@ -2311,6 +2449,12 @@ def build_activity_win_embed(
     streak: int,
     is_daily: bool = False,
     user_stats_dict: dict | None = None,
+    xp_boost_used: bool = False,
+    xp_boost_remaining: int | None = None,
+    krabby_snack_used: bool = False,
+    krabby_snack_remaining: int | None = None,
+    golden_spatula_used: bool = False,
+    golden_spatula_remaining: int | None = None,
 ) -> discord.Embed:
     """Channel announcement when someone clears a Sudoku puzzle."""
     mention = f"<@{user_id}>"
@@ -2322,13 +2466,21 @@ def build_activity_win_embed(
     badges = evaluate_user_achievements(stats_ref) if stats_ref else []
     badge_str = " ".join(ACHIEVEMENTS[b]["label"].split()[0] for b in badges if b in ACHIEVEMENTS)
     badge_line = f"\n🎖️ **Badges:** {badge_str}" if badge_str else ""
+    boost_line = format_win_boost_lines(
+        xp_boost_used=xp_boost_used,
+        xp_boost_remaining=xp_boost_remaining,
+        krabby_snack_used=krabby_snack_used,
+        krabby_snack_remaining=krabby_snack_remaining,
+        golden_spatula_used=golden_spatula_used,
+        golden_spatula_remaining=golden_spatula_remaining,
+    )
 
     embed = paper_embed(f"{badge} {mention} completed the {label}!")
     embed.description = (
         f"🏆 **Rank:** {format_rank_line(total_xp)}\n"
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {streak}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
-        f"{badge_line}"
+        f"{boost_line}{badge_line}"
     )
     return embed
 
@@ -2512,6 +2664,28 @@ class WinOutcome:
     xp: int = 0
     rank: int | None = None
     quiet: bool = False
+    xp_boost_used: bool = False
+    xp_boost_remaining: int = 0
+    krabby_snack_used: bool = False
+    krabby_snack_remaining: int = 0
+    golden_spatula_used: bool = False
+    golden_spatula_remaining: int = 0
+
+
+def win_boost_caption_kwargs(outcome: WinOutcome) -> dict:
+    """Keyword args for win_reward_caption / client payloads from a WinOutcome."""
+    return {
+        "xp_boost_used": bool(outcome.xp_boost_used),
+        "xp_boost_remaining": int(outcome.xp_boost_remaining) if outcome.xp_boost_used else None,
+        "krabby_snack_used": bool(outcome.krabby_snack_used),
+        "krabby_snack_remaining": (
+            int(outcome.krabby_snack_remaining) if outcome.krabby_snack_used else None
+        ),
+        "golden_spatula_used": bool(outcome.golden_spatula_used),
+        "golden_spatula_remaining": (
+            int(outcome.golden_spatula_remaining) if outcome.golden_spatula_used else None
+        ),
+    }
 
 
 def selected_cell(game: dict) -> tuple[int, int]:
@@ -2612,14 +2786,29 @@ def finish_win(
         difficulty=game.get("difficulty"),
         challenge_winner=challenge_winner,
     )
-    xp = coins  # career XP mirrors sponge grant; shop spend never reduces XP
+    xp = coins  # career XP mirrors sponge grant before split boosts
 
-    # 🔮 Puff's Crystal Ball Consumable (2x XP & Sponge Boost - 3 Games)
+    snack_charges = int(stats.get("krabby_snack_charges") or 0)
+    krabby_snack_used = snack_charges > 0
+    if krabby_snack_used:
+        coins = int(round(coins * KRABBY_SNACK_MULT))
+        stats["krabby_snack_charges"] = snack_charges - 1
+    krabby_snack_remaining = int(stats.get("krabby_snack_charges") or 0)
+
+    spatula_charges = int(stats.get("golden_spatula_charges") or 0)
+    golden_spatula_used = spatula_charges > 0
+    if golden_spatula_used:
+        xp = int(round(xp * GOLDEN_SPATULA_MULT))
+        stats["golden_spatula_charges"] = spatula_charges - 1
+    golden_spatula_remaining = int(stats.get("golden_spatula_charges") or 0)
+
     boost_charges = int(stats.get("xp_boost_charges") or 0)
-    if boost_charges > 0:
+    xp_boost_used = boost_charges > 0
+    if xp_boost_used:
         coins *= 2
         xp *= 2
         stats["xp_boost_charges"] = boost_charges - 1
+    xp_boost_remaining = int(stats.get("xp_boost_charges") or 0)
 
     stats["coins"] += coins
     stats["xp"] = int(stats.get("xp") or 0) + xp
@@ -2665,15 +2854,35 @@ def finish_win(
     user_badges = evaluate_user_achievements(stats)
     badge_str = " ".join(ACHIEVEMENTS[b]["label"].split()[0] for b in user_badges if b in ACHIEVEMENTS)
     badge_line = f"\n🎖️ **Badges:** {badge_str}" if badge_str else ""
+    boost_line = format_win_boost_lines(
+        xp_boost_used=xp_boost_used,
+        xp_boost_remaining=xp_boost_remaining if xp_boost_used else None,
+        krabby_snack_used=krabby_snack_used,
+        krabby_snack_remaining=krabby_snack_remaining if krabby_snack_used else None,
+        golden_spatula_used=golden_spatula_used,
+        golden_spatula_remaining=golden_spatula_remaining if golden_spatula_used else None,
+    )
 
     embed = paper_embed(f"{badge} {user.mention} completed the {label}!")
     embed.description = (
         f"🏆 **Rank:** {format_rank_line(int(stats.get('xp') or 0))}\n"
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {stats['streak']}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
-        f"{badge_line}"
+        f"{boost_line}{badge_line}"
     )
-    return WinOutcome(embed=embed, coins=coins, xp=xp, rank=rank, quiet=False)
+    return WinOutcome(
+        embed=embed,
+        coins=coins,
+        xp=xp,
+        rank=rank,
+        quiet=False,
+        xp_boost_used=xp_boost_used,
+        xp_boost_remaining=xp_boost_remaining,
+        krabby_snack_used=krabby_snack_used,
+        krabby_snack_remaining=krabby_snack_remaining,
+        golden_spatula_used=golden_spatula_used,
+        golden_spatula_remaining=golden_spatula_remaining,
+    )
 
 
 async def finish_win_and_announce(
@@ -2810,7 +3019,7 @@ def finish_forfeit(data: dict, guild_id: int, user: discord.abc.User, game: dict
     stats["losses"] += 1
     stats["games"] += 1
     mode = normalize_game_mode(game.get("mode"))
-    # Calendar streak only breaks on daily forfeit — quitting /play keeps the day streak.
+    # Calendar streak only breaks on daily forfeit — never play or challenge.
     if mode == "daily":
         stats["streak"] = 0
         day = game.get("daily_date") or utc_today()
@@ -3271,6 +3480,7 @@ async def settle_challenge_match(
     ranked_lines.append(
         f"Difficulty: **{difficulty_label(match.get('difficulty'))}** · winner ×{CHALLENGE_WIN_MULT:g}"
     )
+    ranked_lines.append(f"{STAR} Daily streak is **never** reset by challenge results.")
 
     announce = paper_embed("Challenge result", description="\n".join(ranked_lines))
     await channel.send(embed=announce)
@@ -3671,12 +3881,14 @@ async def launch_challenge_match(
                 started_at=start_time,
                 pin_emojis=owned_pin_emojis(pstats),
             )
+            attach_gary_wisdom_to_game(pstats, games[key])
             games[key]["message_id"] = launch_message_id
             await match_store.update_player(
                 match_id, slot, {"name": member.display_name}
             )
             await persist_game(key, games[key])
 
+        save_data(bot.data)
         await interaction.followup.send(
             f"Challenge started · **{tier}** — one Play button in {home.mention}.",
             ephemeral=True,
@@ -5844,7 +6056,7 @@ class ConfirmQuitActivityPlayView(discord.ui.View):
                 "difficulty": session.get("difficulty"),
             }
             finish_forfeit(self.bot.data, guild_id, interaction.user, game)
-            msg = "Quit. Streak wiped — start again with `/play`."
+            msg = "Quit. Your daily streak is unchanged."
 
         try:
             await end_activity_watch(self.bot, self.session_id, force=True)
@@ -6361,6 +6573,7 @@ class SudokuView(discord.ui.View):
                 return
 
             # 1) Award XP + sponges first
+            boost_kwargs: dict = {}
             if not game.get("rewarded"):
                 mode_n = normalize_game_mode(game.get("mode"))
                 if mode_n == "solo" or game.get("mode") == "play":
@@ -6386,6 +6599,7 @@ class SudokuView(discord.ui.View):
                         if outcome is not None:
                             coins = int(outcome.coins)
                             xp = int(outcome.xp)
+                            boost_kwargs = win_boost_caption_kwargs(outcome)
                         else:
                             coins = 0
                             xp = 0
@@ -6401,6 +6615,7 @@ class SudokuView(discord.ui.View):
                     )
                     coins = int(outcome.coins)
                     xp = int(outcome.xp)
+                    boost_kwargs = win_boost_caption_kwargs(outcome)
                 game["rewarded"] = True
                 try:
                     await persist_game(key, game)
@@ -6424,7 +6639,7 @@ class SudokuView(discord.ui.View):
                 )
             )
             caption = (
-                win_reward_caption(coins, xp)
+                win_reward_caption(coins, xp, **boost_kwargs)
                 if coins > 0 or xp > 0
                 else f"{BUBBLE} **Board complete!**"
             )
@@ -6500,6 +6715,7 @@ class SudokuView(discord.ui.View):
             guild_id = interaction.guild.id
             coins = 0
             xp = 0
+            boost_kwargs: dict = {}
             try:
                 if not game.get("rewarded"):
                     mode_n = normalize_game_mode(game.get("mode"))
@@ -6526,17 +6742,19 @@ class SudokuView(discord.ui.View):
                             if outcome is not None:
                                 coins = int(outcome.coins)
                                 xp = int(outcome.xp)
+                                boost_kwargs = win_boost_caption_kwargs(outcome)
                     else:
                         outcome = await finish_win_and_announce(
                             self.bot, guild_id, interaction.user, game
                         )
                         coins = int(outcome.coins)
                         xp = int(outcome.xp)
+                        boost_kwargs = win_boost_caption_kwargs(outcome)
                     game["rewarded"] = True
             except Exception as exc:  # noqa: BLE001
                 print(f"on_forfeit solved award failed: {exc}")
             caption = (
-                win_reward_caption(coins, xp)
+                win_reward_caption(coins, xp, **boost_kwargs)
                 if coins > 0 or xp > 0
                 else f"{BUBBLE} **Board complete!**"
             )
@@ -6574,7 +6792,7 @@ class SudokuView(discord.ui.View):
         elif mode == "daily":
             prompt = "Quit today's daily? This locks your attempt and resets your streak."
         else:
-            prompt = "Really quit this puzzle? Streak will reset."
+            prompt = "Really quit this puzzle? Your daily streak stays safe."
 
         await interaction.response.send_message(
             prompt,
@@ -6777,14 +6995,26 @@ def shop_page_embed(
     embed = paper_embed(f"{SPONGE} Krusty Shop · {tab_title}")
 
     boost_charges = int(stats.get("xp_boost_charges") or 0)
-    boost_str = f"🔮 **2x XP Boost:** {boost_charges} games active!" if boost_charges > 0 else "🔮 **Boost:** None active"
+    boost_str = (
+        f"🔮 **2x Boost:** {boost_charges} games"
+        if boost_charges > 0
+        else "🔮 **2x Boost:** none"
+    )
+    snack_charges = int(stats.get("krabby_snack_charges") or 0)
+    snack_str = f"🍟 **Snack:** {snack_charges}" if snack_charges > 0 else ""
+    spatula_charges = int(stats.get("golden_spatula_charges") or 0)
+    spatula_str = f"🥇 **Spatula:** {spatula_charges}" if spatula_charges > 0 else ""
+    gary_charges = int(stats.get("gary_wisdom_charges") or 0)
+    gary_str = f"🐌 **Gary:** {gary_charges}" if gary_charges > 0 else ""
     shields = int(stats.get("streak_shields") or 0)
     eq_title = SHOP_TITLES[stats.get("title")]["label"] if stats.get("title") in SHOP_TITLES else "Civilian"
+    extra_boosts = " · ".join(x for x in (snack_str, spatula_str, gary_str) if x)
 
     status_banner = (
         f"💰 **Pocket:** {format_sponges(stats.get('coins', 0))}\n"
-        f"{boost_str} · 🛡️ **Shields:** {shields}\n"
-        f"👑 **Title:** {eq_title} · 🎨 **Pins:** {len(owned_pin_emojis(stats))}\n"
+        f"{boost_str} · 🛡️ **Shields:** {shields}"
+        + (f"\n{extra_boosts}" if extra_boosts else "")
+        + f"\n👑 **Title:** {eq_title} · 🎨 **Pins:** {len(owned_pin_emojis(stats))}\n"
     )
 
     deal = daily_bundle_pin() if kind == "pins" else None
@@ -6822,9 +7052,22 @@ def shop_page_embed(
 
         detail = f"**{selected['label']}** ({shop_item_price_text(selected)} · {status})"
         if selected["id"] == "xp_boost":
-            detail += "\n⚡ *Grants +3 games of 2x XP & Sponges on win!*"
+            detail += (
+                "\n⚡ *Best all-rounder: 2× career XP **and** sponges on win (3 games).* "
+                "Use Snack or Spatula if you only want one."
+            )
         elif selected["id"] == "streak_shield":
-            detail += "\n🛡️ *Protects your daily streak if you miss a day!*"
+            detail += "\n🛡️ *Covers missed **daily** days only — challenges never reset your streak.*"
+        elif selected["id"] == "gary_wisdom":
+            detail += (
+                f"\n🐌 *{GARY_WISDOM_HINT_BONUS} free hints per game (no sponge cost) "
+                f"for {GARY_WISDOM_GAMES_PER_PURCHASE} games. "
+                f"Regular hints cost {format_sponges(HINT_SPONGE_COST)} each.*"
+            )
+        elif selected["id"] == "krabby_snack":
+            detail += "\n🍟 *+25% pocket sponges only — career XP unchanged (3 wins).*"
+        elif selected["id"] == "golden_spatula":
+            detail += "\n🥇 *+50% career XP only — sponges unchanged (3 wins).*"
         elif selected["kind"] == "title":
             sample = titled_header_line("Easy", selected.get("pin") or "Civilian", emoji=str(selected.get("emoji") or ""))
             detail += f"\nHeader flair: `{sample}`"
@@ -6941,7 +7184,9 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
             }
         stats["coins"] -= cost
         stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
-        stats["xp_boost_charges"] = int(stats.get("xp_boost_charges") or 0) + 3
+        stats["xp_boost_charges"] = (
+            int(stats.get("xp_boost_charges") or 0) + REWARD_BOOST_GAMES_PER_PURCHASE
+        )
         save_data(bot.data)
         return {
             "ok": True,
@@ -6951,6 +7196,87 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
             "message": (
                 f"Bought **🔮 Puff's Crystal Ball**! 🔮 **2x XP & Sponges active for next "
                 f"{stats['xp_boost_charges']} games!**"
+            ),
+        }
+
+    if tid == "gary_wisdom":
+        if stats["coins"] < cost:
+            return {
+                "ok": False,
+                "bought": False,
+                "message": (
+                    f"Need **{format_sponges(cost)}** "
+                    f"(you have {format_sponges(stats['coins'])})."
+                ),
+            }
+        stats["coins"] -= cost
+        stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
+        stats["gary_wisdom_charges"] = (
+            int(stats.get("gary_wisdom_charges") or 0) + GARY_WISDOM_GAMES_PER_PURCHASE
+        )
+        save_data(bot.data)
+        return {
+            "ok": True,
+            "bought": True,
+            "label": item["label"],
+            "cost": cost,
+            "message": (
+                f"Bought **{item['label']}**! **+{GARY_WISDOM_HINT_BONUS} hints** on your next "
+                f"game ({stats['gary_wisdom_charges']} queued)."
+            ),
+        }
+
+    if tid == "krabby_snack":
+        if stats["coins"] < cost:
+            return {
+                "ok": False,
+                "bought": False,
+                "message": (
+                    f"Need **{format_sponges(cost)}** "
+                    f"(you have {format_sponges(stats['coins'])})."
+                ),
+            }
+        stats["coins"] -= cost
+        stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
+        stats["krabby_snack_charges"] = (
+            int(stats.get("krabby_snack_charges") or 0) + REWARD_BOOST_GAMES_PER_PURCHASE
+        )
+        save_data(bot.data)
+        return {
+            "ok": True,
+            "bought": True,
+            "label": item["label"],
+            "cost": cost,
+            "message": (
+                f"Bought **{item['label']}**! **+25% sponges** on your next "
+                f"{stats['krabby_snack_charges']} wins."
+            ),
+        }
+
+    if tid == "golden_spatula":
+        if stats["coins"] < cost:
+            return {
+                "ok": False,
+                "bought": False,
+                "message": (
+                    f"Need **{format_sponges(cost)}** "
+                    f"(you have {format_sponges(stats['coins'])})."
+                ),
+            }
+        stats["coins"] -= cost
+        stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
+        stats["golden_spatula_charges"] = (
+            int(stats.get("golden_spatula_charges") or 0) + REWARD_BOOST_GAMES_PER_PURCHASE
+        )
+        save_data(bot.data)
+        return {
+            "ok": True,
+            "bought": True,
+            "label": item["label"],
+            "cost": cost,
+            "message": (
+                f"Bought **{item['label']}**! **+50% career XP** on your next "
+                f"{stats['golden_spatula_charges']} wins."
             ),
         }
 
@@ -8698,6 +9024,8 @@ async def help_cmd(interaction: discord.Interaction):
             f"Streak **+{STREAK_BONUS_PER}**/lvl · "
             f"Challenge win **×{CHALLENGE_WIN_MULT:g}** · "
             f"loss **{format_sponges(CHALLENGE_LOSER_COINS, signed=True)}** (sponges only)\n"
+            f"**Hints** cost **{format_sponges(HINT_SPONGE_COST)}** from pocket sponges "
+            f"(not career XP). **Gary's Wisdom** in `/shop` grants free hints.\n"
             f"{tiers}"
         ),
         inline=False,
@@ -9673,7 +10001,7 @@ async def cleargame_cmd(interaction: discord.Interaction):
         filled = int(session.get("filled") or 0)
         await interaction.response.send_message(
             f"Abandon this puzzle ({filled}/81)? It will be removed from `/watch`. "
-            "Your `/play` streak will reset.",
+            "Your daily streak is unchanged.",
             view=ConfirmQuitActivityPlayView(
                 session_id or daily_watch_session_id(guild_id, interaction.user.id),
                 bot,
@@ -9757,7 +10085,7 @@ async def quit_cmd(interaction: discord.Interaction):
         session.get("board") or session.get("solution")
     ):
         await interaction.response.send_message(
-            "Really quit this puzzle? Streak will reset.",
+            "Really quit this puzzle? Your daily streak stays safe.",
             view=ConfirmQuitActivityPlayView(session_id, bot),
             ephemeral=True,
         )
@@ -9779,7 +10107,7 @@ async def quit_cmd(interaction: discord.Interaction):
         if game.get("mode") == "daily":
             prompt = "Quit today's daily? This locks your attempt and resets your streak."
         else:
-            prompt = "Really quit this puzzle? Streak will reset."
+            prompt = "Really quit this puzzle? Your daily streak stays safe."
         await interaction.response.send_message(
             prompt,
             view=ConfirmQuitView(sk, bot, None),

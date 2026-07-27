@@ -8,7 +8,8 @@ import {
   startThcokuGame,
   isMusicEnabled,
   isSfxEnabled,
-  setMusicEnabled,
+  cycleMusicPreset,
+  getMusicPresetMeta,
   setSfxEnabled,
 } from "./game.js";
 import { pauseProceduralBgm, resumeProceduralBgm } from "./procedural-bgm.js";
@@ -271,15 +272,22 @@ function applyTheme(theme) {
   }
 }
 
-function applyMusic(enabled) {
-  setMusicEnabled(enabled);
+function applyMusicUi() {
   const btn = document.getElementById("music-toggle");
-  if (btn) {
-    btn.textContent = enabled ? "🌊" : "🌊";
-    btn.title = enabled ? "Música do oceano ligada (clica para desligar)" : "Música desligada (clica para ligar)";
-    btn.setAttribute("aria-pressed", enabled ? "false" : "true");
-    btn.classList.toggle("is-muted", !enabled);
+  if (!btn) return;
+  const enabled = isMusicEnabled();
+  const meta = getMusicPresetMeta();
+  if (!enabled || !meta) {
+    btn.textContent = "🔇";
+    btn.title = "Ocean ambience off — click to start (Calm lagoon)";
+    btn.setAttribute("aria-pressed", "true");
+    btn.classList.add("is-muted");
+    return;
   }
+  btn.textContent = meta.emoji;
+  btn.title = `${meta.label} — click for next ambience (or mute)`;
+  btn.setAttribute("aria-pressed", "false");
+  btn.classList.remove("is-muted");
 }
 
 function applySfx(enabled) {
@@ -295,7 +303,8 @@ function applySfx(enabled) {
 document.getElementById("music-toggle")?.addEventListener("click", (e) => {
   e.preventDefault();
   e.stopPropagation();
-  applyMusic(!isMusicEnabled());
+  cycleMusicPreset();
+  applyMusicUi();
 });
 
 document.getElementById("sfx-toggle")?.addEventListener("click", (e) => {
@@ -304,7 +313,7 @@ document.getElementById("sfx-toggle")?.addEventListener("click", (e) => {
   applySfx(!isSfxEnabled());
 });
 
-applyMusic(isMusicEnabled());
+applyMusicUi();
 applySfx(isSfxEnabled());
 
 document.addEventListener("visibilitychange", () => {
@@ -322,6 +331,9 @@ document.getElementById("theme-toggle")?.addEventListener("click", () => {
 function startGameOnce(cosmetics = null, gameOptions = {}) {
   if (gameStarted) {
     if (cosmetics && gameApi?.setCosmetics) gameApi.setCosmetics(cosmetics);
+    if (cosmetics && gameApi?.setPocketSponges) {
+      gameApi.setPocketSponges(cosmetics.pocketSponges);
+    }
     applyTheme(currentTheme);
     return gameApi;
   }
@@ -330,6 +342,8 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
   try {
     gameApi = startThcokuGame(canvas, {
       cosmetics: cosmetics || { title: null, pins: [], seed: 1 },
+      pocketSponges: Number(cosmetics?.pocketSponges) || 0,
+      hintSpongeCost: Number(cosmetics?.hintSpongeCost) || 15,
       autoStart: gameOptions.autoStart !== false,
       sessionKind: gameOptions.sessionKind || null,
       dailyDate: gameOptions.dailyDate || null,
@@ -382,6 +396,9 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
           if (!res?.ok) {
             return { ok: false, ...(typeof data === "object" ? data : {}) };
           }
+          if (gameApi?.setPocketSponges && data.pocket != null) {
+            gameApi.setPocketSponges(data.pocket);
+          }
           return data;
         } catch (err) {
           console.warn("[Thcoku] hint request failed", err);
@@ -413,6 +430,8 @@ async function loadCosmetics() {
       title: data.title || null,
       pins: Array.isArray(data.pins) ? data.pins : [],
       seed: Number(data.user_id) || Date.now(),
+      pocketSponges: Number(data.coins) || 0,
+      hintSpongeCost: Number(data.hint_sponge_cost) || 15,
     };
   } catch (err) {
     console.warn("[Thcoku] profile load failed", err);
@@ -1222,8 +1241,9 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boa
     const xp = data.xp ?? 0;
     const coins = data.coins ?? 0;
     const streak = data.streak ?? "?";
+    const boostNote = formatWinBoostNote(data);
     showWinToast(
-      `Order up! +${xp} XP · +${coins} sponges · streak ${streak} · ${shown}${chatNote}`
+      `Order up! +${xp} XP · +${coins} sponges · streak ${streak} · ${shown}${boostNote}${chatNote}`
     );
     return data;
   } catch (err) {
@@ -1232,6 +1252,28 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boa
     return null;
   }
 };
+
+function formatWinBoostNote(data) {
+  const parts = [];
+  if (data.xp_boost_used) {
+    const left =
+      data.xp_boost_remaining != null ? ` (${data.xp_boost_remaining} left)` : "";
+    parts.push(`🔮 2×${left}`);
+  }
+  if (data.krabby_snack_used) {
+    const left =
+      data.krabby_snack_remaining != null ? ` (${data.krabby_snack_remaining} left)` : "";
+    parts.push(`🍟 +25% sponges${left}`);
+  }
+  if (data.golden_spatula_used) {
+    const left =
+      data.golden_spatula_remaining != null
+        ? ` (${data.golden_spatula_remaining} left)`
+        : "";
+    parts.push(`🥇 +50% XP${left}`);
+  }
+  return parts.length ? ` · ${parts.join(" · ")}` : "";
+}
 
 function finishBoot(auth, accessToken, { inDiscord }) {
   window.__DISCORD_AUTH__ = auth;

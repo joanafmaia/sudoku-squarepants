@@ -394,6 +394,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
     from bot import (
         board_to_file,
         build_activity_win_embed,
+        win_boost_caption_kwargs,
         equipped_title_id,
         guild_stats,
         owned_pin_emojis,
@@ -627,6 +628,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                             streak=int(stats.get("streak") or 0),
                             is_daily=True,
                             user_stats_dict=stats,
+                            **win_boost_caption_kwargs(outcome),
                         )
                         await channel.send(
                             embed=announce_embed,
@@ -665,6 +667,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                 "elapsed": elapsed,
                 "posted": posted,
                 "post_error": post_error,
+                **win_boost_caption_kwargs(outcome),
             }
 
         from bot import award_play_win
@@ -759,6 +762,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                         xp=xp,
                         streak=int(stats["streak"]),
                         user_stats_dict=stats,
+                        **win_boost_caption_kwargs(outcome),
                     )
                     await channel.send(embed=embed, file=file)
                     posted = True
@@ -790,6 +794,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
             "guild_id": guild_id,
             "user_id": str(uid),
             "posted": posted,
+            **win_boost_caption_kwargs(outcome),
         }
         if post_error and not posted:
             result["post_error"] = post_error
@@ -812,8 +817,10 @@ def _play_puzzle_fingerprint(
     return play_puzzle_fingerprint(given, board=board, solution=solution)
 
 
-def _hints_max_for_session(session_kind: str | None) -> int:
-    return MAX_HINTS_DAILY if session_kind == "daily" else MAX_HINTS_PLAY
+def _hints_max_for_session(session_kind: str | None, doc: dict | None = None) -> int:
+    base = MAX_HINTS_DAILY if session_kind == "daily" else MAX_HINTS_PLAY
+    bonus = int((doc or {}).get("gary_wisdom_bonus") or 0)
+    return base + bonus
 
 
 def _client_activity_session(doc: dict, *, strip_solution: bool = True) -> dict:
@@ -821,6 +828,7 @@ def _client_activity_session(doc: dict, *, strip_solution: bool = True) -> dict:
     from bot import normalize_solution
 
     session_kind = doc.get("session_kind") or "play"
+    from bot import HINT_SPONGE_COST, hint_gary_free_remaining
     started = float(doc.get("started_at") or 0)
     if started > 0:
         elapsed_display = max(0, int(time.time() - started))
@@ -838,7 +846,11 @@ def _client_activity_session(doc: dict, *, strip_solution: bool = True) -> dict:
         "daily_date": doc.get("daily_date"),
         "won_at": doc.get("won_at"),
         "hints_used": int(doc.get("hints_used") or 0),
-        "hints_max": _hints_max_for_session(session_kind),
+        "hints_max": _hints_max_for_session(session_kind, doc),
+        "hints_gary_used": int(doc.get("hints_gary_used") or 0),
+        "gary_wisdom_bonus": int(doc.get("gary_wisdom_bonus") or 0),
+        "gary_free_left": hint_gary_free_remaining(doc),
+        "hint_sponge_cost": HINT_SPONGE_COST,
     }
     if started > 0:
         payload["started_at"] = started
@@ -1228,6 +1240,7 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
     daily_date = None
     started_at = time.time()
     accepting_client_puzzle = True
+    same_puzzle = False
     if existing:
         session_kind = existing.get("session_kind") or "play"
         daily_date = existing.get("daily_date")
@@ -1304,7 +1317,21 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         "started_at": started_at,
         "last_move_at": time.time(),
         "hints_used": hints_used,
+        "hints_gary_used": int(existing.get("hints_gary_used") or 0) if existing else 0,
     }
+    try:
+        gid_int = int(guild_id) if str(guild_id) not in ("", "0") else 0
+    except ValueError:
+        gid_int = 0
+    if gid_int:
+        from bot import attach_gary_wisdom_to_session, guild_stats, save_data, user_stats
+
+        gstats = guild_stats(bot.data, gid_int)
+        pstats = user_stats(gstats, uid)
+        attach_gary_wisdom_to_session(
+            pstats, doc, existing=existing, same_puzzle=same_puzzle
+        )
+        save_data(bot.data)
     # Keep a known channel_id — never wipe it with null from a save without SDK channel.
     if channel_id_raw:
         doc["channel_id"] = str(channel_id_raw)
@@ -1427,10 +1454,15 @@ async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict
 
 async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
     from bot import (
+        apply_hint_charge,
         ensure_challenge_game_for_user,
         games,
+        guild_stats,
+        hint_gary_free_remaining,
         match_store,
         normalize_solution,
+        save_data,
+        user_stats,
     )
 
     uid = int(user["id"])
@@ -1442,8 +1474,12 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
     col = int(body.get("col") if body.get("col") is not None else -1)
     board = _normalize_activity_board(body.get("board"))
     game: dict | None = None
+    session: dict | None = None
+    persist_hint: str | None = None
 
     ch_key = await ensure_challenge_game_for_user(bot, uid)
+    stats: dict | None = None
+    gid_key = 0
     if ch_key:
         game = games.get(ch_key)
         if not game or board is None:
@@ -1452,8 +1488,19 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
         given = _normalize_activity_given(game.get("given"), board)
         session_kind = "challenge"
         hints_used = int(game.get("hints_used") or 0)
-        max_hints = MAX_HINTS_PLAY
+        max_hints = MAX_HINTS_PLAY + int(game.get("gary_wisdom_bonus") or 0)
         persist_hint = None
+        try:
+            gid_key = int(game.get("guild_id") or 0)
+        except (TypeError, ValueError):
+            gid_key = 0
+        if gid_key == 0:
+            try:
+                gid_key = int(guild_id) if str(guild_id) not in ("", "0") else 0
+            except ValueError:
+                gid_key = 0
+        if gid_key:
+            stats = user_stats(guild_stats(bot.data, gid_key), uid)
     else:
         session, persist_hint = await _lookup_activity_session(bot, guild_id, uid)
         if not session or board is None:
@@ -1466,7 +1513,24 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
             return {"ok": False, "error": "no_session"}
         session_kind = session.get("session_kind") or "play"
         hints_used = int(session.get("hints_used") or 0)
-        max_hints = _hints_max_for_session(session_kind)
+        max_hints = _hints_max_for_session(session_kind, session)
+        try:
+            gid_key = int(session.get("guild_id") or 0)
+        except (TypeError, ValueError):
+            gid_key = 0
+        if gid_key == 0:
+            try:
+                gid_key = int(guild_id) if str(guild_id) not in ("", "0") else 0
+            except ValueError:
+                gid_key = 0
+        if gid_key:
+            stats = user_stats(guild_stats(bot.data, gid_key), uid)
+
+    charge_container: dict = {}
+    if ch_key and game is not None:
+        charge_container = game
+    elif session is not None:
+        charge_container = session
 
     async with _activity_win_lock(persist_hint or f"hint:{uid}"):
         # Re-check hint budget under lock (TOCTOU).
@@ -1474,6 +1538,7 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
             fresh = await match_store.get_activity_session(persist_hint)
             if fresh:
                 hints_used = int(fresh.get("hints_used") or 0)
+                charge_container = fresh
         elif ch_key and game is not None:
             hints_used = int(game.get("hints_used") or 0)
 
@@ -1483,11 +1548,32 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
                 "error": "hints_exhausted",
                 "hints_used": hints_used,
                 "hints_max": max_hints,
+                "gary_free_left": hint_gary_free_remaining(charge_container),
             }
 
         picked = _pick_hint_cell(board, given, solution, row, col)
         if picked is None:
             return {"ok": False, "error": "no_hint_available"}
+
+        if stats is None:
+            return {
+                "ok": False,
+                "error": "no_guild",
+                "message": "Join a server to use hints.",
+            }
+
+        charge = apply_hint_charge(stats, charge_container)
+        if not charge.get("ok"):
+            return {
+                "ok": False,
+                "error": charge.get("error") or "insufficient_sponges",
+                "hint_cost": int(charge.get("cost") or 0),
+                "pocket": int(charge.get("pocket") or 0),
+                "gary_free_left": int(charge.get("gary_free_left") or 0),
+                "hints_used": hints_used,
+                "hints_max": max_hints,
+            }
+        save_data(bot.data)
 
         target_r, target_c = picked
         value = int(solution[target_r][target_c])
@@ -1509,6 +1595,7 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
                 persist_hint,
                 {
                     "hints_used": hints_used,
+                    "hints_gary_used": int(charge_container.get("hints_gary_used") or 0),
                     "board": board,
                     "filled": filled,
                     "last_move_at": time.time(),
@@ -1522,6 +1609,11 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
         "value": value,
         "hints_used": hints_used,
         "hints_max": max_hints,
+        "hints_gary_used": int(charge_container.get("hints_gary_used") or 0),
+        "gary_free_left": hint_gary_free_remaining(charge_container),
+        "hint_cost": int(charge.get("cost") or 0),
+        "paid_with": charge.get("paid_with"),
+        "pocket": int(charge.get("pocket") or 0),
         "session_kind": session_kind,
     }
 
@@ -2127,6 +2219,7 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
             try:
                 from bot import (
                     SHOP_TITLES,
+                    HINT_SPONGE_COST,
                     equipped_title_id,
                     evaluate_user_achievements,
                     guild_stats,
@@ -2162,6 +2255,9 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                         "coins": int(stats.get("coins") or 0),
                         "badges": badges,
                         "streak_shields": int(stats.get("streak_shields") or 0),
+                        "hint_sponge_cost": HINT_SPONGE_COST,
+                        "gary_wisdom_charges": int(stats.get("gary_wisdom_charges") or 0),
+                        "xp_boost_charges": int(stats.get("xp_boost_charges") or 0),
                     },
                 )
             except Exception as exc:  # noqa: BLE001

@@ -204,8 +204,11 @@ function roundRect(ctx, x, y, w, h, r) {
 import {
   armProceduralBgm,
   configureProceduralBgm,
+  getOceanPresetCount,
+  getOceanPresetMeta,
   pauseProceduralBgm,
   resumeProceduralBgm,
+  setOceanPreset,
   stopProceduralBgm,
   syncProceduralBgmEnabled,
 } from "./procedural-bgm.js";
@@ -226,27 +229,83 @@ function readStoredBool(key, fallback) {
   return fallback;
 }
 
-function readInitialAudioPrefs() {
+function readInitialMusicPreset() {
   try {
+    const stored = localStorage.getItem(MUSIC_STORAGE_KEY);
+    if (stored === "off" || stored === "false") return -1;
+    if (stored === "on" || stored === "true") return 0;
     const legacy = localStorage.getItem(LEGACY_SOUND_KEY);
-    if (legacy === "off" || legacy === "0") {
-      return { music: false, sfx: false };
-    }
+    if (legacy === "off" || legacy === "0") return -1;
+    if (stored == null || stored === "") return 0;
+    const n = Number.parseInt(String(stored), 10);
+    if (Number.isFinite(n) && n >= 0 && n < getOceanPresetCount()) return n;
   } catch {
     /* localStorage disabled */
   }
+  return 0;
+}
+
+function readInitialAudioPrefs() {
   return {
-    music: readStoredBool(MUSIC_STORAGE_KEY, true),
+    musicPreset: readInitialMusicPreset(),
     sfx: readStoredBool(SFX_STORAGE_KEY, true),
   };
 }
 
 const initialAudio = readInitialAudioPrefs();
-let musicEnabled = initialAudio.music;
+let musicPreset = initialAudio.musicPreset;
 let sfxEnabled = initialAudio.sfx;
 
 export function isMusicEnabled() {
-  return musicEnabled;
+  return musicPreset >= 0;
+}
+
+export function getMusicPreset() {
+  return musicPreset;
+}
+
+export function getMusicPresetMeta() {
+  if (musicPreset < 0) return null;
+  return getOceanPresetMeta(musicPreset);
+}
+
+export function cycleMusicPreset() {
+  const count = getOceanPresetCount();
+  if (musicPreset < 0) {
+    setMusicPreset(0);
+    return;
+  }
+  if (musicPreset >= count - 1) {
+    setMusicPreset(-1);
+    return;
+  }
+  setMusicPreset(musicPreset + 1);
+}
+
+export function setMusicPreset(index) {
+  const count = getOceanPresetCount();
+  if (index == null || index < 0) {
+    musicPreset = -1;
+    try {
+      localStorage.setItem(MUSIC_STORAGE_KEY, "off");
+    } catch {
+      /* localStorage disabled */
+    }
+    syncProceduralBgmEnabled(false);
+    pauseProceduralBgm();
+    return;
+  }
+  musicPreset = Math.max(0, Math.min(count - 1, Number(index) || 0));
+  try {
+    localStorage.setItem(MUSIC_STORAGE_KEY, String(musicPreset));
+  } catch {
+    /* localStorage disabled */
+  }
+  setOceanPreset(musicPreset);
+  getAudioCtx();
+  syncProceduralBgmEnabled(true);
+  ensureBgmStarted();
+  resumeProceduralBgm();
 }
 
 export function isSfxEnabled() {
@@ -254,20 +313,11 @@ export function isSfxEnabled() {
 }
 
 export function setMusicEnabled(enabled) {
-  musicEnabled = Boolean(enabled);
-  try {
-    localStorage.setItem(MUSIC_STORAGE_KEY, musicEnabled ? "on" : "off");
-  } catch {
-    /* localStorage disabled */
-  }
-  if (musicEnabled) {
-    getAudioCtx();
-    syncProceduralBgmEnabled(true);
-    ensureBgmStarted();
-    resumeProceduralBgm();
+  if (enabled) {
+    if (musicPreset < 0) setMusicPreset(0);
+    else setMusicPreset(musicPreset);
   } else {
-    syncProceduralBgmEnabled(false);
-    pauseProceduralBgm();
+    setMusicPreset(-1);
   }
 }
 
@@ -294,7 +344,8 @@ function getAudioCtx() {
 
 configureProceduralBgm({
   getCtx: getAudioCtx,
-  isEnabled: () => musicEnabled,
+  isEnabled: () => musicPreset >= 0,
+  initialPreset: musicPreset >= 0 ? musicPreset : 0,
 });
 
 function ensureBgmStarted() {
@@ -306,7 +357,7 @@ export function playFx(type) {
   try {
     const ctx = getAudioCtx();
     if (!ctx) return;
-    if (musicEnabled) ensureBgmStarted();
+    if (musicPreset >= 0) ensureBgmStarted();
     const now = ctx.currentTime;
 
     if (type === "pop") {
@@ -380,11 +431,11 @@ function ensureControls(shell) {
     <div class="ctrl-actions ctrl-actions-edit" role="group" aria-label="Editing Actions">
       <button type="button" data-action="undo" id="ctrl-undo" title="Undo move">↩ Undo</button>
       <button type="button" data-action="clear" class="ctrl-clear">Clear</button>
-      <button type="button" data-action="hint" id="ctrl-hint" title="Get a hint">💡 Hint</button>
+      <button type="button" data-action="pencil" id="ctrl-pencil">Notes</button>
     </div>
     <div class="ctrl-actions ctrl-actions-meta" id="ctrl-meta" role="group" aria-label="Game Setup Actions">
       <button type="button" data-action="quit" id="ctrl-quit" class="btn-danger">🚪 Quit</button>
-      <button type="button" data-action="pencil" id="ctrl-pencil">Notes</button>
+      <button type="button" data-action="hint" id="ctrl-hint" title="Get a hint">💡 Hint</button>
       <button type="button" data-action="diff" id="ctrl-diff">Medium</button>
     </div>
   `;
@@ -466,6 +517,10 @@ export function startThcokuGame(canvas, options = {}) {
     undoStack: [],
     hintsUsed: 0,
     hintsMax: options.sessionKind === "daily" ? 3 : 10,
+    hintsGaryUsed: 0,
+    garyWisdomBonus: 0,
+    hintSpongeCost: Number(options.hintSpongeCost) || 15,
+    pocketSponges: Number(options.pocketSponges) || 0,
     serverHints: false,
     spectatorMode: Boolean(options.spectatorMode),
     spectatorName: "",
@@ -652,6 +707,14 @@ export function startThcokuGame(canvas, options = {}) {
         : state.sessionKind === "daily"
           ? 3
           : 10;
+    state.hintsGaryUsed = Number(snap.hints_gary_used) || 0;
+    state.garyWisdomBonus = Number(snap.gary_wisdom_bonus) || 0;
+    if (snap.hint_sponge_cost != null) {
+      state.hintSpongeCost = Number(snap.hint_sponge_cost) || 15;
+    }
+    if (snap.pocket != null) {
+      state.pocketSponges = Number(snap.pocket) || 0;
+    }
     state.difficulty = difficultyKeyFromLabel(snap.difficulty || DEFAULT_DIFFICULTY);
     const idx = DIFF_KEYS.indexOf(state.difficulty);
     state.diffIndex = snap.diff_index != null ? Number(snap.diff_index) : idx >= 0 ? idx : 0;
@@ -720,6 +783,34 @@ export function startThcokuGame(canvas, options = {}) {
     return k === "play" || k === "daily" || k === "challenge";
   }
 
+  function syncHintButton() {
+    const hintBtn = controls.querySelector("#ctrl-hint");
+    if (!hintBtn || state.spectatorMode) return;
+    const garyFree = Math.max(0, state.garyWisdomBonus - state.hintsGaryUsed);
+    const exhausted = state.hintsUsed >= state.hintsMax;
+    if (exhausted) {
+      hintBtn.textContent = `💡 Hint (${state.hintsUsed}/${state.hintsMax})`;
+      hintBtn.title = "No hints left this puzzle";
+      hintBtn.disabled = true;
+      hintBtn.style.opacity = "0.45";
+      return;
+    }
+    hintBtn.disabled = false;
+    hintBtn.style.opacity = "";
+    if (garyFree > 0) {
+      hintBtn.textContent = `💡 Hint (free ×${garyFree})`;
+      hintBtn.title = `Gary's Wisdom — ${garyFree} free hint(s), no sponge cost`;
+    } else {
+      const cost = state.hintSpongeCost;
+      const pocket = state.pocketSponges;
+      hintBtn.textContent = `💡 Hint (${cost} 🧽)`;
+      hintBtn.title = `Costs ${cost} pocket sponges (not career XP) · ${pocket} in pocket`;
+      if (pocket < cost) {
+        hintBtn.style.opacity = "0.65";
+      }
+    }
+  }
+
   function syncControls() {
     if (diffBtn) diffBtn.textContent = difficultyLabel(DIFF_KEYS[state.diffIndex]);
     if (pencilBtn) {
@@ -758,6 +849,7 @@ export function startThcokuGame(canvas, options = {}) {
         btn.style.opacity = "";
       }
     });
+    syncHintButton();
   }
 
   function spawnBubbles() {
@@ -957,12 +1049,26 @@ export function startThcokuGame(canvas, options = {}) {
           board: state.board,
         });
         if (!result?.ok) {
-          state.status =
-            result?.error === "hints_exhausted"
-              ? "No hints left!"
-              : "Hint unavailable — try again.";
+          if (result?.error === "insufficient_sponges") {
+            const cost = Number(result.hint_cost) || state.hintSpongeCost;
+            const pocket = Number(result.pocket ?? state.pocketSponges);
+            state.pocketSponges = pocket;
+            state.status = `Need ${cost} sponges for a hint (${pocket} in pocket) — win puzzles or buy Gary's Wisdom`;
+          } else {
+            state.status =
+              result?.error === "hints_exhausted"
+                ? "No hints left!"
+                : "Hint unavailable — try again.";
+          }
           if (result?.hints_used != null) state.hintsUsed = Number(result.hints_used);
           if (result?.hints_max != null) state.hintsMax = Number(result.hints_max);
+          if (result?.hints_gary_used != null) {
+            state.hintsGaryUsed = Number(result.hints_gary_used);
+          }
+          if (result?.gary_free_left != null) {
+            state.garyWisdomBonus = state.hintsGaryUsed + Number(result.gary_free_left);
+          }
+          syncHintButton();
           draw();
           return;
         }
@@ -971,13 +1077,24 @@ export function startThcokuGame(canvas, options = {}) {
         const correctVal = Number(result.value);
         state.hintsUsed = Number(result.hints_used) || state.hintsUsed + 1;
         if (result.hints_max != null) state.hintsMax = Number(result.hints_max);
+        if (result.hints_gary_used != null) {
+          state.hintsGaryUsed = Number(result.hints_gary_used);
+        }
+        if (result.pocket != null) state.pocketSponges = Number(result.pocket);
+        const costNote =
+          result.paid_with === "gary"
+            ? " · free (Gary)"
+            : Number(result.hint_cost) > 0
+              ? ` · −${result.hint_cost} 🧽`
+              : "";
         saveUndoState();
         state.selected = [targetR, targetC];
         setCellValue(state.board, targetR, targetC, correctVal);
         clearPencilDigitPeers(state.board, targetR, targetC, correctVal);
         state.flashCell = [targetR, targetC];
         state.flashUntil = Date.now() + 300;
-        state.status = `Hint applied! 💡 (${correctVal}) · ${state.hintsUsed}/${state.hintsMax}`;
+        state.status = `Hint applied! 💡 (${correctVal}) · ${state.hintsUsed}/${state.hintsMax}${costNote}`;
+        syncHintButton();
         playFx("hint");
         if (!maybeCelebrateAfterMove()) {
           draw();
@@ -1455,7 +1572,7 @@ export function startThcokuGame(canvas, options = {}) {
 
   canvas.addEventListener("pointerdown", (evt) => {
     getAudioCtx();
-    if (musicEnabled) ensureBgmStarted();
+    if (musicPreset >= 0) ensureBgmStarted();
     const { x, y } = canvasPos(evt);
     handleBoardPointer(x, y);
   });
@@ -1553,6 +1670,10 @@ export function startThcokuGame(canvas, options = {}) {
     place,
     draw,
     setCosmetics,
+    setPocketSponges(n) {
+      state.pocketSponges = Number(n) || 0;
+      syncHintButton();
+    },
     setTheme,
     getSnapshot,
     getStartSnapshot,
