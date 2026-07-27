@@ -10,6 +10,7 @@ import {
   isSfxEnabled,
   cycleMusicPreset,
   getMusicPresetMeta,
+  setMusicEnabled,
   setSfxEnabled,
 } from "./game.js";
 import { pauseProceduralBgm, resumeProceduralBgm } from "./procedural-bgm.js";
@@ -272,49 +273,94 @@ function applyTheme(theme) {
   }
 }
 
+const MUSIC_PRESET_HOLD_MS = 500;
+
 function applyMusicUi() {
   const btn = document.getElementById("music-toggle");
   if (!btn) return;
   const enabled = isMusicEnabled();
   const meta = getMusicPresetMeta();
-  if (!enabled || !meta) {
-    btn.textContent = "🔇";
-    btn.title = "Ocean ambience off — click to start (Calm lagoon)";
+  if (!enabled) {
+    btn.textContent = "🔕";
+    btn.title = "Música desligada — clica para ligar";
     btn.setAttribute("aria-pressed", "true");
+    btn.setAttribute("aria-label", "Música desligada");
     btn.classList.add("is-muted");
     return;
   }
-  btn.textContent = meta.emoji;
-  btn.title = `${meta.label} — click for next ambience (or mute)`;
+  btn.textContent = meta?.emoji || "🌊";
+  btn.title = `Música ligada (${meta?.label || "oceano"}) — clica para desligar · mantém premido para mudar ambiência`;
   btn.setAttribute("aria-pressed", "false");
+  btn.setAttribute("aria-label", "Música ligada");
   btn.classList.remove("is-muted");
 }
 
-function applySfx(enabled) {
-  setSfxEnabled(enabled);
+function applySfxUi(enabled) {
   const btn = document.getElementById("sfx-toggle");
-  if (btn) {
-    btn.textContent = enabled ? "🔊" : "🔇";
-    btn.title = enabled ? "Sons do jogo ligados (clica para desligar)" : "Sons desligados (clica para ligar)";
-    btn.setAttribute("aria-pressed", enabled ? "false" : "true");
-  }
+  if (!btn) return;
+  btn.textContent = enabled ? "🔊" : "🔇";
+  btn.title = enabled
+    ? "Sons do jogo ligados — clica para desligar"
+    : "Sons do jogo desligados — clica para ligar";
+  btn.setAttribute("aria-pressed", enabled ? "false" : "true");
+  btn.setAttribute("aria-label", enabled ? "Sons ligados" : "Sons desligados");
+  btn.classList.toggle("is-muted", !enabled);
 }
 
-document.getElementById("music-toggle")?.addEventListener("click", (e) => {
-  e.preventDefault();
-  e.stopPropagation();
-  cycleMusicPreset();
-  applyMusicUi();
-});
+function bindMusicToggle() {
+  const btn = document.getElementById("music-toggle");
+  if (!btn) return;
+  let holdTimer = null;
+  let longPress = false;
+
+  const clearHold = () => {
+    if (holdTimer) {
+      clearTimeout(holdTimer);
+      holdTimer = null;
+    }
+  };
+
+  btn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    longPress = false;
+    clearHold();
+    holdTimer = setTimeout(() => {
+      longPress = true;
+      if (isMusicEnabled()) {
+        cycleMusicPreset();
+        applyMusicUi();
+      }
+    }, MUSIC_PRESET_HOLD_MS);
+  });
+
+  btn.addEventListener("pointerup", clearHold);
+  btn.addEventListener("pointercancel", clearHold);
+  btn.addEventListener("pointerleave", clearHold);
+
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (longPress) {
+      longPress = false;
+      return;
+    }
+    setMusicEnabled(!isMusicEnabled());
+    applyMusicUi();
+  });
+}
+
+bindMusicToggle();
 
 document.getElementById("sfx-toggle")?.addEventListener("click", (e) => {
   e.preventDefault();
   e.stopPropagation();
-  applySfx(!isSfxEnabled());
+  const next = !isSfxEnabled();
+  setSfxEnabled(next);
+  applySfxUi(next);
 });
 
 applyMusicUi();
-applySfx(isSfxEnabled());
+applySfxUi(isSfxEnabled());
 
 document.addEventListener("visibilitychange", () => {
   if (!isMusicEnabled()) return;

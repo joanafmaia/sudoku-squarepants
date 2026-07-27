@@ -214,6 +214,8 @@ import {
 } from "./procedural-bgm.js";
 
 let audioCtx = null;
+const MUSIC_ENABLED_KEY = "thcoku_music_on";
+const MUSIC_PRESET_KEY = "thcoku_music_preset";
 const MUSIC_STORAGE_KEY = "thcoku_music";
 const SFX_STORAGE_KEY = "thcoku_sfx";
 const LEGACY_SOUND_KEY = "thcoku_sound";
@@ -229,35 +231,70 @@ function readStoredBool(key, fallback) {
   return fallback;
 }
 
-function readInitialMusicPreset() {
+function clampMusicPreset(index) {
+  const count = getOceanPresetCount();
+  return Math.max(0, Math.min(count - 1, Number(index) || 0));
+}
+
+function persistMusicPrefs() {
   try {
-    const stored = localStorage.getItem(MUSIC_STORAGE_KEY);
-    if (stored === "off" || stored === "false") return -1;
-    if (stored === "on" || stored === "true") return 0;
-    const legacy = localStorage.getItem(LEGACY_SOUND_KEY);
-    if (legacy === "off" || legacy === "0") return -1;
-    if (stored == null || stored === "") return 0;
-    const n = Number.parseInt(String(stored), 10);
-    if (Number.isFinite(n) && n >= 0 && n < getOceanPresetCount()) return n;
+    localStorage.setItem(MUSIC_ENABLED_KEY, musicEnabled ? "on" : "off");
+    localStorage.setItem(MUSIC_PRESET_KEY, String(musicPreset));
+    localStorage.setItem(MUSIC_STORAGE_KEY, musicEnabled ? String(musicPreset) : "off");
   } catch {
     /* localStorage disabled */
   }
-  return 0;
+}
+
+function readInitialMusicPrefs() {
+  try {
+    const enabledStored = localStorage.getItem(MUSIC_ENABLED_KEY);
+    const presetStored = localStorage.getItem(MUSIC_PRESET_KEY);
+    if (enabledStored === "on" || enabledStored === "off") {
+      return {
+        enabled: enabledStored === "on",
+        preset: clampMusicPreset(presetStored ?? "0"),
+      };
+    }
+
+    const legacy = localStorage.getItem(MUSIC_STORAGE_KEY);
+    if (legacy === "off" || legacy === "false") {
+      return { enabled: false, preset: clampMusicPreset(presetStored ?? "0") };
+    }
+    if (legacy === "on" || legacy === "true") return { enabled: true, preset: 0 };
+    const legacySound = localStorage.getItem(LEGACY_SOUND_KEY);
+    if (legacySound === "off" || legacySound === "0") {
+      return { enabled: false, preset: clampMusicPreset(presetStored ?? "0") };
+    }
+    if (legacy == null || legacy === "") {
+      return { enabled: false, preset: clampMusicPreset(presetStored ?? "0") };
+    }
+    const n = Number.parseInt(String(legacy), 10);
+    if (Number.isFinite(n) && n >= 0) {
+      return { enabled: true, preset: clampMusicPreset(n) };
+    }
+  } catch {
+    /* localStorage disabled */
+  }
+  return { enabled: false, preset: 0 };
 }
 
 function readInitialAudioPrefs() {
+  const music = readInitialMusicPrefs();
   return {
-    musicPreset: readInitialMusicPreset(),
+    musicEnabled: music.enabled,
+    musicPreset: music.preset,
     sfx: readStoredBool(SFX_STORAGE_KEY, true),
   };
 }
 
 const initialAudio = readInitialAudioPrefs();
+let musicEnabled = initialAudio.musicEnabled;
 let musicPreset = initialAudio.musicPreset;
 let sfxEnabled = initialAudio.sfx;
 
 export function isMusicEnabled() {
-  return musicPreset >= 0;
+  return musicEnabled;
 }
 
 export function getMusicPreset() {
@@ -265,41 +302,27 @@ export function getMusicPreset() {
 }
 
 export function getMusicPresetMeta() {
-  if (musicPreset < 0) return null;
   return getOceanPresetMeta(musicPreset);
 }
 
 export function cycleMusicPreset() {
+  if (!musicEnabled) return;
   const count = getOceanPresetCount();
-  if (musicPreset < 0) {
-    setMusicPreset(0);
-    return;
-  }
-  if (musicPreset >= count - 1) {
-    setMusicPreset(-1);
-    return;
-  }
-  setMusicPreset(musicPreset + 1);
+  musicPreset = (musicPreset + 1) % count;
+  persistMusicPrefs();
+  setOceanPreset(musicPreset);
+  getAudioCtx();
+  syncProceduralBgmEnabled(true);
+  ensureBgmStarted();
+  resumeProceduralBgm();
 }
 
-export function setMusicPreset(index) {
-  const count = getOceanPresetCount();
-  if (index == null || index < 0) {
-    musicPreset = -1;
-    try {
-      localStorage.setItem(MUSIC_STORAGE_KEY, "off");
-    } catch {
-      /* localStorage disabled */
-    }
+function applyMusicPlayback() {
+  if (!musicEnabled) {
     syncProceduralBgmEnabled(false);
     pauseProceduralBgm();
+    maybeSuspendAudioCtx();
     return;
-  }
-  musicPreset = Math.max(0, Math.min(count - 1, Number(index) || 0));
-  try {
-    localStorage.setItem(MUSIC_STORAGE_KEY, String(musicPreset));
-  } catch {
-    /* localStorage disabled */
   }
   setOceanPreset(musicPreset);
   getAudioCtx();
@@ -308,17 +331,14 @@ export function setMusicPreset(index) {
   resumeProceduralBgm();
 }
 
-export function isSfxEnabled() {
-  return sfxEnabled;
+export function setMusicEnabled(enabled) {
+  musicEnabled = Boolean(enabled);
+  persistMusicPrefs();
+  applyMusicPlayback();
 }
 
-export function setMusicEnabled(enabled) {
-  if (enabled) {
-    if (musicPreset < 0) setMusicPreset(0);
-    else setMusicPreset(musicPreset);
-  } else {
-    setMusicPreset(-1);
-  }
+export function isSfxEnabled() {
+  return sfxEnabled;
 }
 
 export function setSfxEnabled(enabled) {
@@ -329,6 +349,14 @@ export function setSfxEnabled(enabled) {
     /* localStorage disabled */
   }
   if (sfxEnabled) getAudioCtx();
+  else maybeSuspendAudioCtx();
+}
+
+function maybeSuspendAudioCtx() {
+  if (musicEnabled || sfxEnabled) return;
+  if (audioCtx?.state === "running") {
+    audioCtx.suspend().catch(() => { });
+  }
 }
 
 function getAudioCtx() {
@@ -344,8 +372,8 @@ function getAudioCtx() {
 
 configureProceduralBgm({
   getCtx: getAudioCtx,
-  isEnabled: () => musicPreset >= 0,
-  initialPreset: musicPreset >= 0 ? musicPreset : 0,
+  isEnabled: () => musicEnabled,
+  initialPreset: musicPreset,
 });
 
 function ensureBgmStarted() {
@@ -357,7 +385,7 @@ export function playFx(type) {
   try {
     const ctx = getAudioCtx();
     if (!ctx) return;
-    if (musicPreset >= 0) ensureBgmStarted();
+    if (musicEnabled) ensureBgmStarted();
     const now = ctx.currentTime;
 
     if (type === "pop") {
@@ -1572,7 +1600,7 @@ export function startThcokuGame(canvas, options = {}) {
 
   canvas.addEventListener("pointerdown", (evt) => {
     getAudioCtx();
-    if (musicPreset >= 0) ensureBgmStarted();
+    if (musicEnabled) ensureBgmStarted();
     const { x, y } = canvasPos(evt);
     handleBoardPointer(x, y);
   });
