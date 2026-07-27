@@ -155,6 +155,12 @@ class MatchStore:
     ) -> dict | None:
         raise NotImplementedError
 
+    async def find_activity_watch_session(
+        self, user_id: str | int, *, guild_id: str | int | None = None
+    ) -> dict | None:
+        """Return the newest activity session with a live watch announcement."""
+        raise NotImplementedError
+
     async def set_spectate_intent(
         self,
         viewer_id: int,
@@ -367,6 +373,36 @@ class MemoryMatchStore(MatchStore):
                 best_with_board = doc
         chosen = best_with_board or best
         return _clone(chosen) if chosen else None
+
+    async def find_activity_watch_session(
+        self, user_id: str | int, *, guild_id: str | int | None = None
+    ) -> dict | None:
+        uid = str(user_id)
+        gid = (
+            str(guild_id)
+            if guild_id is not None and str(guild_id) not in ("", "0")
+            else None
+        )
+        best: dict | None = None
+        best_ts = 0.0
+        for doc in self._activity.values():
+            if str(doc.get("user_id")) != uid:
+                continue
+            if not doc.get("watch_message_id"):
+                continue
+            doc_gid = str(doc.get("guild_id") or "")
+            if gid is not None and doc_gid not in ("", "0", gid):
+                continue
+            ts = float(
+                doc.get("watch_posted_at")
+                or doc.get("last_move_at")
+                or doc.get("updated_at")
+                or 0
+            )
+            if ts >= best_ts:
+                best_ts = ts
+                best = doc
+        return _clone(best) if best else None
 
     async def set_spectate_intent(
         self,
@@ -689,6 +725,22 @@ class MongoMatchStore(MatchStore):
         if doc:
             return doc
         return await self._activity.find_one(query, sort=sort)
+
+    async def find_activity_watch_session(
+        self, user_id: str | int, *, guild_id: str | int | None = None
+    ) -> dict | None:
+        if self._activity is None:
+            await self.connect()
+        query: dict = {
+            "user_id": str(user_id),
+            "watch_message_id": {"$exists": True, "$ne": None},
+        }
+        if guild_id is not None and str(guild_id) not in ("", "0"):
+            query["guild_id"] = str(guild_id)
+        return await self._activity.find_one(
+            query,
+            sort=[("watch_posted_at", -1), ("last_move_at", -1), ("updated_at", -1)],
+        )
 
     async def set_spectate_intent(
         self,

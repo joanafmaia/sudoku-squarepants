@@ -1154,10 +1154,20 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         try:
             from bot import end_activity_watch
 
+            session, resolved_id = await _lookup_activity_session(bot, guild_id, uid)
+            if not session or not session.get("watch_message_id"):
+                watch = await match_store.find_activity_watch_session(
+                    uid,
+                    guild_id=guild_id if guild_id not in ("", "0") else None,
+                )
+                if not watch and guild_id not in ("", "0"):
+                    watch = await match_store.find_activity_watch_session(uid)
+                if watch:
+                    resolved_id = str(watch.get("_id") or resolved_id)
             await end_activity_watch(
                 bot,
-                session_id,
-                force=bool(body.get("force")),
+                resolved_id,
+                force=bool(body.get("force", True)),
             )
         except Exception as exc:  # noqa: BLE001
             print(f"activity end_watch failed: {exc}")

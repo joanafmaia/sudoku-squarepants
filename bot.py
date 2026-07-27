@@ -4572,31 +4572,105 @@ async def delete_activity_watch_message(
     session: dict,
     *,
     session_id: str | None = None,
-) -> None:
+) -> bool:
     """Remove the channel watch announcement when the /play session ends."""
     raw_msg = session.get("watch_message_id")
     if not raw_msg:
-        return
+        return True
     sid = session_id or session.get("_id")
-    channel_id = session.get("watch_channel_id") or ACTIVITY_WATCH_CHANNEL_ID
-    channel = await resolve_channel(bot_ref, int(channel_id))
-    if channel is None:
-        return
     try:
-        msg = await channel.fetch_message(int(raw_msg))
-        await msg.delete()
-    except discord.HTTPException as exc:
-        print(f"delete_activity_watch_message failed: {exc}")
-        if sid and (getattr(exc, "code", None) == 10008 or exc.status == 404):
-            await match_store.merge_activity_session(
-                str(sid),
-                {
-                    "watch_message_id": None,
-                    "watch_notified": False,
-                    "watch_once_notified": False,
-                },
+        msg_id = int(raw_msg)
+    except (TypeError, ValueError):
+        print(f"delete_activity_watch_message: invalid message id {raw_msg!r} for {sid}")
+        return False
+
+    channel_ids: list[int] = []
+    for raw in (
+        session.get("watch_channel_id"),
+        ACTIVITY_WATCH_CHANNEL_ID,
+        DAILY_ANNOUNCE_CHANNEL_ID,
+        session.get("channel_id"),
+    ):
+        try:
+            cid = int(raw or 0)
+        except (TypeError, ValueError):
+            cid = 0
+        if cid and cid not in channel_ids:
+            channel_ids.append(cid)
+    if not channel_ids:
+        print(f"delete_activity_watch_message: no channel for session {sid}")
+        return False
+
+    last_exc: discord.HTTPException | None = None
+    for channel_id in channel_ids:
+        channel = await resolve_channel(bot_ref, channel_id)
+        if channel is None:
+            continue
+        try:
+            msg = await channel.fetch_message(msg_id)
+            await msg.delete()
+            print(f"deleted activity watch message {msg_id} in channel {channel_id}")
+            return True
+        except discord.HTTPException as exc:
+            last_exc = exc
+            if getattr(exc, "code", None) == 10008 or exc.status == 404:
+                print(f"activity watch message {msg_id} already deleted")
+                if sid:
+                    await match_store.merge_activity_session(
+                        str(sid),
+                        {
+                            "watch_message_id": None,
+                            "watch_notified": False,
+                            "watch_once_notified": False,
+                        },
+                    )
+                return True
+            print(
+                f"delete_activity_watch_message failed channel={channel_id} "
+                f"msg={msg_id}: {exc}"
             )
-            print(f"cleared stale activity watch message id for {sid}")
+    if last_exc is not None:
+        print(f"delete_activity_watch_message: all channels failed for msg {msg_id}")
+    return False
+
+
+async def _resolve_watch_session_for_end(session_id: str) -> tuple[dict | None, str]:
+    """Find the activity session document that owns the live watch announcement."""
+    session = await match_store.get_activity_session(session_id)
+    if session and session.get("watch_message_id"):
+        return session, str(session.get("_id") or session_id)
+
+    parts = str(session_id).split(":")
+    uid = parts[2] if len(parts) >= 3 else ""
+    gid = parts[1] if len(parts) >= 3 else ""
+    if uid:
+        watch = await match_store.find_activity_watch_session(
+            uid, guild_id=gid if gid not in ("", "0") else None
+        )
+        if watch:
+            return watch, str(watch.get("_id") or session_id)
+        if gid not in ("", "0"):
+            watch = await match_store.find_activity_watch_session(uid)
+            if watch:
+                return watch, str(watch.get("_id") or session_id)
+
+        if gid not in ("", "0"):
+            alt = await match_store.find_activity_session_by_user_id(uid, guild_id=gid)
+        else:
+            alt = await match_store.find_activity_session_by_user_id(uid)
+        if alt and alt.get("watch_message_id"):
+            return alt, str(alt.get("_id") or session_id)
+
+        if gid != "0":
+            orphan = await match_store.get_activity_session(f"activity:0:{uid}")
+            if orphan and orphan.get("watch_message_id"):
+                orphan_gid = str(orphan.get("guild_id") or "0")
+                if orphan_gid in ("", "0", gid):
+                    return orphan, str(orphan.get("_id") or f"activity:0:{uid}")
+
+    if session:
+        return session, str(session.get("_id") or session_id)
+    return None, session_id
 
 
 async def end_activity_watch(
@@ -4606,48 +4680,29 @@ async def end_activity_watch(
     force: bool = False,
 ) -> None:
     """Remove the watch announcement but keep the in-progress board for resume."""
-    session = await match_store.get_activity_session(session_id)
+    session, session_id = await _resolve_watch_session_for_end(session_id)
     if not session or not session.get("watch_message_id"):
-        parts = str(session_id).split(":")
-        # activity:{guild}:{user} — keep find scoped to the same guild (or orphan).
-        if len(parts) >= 3:
-            sid_guild = parts[1]
-            sid_user = parts[2]
-            alt = None
-            if sid_guild not in ("", "0"):
-                alt = await match_store.find_activity_session_by_user_id(
-                    sid_user, guild_id=sid_guild
-                )
-            if (not alt or not alt.get("watch_message_id")) and sid_guild != "0":
-                # Explicit orphan key only — never cross-guild.
-                orphan = await match_store.get_activity_session(
-                    f"activity:0:{sid_user}"
-                )
-                if orphan and orphan.get("watch_message_id"):
-                    orphan_gid = str(orphan.get("guild_id") or "0")
-                    if orphan_gid in ("", "0", sid_guild):
-                        alt = orphan
-            if alt and alt.get("watch_message_id"):
-                session_id = str(alt.get("_id") or session_id)
-                session = alt
-    if not session:
+        print(f"activity watch end skipped (no message) for {session_id}")
         return
     if not force:
         posted_at = float(session.get("watch_posted_at") or 0)
         if posted_at and (time.time() - posted_at) < ACTIVITY_WATCH_END_GRACE_SEC:
             print(f"activity watch end ignored (grace) for {session_id}")
             return
-    await delete_activity_watch_message(bot_ref, session, session_id=session_id)
-    await match_store.merge_activity_session(
-        session_id,
-        {
-            "watch_notified": False,
-            "watch_message_id": None,
-            # Allow a fresh "is playing" post when they reopen after leaving.
-            "watch_once_notified": False,
-        },
-    )
-    print(f"activity watch ended for {session_id}")
+    deleted = await delete_activity_watch_message(bot_ref, session, session_id=session_id)
+    if deleted:
+        await match_store.merge_activity_session(
+            session_id,
+            {
+                "watch_notified": False,
+                "watch_message_id": None,
+                # Allow a fresh "is playing" post when they reopen after leaving.
+                "watch_once_notified": False,
+            },
+        )
+        print(f"activity watch ended for {session_id}")
+    else:
+        print(f"activity watch end failed (message still live) for {session_id}")
 
 
 async def clear_activity_session(bot_ref: "SudokuBot", session_id: str) -> None:

@@ -347,6 +347,7 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
       },
       onWin: () => {
         stopWatcherPolling();
+        endWatchOnExit({ force: true, challengeForfeit: false });
         setTimeout(() => closeDiscordActivity(), 2500);
       },
       onNewGame: () => {
@@ -761,7 +762,12 @@ async function quitAndClose() {
     await apiFetch("/api/activity/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "clear", guild_id: gid }),
+      body: JSON.stringify({
+        action: "clear",
+        guild_id: gid,
+        end_watch: true,
+        force: true,
+      }),
     });
   };
 
