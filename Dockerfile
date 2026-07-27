@@ -27,9 +27,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Cache-bust when Python sources change (Render sometimes reuses stale layers).
-ARG SOURCE_DATE=2026-07-27-play-require-diff
+ARG SOURCE_DATE=2026-07-27-activity-watchers
 RUN echo "build $SOURCE_DATE"
-COPY bot.py challenge_store.py activity_http.py ./
+COPY bot.py challenge_store.py activity_http.py activity_watchers.py ./
 COPY fonts ./fonts
 COPY --from=activity-build /src/dist ./activity_dist
 RUN mkdir -p assets/emoji_pins
