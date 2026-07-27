@@ -50,10 +50,11 @@ BASE_WIN_REWARD = 75
 DAILY_BONUS = 60
 STREAK_BONUS_PER = 10
 GARY_WISDOM_HINT_BONUS = 3
-GARY_WISDOM_GAMES_PER_PURCHASE = 1
+GARY_WISDOM_GAMES_PER_PURCHASE = 2
 KRABBY_SNACK_MULT = 1.25
 GOLDEN_SPATULA_MULT = 1.50
 REWARD_BOOST_GAMES_PER_PURCHASE = 3
+HINT_SPONGE_COST = 15
 
 # Ordered list of difficulty keys (matches DIFF_KEYS in sudoku-core.js)
 DIFF_KEYS_LIST: list[str] = list(DIFFICULTY_TIERS.keys())
@@ -237,10 +238,10 @@ SHOP_TITLES = {
 # Pins = border stickers only. One free; paid pins scale up so cosmetics stay a chase.
 SHOP_PINS = {
     "xp_boost": {"label": "🔮 Puff's Crystal Ball (2x XP - 3 Games)", "pin": "Crystal Ball", "emoji": "🔮", "cost": 120},
-    "streak_shield": {"label": "🛡️ Krabby Shield (Protect Streak)", "pin": "Shield", "emoji": "🛡️", "cost": 150},
-    "gary_wisdom": {"label": "🐌 Gary's Wisdom (+3 Hints — 1 Game)", "pin": "Gary", "emoji": "🐌", "cost": 80},
-    "krabby_snack": {"label": "🍟 Krabby Snack (+25% Sponges — 3 Games)", "pin": "Snack", "emoji": "🍟", "cost": 90},
-    "golden_spatula": {"label": "🥇 Golden Spatula (+50% XP — 3 Games)", "pin": "Spatula", "emoji": "🥇", "cost": 90},
+    "streak_shield": {"label": "🛡️ Krabby Shield (missed daily days)", "pin": "Shield", "emoji": "🛡️", "cost": 150},
+    "gary_wisdom": {"label": "🐌 Gary's Wisdom (+3 free hints/game ×2)", "pin": "Gary", "emoji": "🐌", "cost": 60},
+    "krabby_snack": {"label": "🍟 Krabby Snack (+25% Sponges — 3 wins)", "pin": "Snack", "emoji": "🍟", "cost": 80},
+    "golden_spatula": {"label": "🥇 Golden Spatula (+50% XP — 3 wins)", "pin": "Spatula", "emoji": "🥇", "cost": 80},
     "wave": {"label": "🌊 Wave Pin", "pin": "Wave", "emoji": "🌊", "cost": 0, "theme": "ocean"},
     # Former title emojis → buyable border pins
     "pin_jelly": {"label": "🪼 Jelly Pin", "pin": "Jelly", "emoji": "🪼", "cost": 40, "theme": "ocean"},
@@ -2338,6 +2339,43 @@ def attach_gary_wisdom_to_game(stats: dict, game: dict) -> None:
     bonus = try_consume_gary_wisdom(stats)
     if bonus > 0:
         game["gary_wisdom_bonus"] = bonus
+
+
+def hint_gary_free_remaining(container: dict) -> int:
+    total = int(container.get("gary_wisdom_bonus") or 0)
+    used = int(container.get("hints_gary_used") or 0)
+    return max(0, total - used)
+
+
+def apply_hint_charge(stats: dict, container: dict) -> dict:
+    """Spend Gary free hints first, otherwise pocket sponges. Mutates stats + container."""
+    gary_free = hint_gary_free_remaining(container)
+    if gary_free > 0:
+        container["hints_gary_used"] = int(container.get("hints_gary_used") or 0) + 1
+        return {
+            "ok": True,
+            "cost": 0,
+            "gary_free_left": gary_free - 1,
+            "paid_with": "gary",
+            "pocket": int(stats.get("coins") or 0),
+        }
+    pocket = int(stats.get("coins") or 0)
+    if pocket < HINT_SPONGE_COST:
+        return {
+            "ok": False,
+            "error": "insufficient_sponges",
+            "cost": HINT_SPONGE_COST,
+            "gary_free_left": 0,
+            "pocket": pocket,
+        }
+    stats["coins"] = pocket - HINT_SPONGE_COST
+    return {
+        "ok": True,
+        "cost": HINT_SPONGE_COST,
+        "gary_free_left": 0,
+        "paid_with": "sponges",
+        "pocket": int(stats.get("coins") or 0),
+    }
 
 
 def format_xp_boost_win_line(*, used: bool, remaining: int | None = None) -> str:
@@ -7014,15 +7052,22 @@ def shop_page_embed(
 
         detail = f"**{selected['label']}** ({shop_item_price_text(selected)} · {status})"
         if selected["id"] == "xp_boost":
-            detail += "\n⚡ *Grants +3 games of 2x XP & Sponges on win!*"
+            detail += (
+                "\n⚡ *Best all-rounder: 2× career XP **and** sponges on win (3 games).* "
+                "Use Snack or Spatula if you only want one."
+            )
         elif selected["id"] == "streak_shield":
-            detail += "\n🛡️ *Protects your daily streak if you miss a day!*"
+            detail += "\n🛡️ *Covers missed **daily** days only — challenges never reset your streak.*"
         elif selected["id"] == "gary_wisdom":
-            detail += "\n🐌 *+3 hints on your next game (daily, play, or challenge).*"
+            detail += (
+                f"\n🐌 *{GARY_WISDOM_HINT_BONUS} free hints per game (no sponge cost) "
+                f"for {GARY_WISDOM_GAMES_PER_PURCHASE} games. "
+                f"Regular hints cost {format_sponges(HINT_SPONGE_COST)} each.*"
+            )
         elif selected["id"] == "krabby_snack":
-            detail += "\n🍟 *+25% sponges only on win for the next 3 games.*"
+            detail += "\n🍟 *+25% pocket sponges only — career XP unchanged (3 wins).*"
         elif selected["id"] == "golden_spatula":
-            detail += "\n🥇 *+50% career XP only on win for the next 3 games.*"
+            detail += "\n🥇 *+50% career XP only — sponges unchanged (3 wins).*"
         elif selected["kind"] == "title":
             sample = titled_header_line("Easy", selected.get("pin") or "Civilian", emoji=str(selected.get("emoji") or ""))
             detail += f"\nHeader flair: `{sample}`"
@@ -8979,6 +9024,8 @@ async def help_cmd(interaction: discord.Interaction):
             f"Streak **+{STREAK_BONUS_PER}**/lvl · "
             f"Challenge win **×{CHALLENGE_WIN_MULT:g}** · "
             f"loss **{format_sponges(CHALLENGE_LOSER_COINS, signed=True)}** (sponges only)\n"
+            f"**Hints** cost **{format_sponges(HINT_SPONGE_COST)}** from pocket sponges "
+            f"(not career XP). **Gary's Wisdom** in `/shop` grants free hints.\n"
             f"{tiers}"
         ),
         inline=False,

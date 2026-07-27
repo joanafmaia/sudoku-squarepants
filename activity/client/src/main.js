@@ -322,6 +322,9 @@ document.getElementById("theme-toggle")?.addEventListener("click", () => {
 function startGameOnce(cosmetics = null, gameOptions = {}) {
   if (gameStarted) {
     if (cosmetics && gameApi?.setCosmetics) gameApi.setCosmetics(cosmetics);
+    if (cosmetics && gameApi?.setPocketSponges) {
+      gameApi.setPocketSponges(cosmetics.pocketSponges);
+    }
     applyTheme(currentTheme);
     return gameApi;
   }
@@ -330,6 +333,8 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
   try {
     gameApi = startThcokuGame(canvas, {
       cosmetics: cosmetics || { title: null, pins: [], seed: 1 },
+      pocketSponges: Number(cosmetics?.pocketSponges) || 0,
+      hintSpongeCost: Number(cosmetics?.hintSpongeCost) || 15,
       autoStart: gameOptions.autoStart !== false,
       sessionKind: gameOptions.sessionKind || null,
       dailyDate: gameOptions.dailyDate || null,
@@ -382,6 +387,9 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
           if (!res?.ok) {
             return { ok: false, ...(typeof data === "object" ? data : {}) };
           }
+          if (gameApi?.setPocketSponges && data.pocket != null) {
+            gameApi.setPocketSponges(data.pocket);
+          }
           return data;
         } catch (err) {
           console.warn("[Thcoku] hint request failed", err);
@@ -413,6 +421,8 @@ async function loadCosmetics() {
       title: data.title || null,
       pins: Array.isArray(data.pins) ? data.pins : [],
       seed: Number(data.user_id) || Date.now(),
+      pocketSponges: Number(data.coins) || 0,
+      hintSpongeCost: Number(data.hint_sponge_cost) || 15,
     };
   } catch (err) {
     console.warn("[Thcoku] profile load failed", err);
