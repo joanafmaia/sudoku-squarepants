@@ -604,6 +604,7 @@ def user_stats(gstats: dict, user_id: int) -> dict:
     s.setdefault("best_time", None)
     s.setdefault("streak", 0)
     s.setdefault("best_streak", 0)
+    s.setdefault("last_streak_day", None)
     s.setdefault("name", "Unknown")
     s.setdefault("title", None)
     s.setdefault("owned_titles", [])
@@ -1052,6 +1053,63 @@ def cosmetic_pin_text(meta: dict | None, *, fallback: str = "") -> str:
 
 def utc_today() -> str:
     return datetime.now(timezone.utc).date().isoformat()
+
+
+def apply_daily_calendar_streak(stats: dict, day: str) -> int:
+    """Advance streak for consecutive UTC days with a completed /daily.
+
+    - At most +1 per calendar day
+    - Missed days break the streak, unless streak shields cover each missed day
+    - Returns the streak value used for rewards after this win
+    """
+    today = datetime.fromisoformat(str(day)).date()
+    last_raw = stats.get("last_streak_day")
+    current = max(0, int(stats.get("streak") or 0))
+
+    if str(last_raw or "") == str(day):
+        # Already counted today's daily — do not inflate.
+        return max(current, 1)
+
+    last = None
+    if last_raw:
+        try:
+            last = datetime.fromisoformat(str(last_raw)).date()
+        except ValueError:
+            last = None
+
+    if last is None:
+        # First calendar win (or legacy win-count streak) — start a day streak.
+        new_streak = 1
+    else:
+        gap = (today - last).days
+        if gap <= 0:
+            return max(current, 1)
+        if gap == 1:
+            new_streak = current + 1 if current > 0 else 1
+        else:
+            missed = gap - 1
+            shields = max(0, int(stats.get("streak_shields") or 0))
+            if shields >= missed:
+                stats["streak_shields"] = shields - missed
+                new_streak = current + 1 if current > 0 else 1
+            else:
+                new_streak = 1
+
+    stats["streak"] = new_streak
+    stats["last_streak_day"] = str(day)
+    stats["best_streak"] = max(int(stats.get("best_streak") or 0), new_streak)
+    return new_streak
+
+
+def preview_daily_calendar_streak(stats: dict, day: str) -> int:
+    """Compute what the streak would become without mutating player stats."""
+    probe = {
+        "streak": stats.get("streak"),
+        "best_streak": stats.get("best_streak"),
+        "last_streak_day": stats.get("last_streak_day"),
+        "streak_shields": stats.get("streak_shields"),
+    }
+    return apply_daily_calendar_streak(probe, day)
 
 
 # ---------------------------------------------------------------------------
@@ -2252,13 +2310,15 @@ def finish_win(
 
     stats["wins"] += 1
     stats["games"] += 1
-    stats["streak"] += 1
-    stats["best_streak"] = max(stats["best_streak"], stats["streak"])
+    if is_daily:
+        day = game.get("daily_date") or utc_today()
+        apply_daily_calendar_streak(stats, day)
+    # /play and challenge use the current daily streak for bonus, but do not advance it.
     if stats["best_time"] is None or elapsed < stats["best_time"]:
         stats["best_time"] = int(elapsed)
 
     coins = win_reward(
-        stats["streak"],
+        int(stats.get("streak") or 0),
         daily=is_daily,
         difficulty=game.get("difficulty"),
         challenge_winner=challenge_winner,
@@ -2371,7 +2431,7 @@ async def finish_win_and_announce(
 
         gstats = guild_stats(bot.data, guild_id)
         stats = user_stats(gstats, user.id)
-        preview_streak = int(stats.get("streak") or 0) + 1
+        preview_streak = preview_daily_calendar_streak(stats, day)
         preview_coins = win_reward(
             preview_streak,
             daily=True,
@@ -2461,9 +2521,10 @@ def finish_forfeit(data: dict, guild_id: int, user: discord.abc.User, game: dict
     stats["name"] = getattr(user, "display_name", user.name)
     stats["losses"] += 1
     stats["games"] += 1
-    stats["streak"] = 0
     mode = normalize_game_mode(game.get("mode"))
+    # Calendar streak only breaks on daily forfeit — quitting /play keeps the day streak.
     if mode == "daily":
+        stats["streak"] = 0
         day = game.get("daily_date") or utc_today()
         daily = get_guild_daily(data, guild_id)
         daily["results"][str(user.id)] = {
@@ -2477,10 +2538,15 @@ def finish_forfeit(data: dict, guild_id: int, user: discord.abc.User, game: dict
         except RuntimeError:
             pass
     save_data(data)
-    note = " Daily attempt locked for today — see you at the Krusty Krab!" if mode == "daily" else ""
+    if mode == "daily":
+        note = " Daily attempt locked for today — see you at the Krusty Krab!"
+        wipe = "Streak wiped."
+    else:
+        note = ""
+        wipe = "Quit — daily streak unchanged."
     return paper_embed(
         f"{WAVE} Quit",
-        description=f"Streak wiped.{note}",
+        description=f"{wipe}{note}",
     )
 
 
@@ -2756,7 +2822,7 @@ async def settle_challenge_match(
                 continue
             loser_stats["losses"] += 1
             loser_stats["games"] += 1
-            loser_stats["streak"] = 0
+            # Challenge loss does not wipe the calendar daily streak.
             loser_stats["coins"] += CHALLENGE_LOSER_COINS
         save_data(bot.data)
 
@@ -8057,9 +8123,10 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
         coins = int(mc.get("coins") or r.get("coins") or 0)
         xp = int(mc.get("xp") or mc.get("coins") or r.get("xp") or coins or 0)
         if coins == 0 and xp == 0:
-            preview_streak = int(
-                user_stats(guild_stats(bot.data, guild_id), user_id).get("streak") or 0
-            ) + 1
+            preview_streak = preview_daily_calendar_streak(
+                user_stats(guild_stats(bot.data, guild_id), user_id),
+                day,
+            )
             coins = win_reward(
                 preview_streak,
                 daily=True,
@@ -8441,7 +8508,7 @@ async def stats_cmd(interaction: discord.Interaction, member: discord.Member | N
         value=f"**{format_sponges(s.get('sponges_spent', 0))}**",
         inline=True,
     )
-    embed.add_field(name=f"Streak {STAR}", value=f"**{streak}** (best {best_streak})", inline=True)
+    embed.add_field(name=f"Daily streak {STAR}", value=f"**{streak}** (best {best_streak})", inline=True)
     embed.add_field(name="Shields 🛡️", value=f"**{shields}**", inline=True)
     embed.add_field(name="Win rate", value=f"**{win_rate}**", inline=True)
     embed.add_field(name="Wins", value=f"**{wins}**", inline=True)

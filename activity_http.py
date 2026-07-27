@@ -1576,7 +1576,7 @@ async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> di
                         "cleared": False,
                     }
             else:
-                # Abandon mid-game via clear/"new order" — same streak wipe as /quit.
+                # Abandon mid-game via clear/"new order" — quit play (daily streak kept).
                 finish_forfeit(
                     bot.data,
                     gid,
