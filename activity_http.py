@@ -1095,17 +1095,10 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         return {"ok": True, "challenge_forfeit": forfeited, "watch_ended": bool(body.get("end_watch"))}
 
     if body.get("end_watch"):
-        forfeited = False
-        from bot import find_challenge_game_for_user
-
-        # Only forfeit when a challenge race is actually active for this user.
-        if find_challenge_game_for_user(uid) or body.get("challenge_forfeit"):
-            try:
-                from bot import forfeit_challenge_activity
-
-                forfeited = await forfeit_challenge_activity(bot, uid)
-            except Exception as exc:  # noqa: BLE001
-                print(f"activity end_watch challenge forfeit failed: {exc}")
+        # Clean up the "is playing" announcement only.
+        # Do NOT auto-forfeit challenges here — Discord Activity remounts fire
+        # pagehide/freeze right after open and would end 2-player races instantly.
+        # Forfeit only via challenge_forfeit (Quit / explicit leave) above.
         try:
             from bot import end_activity_watch
 
@@ -1116,7 +1109,7 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
             )
         except Exception as exc:  # noqa: BLE001
             print(f"activity end_watch failed: {exc}")
-        return {"ok": True, "watch_ended": True, "challenge_forfeit": forfeited}
+        return {"ok": True, "watch_ended": True, "challenge_forfeit": False}
 
     board = _normalize_activity_board(body.get("board"))
     given_raw = body.get("given")

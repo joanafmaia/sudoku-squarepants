@@ -557,7 +557,11 @@ function scheduleEndWatchOnHide() {
   hideEndWatchTimer = setTimeout(() => {
     hideEndWatchTimer = null;
     if (document.visibilityState === "hidden") {
-      endWatchOnExit({ force: true });
+      // After a long hide, treat challenge leave as a real forfeit (AFK).
+      // Immediate pagehide/freeze must NOT forfeit — Discord remounts on open.
+      const snap = currentSessionSnap();
+      const challengeForfeit = snap?.session_kind === "challenge";
+      endWatchOnExit({ force: true, challengeForfeit });
     }
   }, HIDE_END_WATCH_DELAY_MS);
 }
@@ -571,12 +575,11 @@ function cancelEndWatchOnHide() {
 
 function flushSessionOnExit({ endWatch = false } = {}) {
   const snap = currentSessionSnap();
-  const challengeForfeit =
-    endWatch && snap?.session_kind === "challenge";
+  // Never forfeit on unload/remount — only Quit or long-hide timer may.
   const run = async () => {
-    if (snap && !challengeForfeit) {
+    if (snap) {
       writeLocalSession(snap);
-      if (window.__DISCORD_ACCESS_TOKEN__) {
+      if (window.__DISCORD_ACCESS_TOKEN__ && snap.session_kind !== "challenge") {
         const body = JSON.stringify(await sessionPayloadAsync(snap));
         for (const url of apiUrlCandidates("/api/activity/session")) {
           try {
@@ -595,11 +598,9 @@ function flushSessionOnExit({ endWatch = false } = {}) {
           }
         }
       }
-    } else if (snap && challengeForfeit) {
-      writeLocalSession(snap);
     }
     if (endWatch) {
-      endWatchOnExit({ force: true, challengeForfeit });
+      endWatchOnExit({ force: true, challengeForfeit: false });
     }
   };
   void run();
@@ -653,14 +654,29 @@ export function closeDiscordActivity() {
 
 async function quitAndClose() {
   try {
+    const snap = currentSessionSnap();
+    const isChallenge = snap?.session_kind === "challenge";
     clearLocalSession();
     if (window.__DISCORD_ACCESS_TOKEN__) {
       const gid = await resolveGuildId();
-      await apiFetch("/api/activity/session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "clear", guild_id: gid }),
-      });
+      if (isChallenge) {
+        await apiFetch("/api/activity/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            challenge_forfeit: true,
+            end_watch: true,
+            force: true,
+            guild_id: gid,
+          }),
+        });
+      } else {
+        await apiFetch("/api/activity/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "clear", guild_id: gid }),
+        });
+      }
     }
   } catch (err) {
     console.warn("quitAndClose failed:", err);
