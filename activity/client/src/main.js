@@ -3,7 +3,7 @@
  * Initializes Discord session, then starts the Canvas puzzle (no leaderboard UI).
  * Saves in-progress boards to Mongo and offers Resume / New puzzle on next /play.
  */
-import { DiscordSDK } from "@discord/embedded-app-sdk";
+import { DiscordSDK, RPCCloseCodes } from "@discord/embedded-app-sdk";
 import { startThcokuGame } from "./game.js";
 import { difficultyLabel } from "./sudoku-core.js";
 
@@ -667,18 +667,16 @@ function startAutosave() {
 }
 
 export function closeDiscordActivity() {
+  const discordSdk = window.__DISCORD_SDK__;
   try {
-    if (window.discordSdk && typeof window.discordSdk.close === "function") {
-      window.discordSdk.close();
-    } else if (window.discordSdk?.commands && typeof window.discordSdk.commands.closeActivity === "function") {
-      window.discordSdk.commands.closeActivity().catch(() => {});
-    } else {
-      window.close();
+    if (discordSdk && typeof discordSdk.close === "function") {
+      discordSdk.close(RPCCloseCodes.CLOSE_NORMAL, "User quit the game");
+      return;
     }
   } catch (err) {
     console.warn("closeDiscordActivity error:", err);
-    try { window.close(); } catch {}
   }
+  try { window.close(); } catch {}
 }
 
 async function quitAndClose() {
