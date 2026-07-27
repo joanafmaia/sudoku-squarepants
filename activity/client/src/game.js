@@ -236,7 +236,8 @@ function readInitialMusicPreset() {
     if (stored === "on" || stored === "true") return 0;
     const legacy = localStorage.getItem(LEGACY_SOUND_KEY);
     if (legacy === "off" || legacy === "0") return -1;
-    const n = Number.parseInt(String(stored ?? ""), 10);
+    if (stored == null || stored === "") return 0;
+    const n = Number.parseInt(String(stored), 10);
     if (Number.isFinite(n) && n >= 0 && n < getOceanPresetCount()) return n;
   } catch {
     /* localStorage disabled */

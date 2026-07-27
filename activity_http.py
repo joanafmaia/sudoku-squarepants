@@ -1317,6 +1317,7 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         "started_at": started_at,
         "last_move_at": time.time(),
         "hints_used": hints_used,
+        "hints_gary_used": int(existing.get("hints_gary_used") or 0) if existing else 0,
     }
     try:
         gid_int = int(guild_id) if str(guild_id) not in ("", "0") else 0
