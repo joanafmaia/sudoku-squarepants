@@ -49,6 +49,18 @@ DIFFICULTY_CHOICES = [
 BASE_WIN_REWARD = 75
 DAILY_BONUS = 60
 STREAK_BONUS_PER = 10
+
+# Ordered list of difficulty keys (matches DIFF_KEYS in sudoku-core.js)
+DIFF_KEYS_LIST: list[str] = list(DIFFICULTY_TIERS.keys())
+
+
+def difficulty_index(key: str) -> int:
+    """Return the 0-based index of a difficulty key for the Activity client."""
+    try:
+        return DIFF_KEYS_LIST.index(key)
+    except ValueError:
+        return DIFF_KEYS_LIST.index(DEFAULT_DIFFICULTY)
+
 CHALLENGE_WIN_MULT = 2.0  # extra multiplier for speedrun winners
 MAX_CHALLENGE_PLAYERS = 5  # challenger + up to 4 opponents
 CHALLENGE_LOSER_COINS = 15
@@ -307,12 +319,15 @@ pending_challenges: dict[int, dict] = {}  # invite message_id → meta
 challenge_cooldowns: dict[int, float] = {}  # user_id → last /challenge timestamp
 _challenge_live_tasks: dict[str, asyncio.Task] = {}
 _activity_notify_inflight: set[str] = set()
+_daily_finish_locks: dict[str, asyncio.Lock] = {}
+_challenge_match_locks: dict[str, asyncio.Lock] = {}
 WATCH_ACTIVE_SEC = 45
 CHALLENGE_LIVE_DEBOUNCE_SEC = 4.0
 ACTIVITY_WATCH_MAX_AGE_SEC = 180
 ACTIVITY_WATCH_END_GRACE_SEC = 20
 ACTIVITY_LIVE_REFRESH_SEC = 3.5
 ACTIVITY_LIVE_SPECTATOR_TIMEOUT_SEC = 900
+ACTIVITY_BLOCKING_MAX_AGE_SEC = 7200  # 2h — abandoned /play shouldn't block challenge all day
 WATCH_LIST_MAX_AGE_SEC = 7200
 WATCH_RESTORE_MAX_AGE_SEC = 86400
 CHALLENGE_BOARD_CELLS = 81
@@ -656,7 +671,30 @@ async def persist_game(key: tuple, game: dict) -> None:
             print(f"sync_daily_watch_session failed: {exc}")
 
 
-async def drop_persisted_game(key: tuple) -> None:
+async def drop_persisted_game(key: tuple, game: dict | None = None) -> None:
+    if game is None:
+        game = games.get(key)
+    if game:
+        try:
+            gid = int(game.get("guild_id") or key[0])
+            uid = int(game.get("owner_id") or key[1])
+            mode = game.get("mode")
+            if mode == "daily":
+                sid = daily_watch_session_id(gid, uid)
+                try:
+                    await end_activity_watch(bot, sid, force=True)
+                except Exception as watch_exc:  # noqa: BLE001
+                    print(f"drop_persisted_game end_watch failed: {watch_exc}")
+                await clear_activity_session(bot, sid)
+            elif mode in ("solo", "play"):
+                sid = f"activity:{gid}:{uid}"
+                try:
+                    await end_activity_watch(bot, sid, force=True)
+                except Exception as watch_exc:  # noqa: BLE001
+                    print(f"drop_persisted_game end_watch failed: {watch_exc}")
+                await clear_activity_session(bot, sid)
+        except Exception as exc:  # noqa: BLE001
+            print(f"drop_persisted_game clear activity failed: {exc}")
     try:
         await match_store.delete_active_game(serialize_game_key(key))
     except Exception as exc:  # noqa: BLE001
@@ -665,14 +703,8 @@ async def drop_persisted_game(key: tuple) -> None:
 
 async def remove_game(key: tuple) -> dict | None:
     game = games.pop(key, None)
-    if game and game.get("mode") == "daily":
-        try:
-            gid = int(game.get("guild_id") or key[0])
-            uid = int(game.get("owner_id") or key[1])
-            await clear_activity_session(bot, daily_watch_session_id(gid, uid))
-        except Exception as exc:  # noqa: BLE001
-            print(f"clear_daily_watch failed: {exc}")
-    await drop_persisted_game(key)
+    # drop_persisted_game owns end_activity_watch + clear_activity_session.
+    await drop_persisted_game(key, game)
     return game
 
 
@@ -691,13 +723,109 @@ async def close_solved_session(
     if is_solved(game.get("board") or [], game.get("solution")):
         if not game.get("rewarded") and guild_id is not None:
             try:
-                outcome = await finish_win_and_announce(bot, guild_id, user, game)
-                coins = int(outcome.coins)
+                mode_n = normalize_game_mode(game.get("mode"))
+                if mode_n == "solo" or game.get("mode") == "play":
+                    given = game.get("given")
+                    given_bool = None
+                    if isinstance(given, list) and len(given) == 9:
+                        given_bool = [
+                            [bool(given[r][c]) for c in range(9)] for r in range(9)
+                        ]
+                    puzzle_key = play_puzzle_fingerprint(
+                        given_bool,
+                        board=game.get("board"),
+                        solution=game.get("solution"),
+                    )
+                    if puzzle_key:
+                        outcome = await award_play_win(
+                            bot, guild_id, user, game, puzzle_key=puzzle_key
+                        )
+                        if outcome is not None:
+                            coins = int(outcome.coins)
+                else:
+                    outcome = await finish_win_and_announce(bot, guild_id, user, game)
+                    coins = int(outcome.coins)
                 game["rewarded"] = True
+                try:
+                    await persist_game(key, game)
+                except Exception as persist_exc:  # noqa: BLE001
+                    print(f"close_solved_session persist rewarded failed: {persist_exc}")
             except Exception as exc:  # noqa: BLE001
                 print(f"close_solved_session award failed: {exc}")
     await remove_game(key)
     return coins
+
+
+async def _panel_play_claim_ok(
+    guild_id: int, user: discord.abc.User, game: dict
+) -> bool:
+    """False if this solo/play puzzle was already paid (Activity fingerprint)."""
+    mode = normalize_game_mode(game.get("mode"))
+    if mode not in ("solo", "play"):
+        return True
+    given = game.get("given")
+    if not isinstance(given, list):
+        return True
+    given_bool = [[bool(given[r][c]) for c in range(9)] for r in range(9)]
+    puzzle_key = play_puzzle_fingerprint(
+        given_bool,
+        board=game.get("board"),
+        solution=game.get("solution"),
+    )
+    if not puzzle_key:
+        return False
+    try:
+        if await match_store.has_play_win(guild_id, user.id, puzzle_key):
+            return False
+        claimed = await match_store.try_claim_play_win(
+            guild_id=guild_id,
+            user_id=user.id,
+            puzzle_key=puzzle_key,
+        )
+        return claimed is not False
+    except Exception as exc:  # noqa: BLE001
+        print(f"panel play claim failed: {exc}")
+        return False
+
+
+async def award_play_win(
+    bot: "SudokuBot",
+    guild_id: int,
+    user: discord.abc.User,
+    game: dict,
+    *,
+    puzzle_key: str | None,
+) -> WinOutcome | None:
+    """Claim then pay; release claim if payout fails. None = already paid.
+
+    Requires a fingerprint — refuses award when puzzle_key is missing (fail-closed).
+    """
+    if not puzzle_key:
+        raise ValueError("puzzle_key required for play win award")
+    claimed = False
+    try:
+        if await match_store.has_play_win(guild_id, user.id, puzzle_key):
+            return None
+        ok = await match_store.try_claim_play_win(
+            guild_id=guild_id,
+            user_id=user.id,
+            puzzle_key=puzzle_key,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"award_play_win claim failed: {exc}")
+        raise
+    if not ok:
+        return None
+    claimed = True
+    try:
+        return finish_win(bot.data, guild_id, user, game)
+    except Exception:
+        if claimed and puzzle_key:
+            try:
+                await match_store.release_play_win(guild_id, user.id, puzzle_key)
+            except Exception as rel_exc:  # noqa: BLE001
+                print(f"award_play_win release failed: {rel_exc}")
+        raise
 
 
 async def load_persisted_game(key: tuple) -> dict | None:
@@ -722,7 +850,6 @@ async def load_persisted_game(key: tuple) -> dict | None:
         game["participants"] = set(game.get("participants") or [game.get("owner_id")])
         game.pop("finishing", None)
         game.pop("_digit_lock", None)
-        game.pop("rewarded", None)
         games[key] = game
         return game
     return None
@@ -734,7 +861,7 @@ def deepcopy_game(game: dict) -> dict:
     for k, v in game.items():
         if k in ("participants",):
             out[k] = list(v) if v else []
-        elif k in ("_digit_lock", "finishing", "rewarded"):
+        elif k in ("_digit_lock", "finishing"):
             continue  # ephemeral UI locks — don't persist
         elif k in ("board", "solution"):
             out[k] = copy_grid(v) if k == "board" else normalize_solution(v)
@@ -813,6 +940,86 @@ def sync_pins_to_active_games(user_id: int, guild_id: int, pin_emojis: list[str]
     for game in games.values():
         if game.get("owner_id") == user_id and game.get("guild_id") == guild_id:
             game["pin_emojis"] = list(pin_emojis)
+
+
+def _daily_finish_lock(guild_id: int, user_id: int, day: str) -> asyncio.Lock:
+    key = f"{guild_id}:{user_id}:{day}"
+    lock = _daily_finish_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _daily_finish_locks[key] = lock
+    return lock
+
+
+def _challenge_match_lock(match_id: str) -> asyncio.Lock:
+    """Serialize finish recording + settlement for one challenge match."""
+    lock = _challenge_match_locks.get(match_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _challenge_match_locks[match_id] = lock
+    return lock
+
+
+async def sync_cosmetics_to_activity_sessions(
+    user_id: int,
+    guild_id: int,
+    *,
+    title_id: str | None,
+    pin_emojis: list[str],
+) -> None:
+    """Mirror equipped shop cosmetics into the player's open Activity session."""
+    session_id = f"activity:{guild_id}:{user_id}"
+    session = await match_store.get_activity_session(session_id)
+    if not session:
+        alt = await match_store.find_activity_session_by_user_id(user_id)
+        if alt:
+            session = alt
+            session_id = str(alt.get("_id") or session_id)
+    if not session:
+        return
+    await match_store.merge_activity_session(
+        session_id,
+        {
+            "equipped_title_id": title_id,
+            "pin_emojis": list(pin_emojis),
+            "cosmetics_updated_at": time.time(),
+        },
+    )
+
+
+def schedule_activity_cosmetics_sync(
+    user_id: int,
+    guild_id: int,
+    *,
+    title_id: str | None,
+    pin_emojis: list[str],
+) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(
+            sync_cosmetics_to_activity_sessions(
+                user_id,
+                guild_id,
+                title_id=title_id,
+                pin_emojis=pin_emojis,
+            )
+        )
+    except RuntimeError:
+        pass
+
+
+def push_cosmetics_sync(user_id: int, guild_id: int, stats: dict) -> None:
+    """Update in-memory games + persisted Activity session after shop changes."""
+    title_id = equipped_title_id(stats)
+    pins = owned_pin_emojis(stats)
+    sync_title_to_active_games(user_id, guild_id, title_id)
+    sync_pins_to_active_games(user_id, guild_id, pins)
+    schedule_activity_cosmetics_sync(
+        user_id,
+        guild_id,
+        title_id=title_id,
+        pin_emojis=pins,
+    )
 
 
 def cosmetic_pin_text(meta: dict | None, *, fallback: str = "") -> str:
@@ -1793,6 +2000,7 @@ def build_activity_win_embed(
     streak: int,
     is_daily: bool = False,
     user_stats_dict: dict | None = None,
+    share_text: str | None = None,
 ) -> discord.Embed:
     """Channel announcement when someone clears a Sudoku puzzle."""
     mention = f"<@{user_id}>"
@@ -1813,6 +2021,8 @@ def build_activity_win_embed(
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
         f"{badge_line}"
     )
+    if share_text:
+        embed.add_field(name="Share", value=f"```\n{share_text}\n```", inline=False)
     return embed
 
 
@@ -1873,14 +2083,14 @@ def new_game_state(
     pin_emojis: list[str] | None = None,
     pin_seed: int | None = None,
 ) -> dict:
-    # Persist the human-readable tier name (e.g. "Expertttt")
-    tier_name = difficulty_label(difficulty)
+    # Persist the canonical difficulty key (e.g. "expertttt"); labels are for display only.
+    diff_key = difficulty_key_from_label(difficulty or DEFAULT_DIFFICULTY)
     return {
         "mode": mode,
         "board": normalize_board(board),
         "given": [row[:] for row in given],
         "solution": normalize_solution(solution),
-        "difficulty": tier_name,
+        "difficulty": diff_key,
         "ui_stage": STAGE_BOX,
         "box_id": 0,
         "sel_r": 0,
@@ -1956,10 +2166,17 @@ def board_caption(game: dict, *, status: str | None = None) -> str:
     return " "
 
 
+def normalize_game_mode(mode: str | None) -> str:
+    """Collapse Activity /play alias into legacy solo for forfeit paths."""
+    if mode == "play":
+        return "solo"
+    return mode or "solo"
+
+
 def build_embed(game: dict, *, status: str | None = None) -> discord.Embed:
     """Text-only fallback — live boards use standalone attachments instead."""
     _ = status
-    mode = game.get("mode", "solo")
+    mode = normalize_game_mode(game.get("mode"))
     if mode == "daily":
         title = f"Daily · {game.get('daily_date', utc_today())}"
     elif mode == "challenge":
@@ -2079,6 +2296,8 @@ def finish_win(
             "coins": coins,
             "xp": xp,
         }
+    elif normalize_game_mode(game.get("mode")) == "solo":
+        stats["last_activity_win_at"] = time.time()
 
     save_data(data)
 
@@ -2126,52 +2345,132 @@ async def finish_win_and_announce(
     user: discord.abc.User,
     game: dict,
 ) -> WinOutcome:
-    """Award win; for daily, gate on local `won` first (Mongo is best-effort anti-dupe)."""
+    """Award win; for daily, serialize finish + claim to prevent double payout."""
     if game.get("mode") != "daily":
         return finish_win(bot.data, guild_id, user, game)
 
     day = game.get("daily_date") or utc_today()
     elapsed = int(time.time() - game["started_at"])
     tier = difficulty_label(game.get("difficulty"))
-    gstats = guild_stats(bot.data, guild_id)
-    stats = user_stats(gstats, user.id)
 
-    daily_meta = get_guild_daily(bot.data, guild_id)
-    prior = daily_meta.get("results", {}).get(str(user.id)) or {}
+    lock = _daily_finish_lock(guild_id, user.id, day)
+    async with lock:
+        daily_meta = get_guild_daily(bot.data, guild_id)
+        prior = daily_meta.get("results", {}).get(str(user.id)) or {}
 
-    # Already awarded locally today — don't pay twice; still show previous amounts
-    if prior.get("won"):
-        prior_coins = int(prior.get("coins") or 0)
-        prior_xp = int(prior.get("xp") or prior_coins)
-        quiet = finish_win(bot.data, guild_id, user, game, award=False)
-        return WinOutcome(
-            embed=quiet.embed,
-            coins=prior_coins,
-            xp=prior_xp,
-            rank=quiet.rank,
-            quiet=True,
+        if prior.get("won"):
+            prior_coins = int(prior.get("coins") or 0)
+            prior_xp = int(prior.get("xp") or prior_coins)
+            quiet = finish_win(bot.data, guild_id, user, game, award=False)
+            return WinOutcome(
+                embed=quiet.embed,
+                coins=prior_coins,
+                xp=prior_xp,
+                rank=quiet.rank,
+                quiet=True,
+            )
+
+        if prior.get("forfeit"):
+            quiet = finish_win(bot.data, guild_id, user, game, award=False)
+            return WinOutcome(
+                embed=quiet.embed,
+                coins=0,
+                xp=0,
+                rank=quiet.rank,
+                quiet=True,
+            )
+
+        gstats = guild_stats(bot.data, guild_id)
+        stats = user_stats(gstats, user.id)
+        preview_streak = int(stats.get("streak") or 0) + 1
+        preview_coins = win_reward(
+            preview_streak,
+            daily=True,
+            difficulty=game.get("difficulty"),
         )
 
-    # Award XP + sponges FIRST — never let a Mongo "already claimed" block a first local payout
-    outcome = finish_win(bot.data, guild_id, user, game)
+        claimed: bool | None = None
+        try:
+            claimed = await match_store.try_claim_daily_win(
+                guild_id=guild_id,
+                user_id=user.id,
+                day=day,
+                elapsed=elapsed,
+                hints=int(game.get("hints_used") or game.get("hints") or 0),
+                difficulty=tier,
+                coins=preview_coins,
+                player_name=getattr(user, "display_name", None) or getattr(user, "name", None),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"try_claim_daily_win failed (proceeding with local award): {exc}")
+            claimed = None
 
-    preview_coins = int(outcome.coins)
-    preview_xp = int(outcome.xp)
-    try:
-        await match_store.try_claim_daily_win(
-            guild_id=guild_id,
-            user_id=user.id,
+        if claimed is None:
+            try:
+                mongo_won = await match_store.has_daily_claim(guild_id, user.id, day)
+            except Exception as check_exc:  # noqa: BLE001
+                print(f"has_daily_claim after try_claim failure: {check_exc}")
+                mongo_won = bool(prior.get("won"))
+            else:
+                mongo_won = mongo_won or bool(prior.get("won"))
+            if mongo_won:
+                quiet = finish_win(bot.data, guild_id, user, game, award=False)
+                return WinOutcome(
+                    embed=quiet.embed,
+                    coins=int(prior.get("coins") or preview_coins),
+                    xp=int(prior.get("xp") or prior.get("coins") or preview_coins),
+                    rank=quiet.rank,
+                    quiet=True,
+                )
+
+        if claimed is False:
+            try:
+                already = await match_store.has_daily_claim(guild_id, user.id, day)
+            except Exception:
+                already = True
+            if already:
+                quiet = finish_win(bot.data, guild_id, user, game, award=False)
+                return WinOutcome(
+                    embed=quiet.embed,
+                    coins=int(prior.get("coins") or preview_coins),
+                    xp=int(prior.get("xp") or prior.get("coins") or preview_coins),
+                    rank=quiet.rank,
+                    quiet=True,
+                )
+            # Duplicate key may be a durable forfeit — never award over it.
+            try:
+                forfeited = await match_store.has_daily_forfeit(guild_id, user.id, day)
+            except Exception as ff_exc:  # noqa: BLE001
+                print(f"has_daily_forfeit after claim miss: {ff_exc}")
+                forfeited = True
+            if forfeited:
+                quiet = finish_win(bot.data, guild_id, user, game, award=False)
+                return WinOutcome(
+                    embed=quiet.embed,
+                    coins=0,
+                    xp=0,
+                    rank=quiet.rank,
+                    quiet=True,
+                )
+
+        outcome = finish_win(bot.data, guild_id, user, game)
+
+        share = build_daily_share_text(
             day=day,
+            difficulty=game.get("difficulty"),
             elapsed=elapsed,
-            hints=0,
-            difficulty=tier,
-            coins=preview_coins,
-            player_name=getattr(user, "display_name", None) or getattr(user, "name", None),
+        )
+        outcome.embed.add_field(name="Share", value=f"```\n{share}\n```", inline=False)
+        return outcome
+
+
+async def record_daily_forfeit_mongo(guild_id: int, user_id: int, day: str) -> None:
+    try:
+        await match_store.try_record_daily_forfeit(
+            guild_id=guild_id, user_id=user_id, day=day
         )
     except Exception as exc:  # noqa: BLE001
-        print(f"try_claim_daily_win failed (local award kept): {exc}")
-
-    return outcome
+        print(f"record_daily_forfeit_mongo failed: {exc}")
 
 
 def finish_forfeit(data: dict, guild_id: int, user: discord.abc.User, game: dict) -> discord.Embed:
@@ -2181,15 +2480,22 @@ def finish_forfeit(data: dict, guild_id: int, user: discord.abc.User, game: dict
     stats["losses"] += 1
     stats["games"] += 1
     stats["streak"] = 0
-    if game["mode"] == "daily":
+    mode = normalize_game_mode(game.get("mode"))
+    if mode == "daily":
+        day = game.get("daily_date") or utc_today()
         daily = get_guild_daily(data, guild_id)
         daily["results"][str(user.id)] = {
             "won": False,
             "forfeit": True,
             "name": stats["name"],
         }
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(record_daily_forfeit_mongo(guild_id, user.id, day))
+        except RuntimeError:
+            pass
     save_data(data)
-    note = " Daily attempt locked for today — see you at the Krusty Krab!" if game["mode"] == "daily" else ""
+    note = " Daily attempt locked for today — see you at the Krusty Krab!" if mode == "daily" else ""
     return paper_embed(
         f"{WAVE} Quit",
         description=f"Streak wiped.{note}",
@@ -2213,6 +2519,7 @@ async def sync_challenge_board(game: dict) -> None:
         {
             "current_board": copy_grid(game["board"]),
             "last_move_at": time.time(),
+            "hints_used": int(game.get("hints_used") or 0),
         },
     )
     key = challenge_game_key(match_id, game["owner_id"])
@@ -2346,61 +2653,159 @@ async def settle_challenge_match(
     reason: str,
 ) -> None:
     """Compare finish times / forfeits and announce the winner in the origin channel."""
-    if match.get("status") == "finished":
+    match_id = match.get("_id")
+    if not match_id:
         return
-    if not challenge_ready_to_settle(match):
-        return
 
-    entries = match_player_entries(match)
-    guild_id = match["guild_id"]
-    start = float(match["start_time"])
+    # Claim settlement + award under lock; Discord I/O happens after release.
+    announce_payload: dict | None = None
+    async with _challenge_match_lock(str(match_id)):
+        try:
+            fresh = await match_store.get_match(str(match_id))
+        except Exception as exc:  # noqa: BLE001
+            print(f"settle_challenge_match get_match failed: {exc}")
+            fresh = None
+        if not fresh or fresh.get("status") == "finished":
+            return
+        if not challenge_ready_to_settle(fresh):
+            return
+        match = fresh
 
-    standing = [p for _, p in entries if not p.get("forfeit")]
-    finished = [p for p in standing if p.get("finished_time") is not None]
-    winner_id: int | None = None
-    detail = reason
+        entries = match_player_entries(match)
+        guild_id = match["guild_id"]
+        start = float(match["start_time"])
 
-    if not standing:
-        detail = "all forfeited"
-    elif len(standing) == 1:
-        winner_id = standing[0]["user_id"]
-        detail = "others forfeited"
-    else:
-        ranked = sorted(finished, key=lambda p: float(p["finished_time"]))
-        best = float(ranked[0]["finished_time"])
-        tied = [p for p in ranked if float(p["finished_time"]) == best]
-        if len(tied) > 1:
-            detail = "dead heat"
+        standing = [p for _, p in entries if not p.get("forfeit")]
+        finished = [p for p in standing if p.get("finished_time") is not None]
+        winner_id: int | None = None
+        detail = reason
+        tied_user_ids: set[int] = set()
+
+        if not standing:
+            detail = "all forfeited"
+        elif len(standing) == 1:
+            winner_id = standing[0]["user_id"]
+            detail = "others forfeited"
         else:
-            winner_id = ranked[0]["user_id"]
-            detail = "fastest finish"
+            ranked = sorted(finished, key=lambda p: float(p["finished_time"]))
+            best = float(ranked[0]["finished_time"])
+            tied = [p for p in ranked if float(p["finished_time"]) == best]
+            if len(tied) > 1:
+                detail = "dead heat"
+                tied_user_ids = {int(p["user_id"]) for p in tied}
+            else:
+                winner_id = ranked[0]["user_id"]
+                detail = "fastest finish"
 
-    winner_name = None
-    if winner_id is not None:
-        for _, p in entries:
-            if p.get("user_id") == winner_id:
-                winner_name = p.get("name")
-                break
-    await match_store.update_match(
-        match["_id"],
-        {
-            "status": "finished",
+        winner_name = None
+        if winner_id is not None:
+            for _, p in entries:
+                if p.get("user_id") == winner_id:
+                    winner_name = p.get("name")
+                    break
+        await match_store.update_match(
+            match["_id"],
+            {
+                "status": "finished",
+                "winner_id": winner_id,
+                "winner_name": winner_name,
+                "settle_reason": detail,
+            },
+        )
+
+        for _slot, player in entries:
+            key = challenge_game_key(match["_id"], player["user_id"])
+            await remove_game(key)
+
+        guild = bot.get_guild(guild_id)
+        reward_embed = None
+        if winner_id is not None:
+            winner_elapsed = 0.0
+            for _, p in entries:
+                if p.get("user_id") == winner_id:
+                    if p.get("elapsed") is not None:
+                        winner_elapsed = float(p["elapsed"])
+                    elif p.get("finished_time") is not None:
+                        winner_elapsed = max(0.0, float(p["finished_time"]) - start)
+                    break
+
+            winner_game = {
+                "mode": "challenge",
+                # Use the winner's actual solve time, not wall-clock since lobby open.
+                "started_at": time.time() - winner_elapsed,
+                "difficulty": match.get("difficulty"),
+                "hints_used": 0,
+            }
+            winner_user = guild.get_member(winner_id) if guild else None
+            if winner_user is None:
+                try:
+                    winner_user = await bot.fetch_user(winner_id)
+                except discord.HTTPException:
+                    winner_user = None
+
+            if winner_user is not None:
+                wname = getattr(winner_user, "display_name", None) or winner_user.name
+                if wname and wname != winner_name:
+                    winner_name = wname
+                    await match_store.update_match(match["_id"], {"winner_name": wname})
+                reward_embed = finish_win(
+                    bot.data,
+                    guild_id,
+                    winner_user,
+                    winner_game,
+                    challenge_winner=True,
+                ).embed
+                gstats_w = guild_stats(bot.data, guild_id)
+                user_stats(gstats_w, winner_id)["challenge_wins"] = (
+                    int(user_stats(gstats_w, winner_id).get("challenge_wins", 0)) + 1
+                )
+                save_data(bot.data)
+
+        gstats = guild_stats(bot.data, guild_id)
+        for _slot, player in entries:
+            uid = player["user_id"]
+            if uid == winner_id:
+                continue
+            if player.get("forfeit"):
+                continue
+            loser_stats = user_stats(gstats, uid)
+            if uid in tied_user_ids:
+                loser_stats["coins"] += CHALLENGE_LOSER_COINS
+                continue
+            loser_stats["losses"] += 1
+            loser_stats["games"] += 1
+            loser_stats["streak"] = 0
+            loser_stats["coins"] += CHALLENGE_LOSER_COINS
+        save_data(bot.data)
+
+        announce_payload = {
+            "match": match,
+            "entries": entries,
+            "guild_id": guild_id,
+            "start": start,
             "winner_id": winner_id,
-            "winner_name": winner_name,
-            "settle_reason": detail,
-        },
-    )
-    schedule_challenge_live_update(match["_id"], immediate=True)
+            "detail": detail,
+            "reward_embed": reward_embed,
+            "channel_id": match.get("channel_id"),
+        }
 
-    for _slot, player in entries:
-        key = challenge_game_key(match["_id"], player["user_id"])
-        await remove_game(key)
+    schedule_challenge_live_update(str(match_id), immediate=True)
 
-    guild = bot.get_guild(guild_id)
-    channel = await resolve_channel(bot, match.get("channel_id"))
-    if channel is None or not hasattr(channel, "send"):
-        print(f"settle_challenge_match: origin channel missing for match {match.get('_id')}")
+    if announce_payload is None:
         return
+
+    channel = await resolve_channel(bot, announce_payload["channel_id"])
+    if not isinstance(channel, discord.TextChannel):
+        print(f"settle_challenge_match: origin channel missing for match {match_id}")
+        return
+
+    guild = bot.get_guild(announce_payload["guild_id"])
+    winner_id = announce_payload["winner_id"]
+    detail = announce_payload["detail"]
+    entries = announce_payload["entries"]
+    start = announce_payload["start"]
+    match = announce_payload["match"]
+    reward_embed = announce_payload["reward_embed"]
 
     def mention(uid: int | None) -> str:
         if uid is None:
@@ -2412,49 +2817,6 @@ async def settle_challenge_match(
         embed = paper_embed("Challenge ended", description=f"No winner ({detail}).")
         await channel.send(embed=embed)
         return
-
-    winner_game = {
-        "mode": "challenge",
-        "started_at": start,
-        "difficulty": match.get("difficulty"),
-        "hints_used": 0,
-    }
-    winner_user = guild.get_member(winner_id) if guild else None
-    if winner_user is None:
-        try:
-            winner_user = await bot.fetch_user(winner_id)
-        except discord.HTTPException:
-            winner_user = None
-
-    reward_embed = None
-    if winner_user is not None:
-        wname = getattr(winner_user, "display_name", None) or winner_user.name
-        if wname and wname != winner_name:
-            await match_store.update_match(match["_id"], {"winner_name": wname})
-        reward_embed = finish_win(
-            bot.data,
-            guild_id,
-            winner_user,
-            winner_game,
-            challenge_winner=True,
-        ).embed
-        gstats_w = guild_stats(bot.data, guild_id)
-        user_stats(gstats_w, winner_id)["challenge_wins"] = (
-            int(user_stats(gstats_w, winner_id).get("challenge_wins", 0)) + 1
-        )
-        save_data(bot.data)
-
-    gstats = guild_stats(bot.data, guild_id)
-    for _slot, player in entries:
-        uid = player["user_id"]
-        if uid == winner_id:
-            continue
-        loser_stats = user_stats(gstats, uid)
-        loser_stats["losses"] += 1
-        loser_stats["games"] += 1
-        loser_stats["streak"] = 0
-        loser_stats["coins"] += CHALLENGE_LOSER_COINS
-    save_data(bot.data)
 
     # Ranked board: finishers by time, then forfeits / last standing
     ranked_lines: list[str] = []
@@ -2498,16 +2860,49 @@ async def handle_challenge_completion(
     match_id = game["match_id"]
     slot = game["player_slot"]
     elapsed = finished_at - float(game["started_at"])
+    match: dict | None = None
+    player: dict | None = None
+    already = False
 
-    match = await match_store.update_player(
-        match_id,
-        slot,
-        {
-            "current_board": copy_grid(game["board"]),
-            "finished_time": finished_at,
-            "elapsed": elapsed,
-        },
-    )
+    async with _challenge_match_lock(str(match_id)):
+        try:
+            current = await match_store.get_match(str(match_id))
+        except Exception as exc:  # noqa: BLE001
+            print(f"handle_challenge_completion get_match failed: {exc}")
+            current = None
+        if not current:
+            await interaction.edit_original_response(
+                content=None,
+                embed=paper_embed("Match missing"),
+                view=None,
+                attachments=[],
+            )
+            game.pop("finishing", None)
+            game.pop("_digit_lock", None)
+            view.stop()
+            await remove_game(view.game_key)
+            return
+
+        player = current.get(slot) if isinstance(current.get(slot), dict) else None
+        if player and player.get("forfeit"):
+            match = current
+            already = True
+        elif player and player.get("finished_time") is not None:
+            # Idempotent: already recorded — don't overwrite finish time.
+            match = current
+            already = True
+        else:
+            already = False
+            match = await match_store.update_player(
+                match_id,
+                slot,
+                {
+                    "current_board": copy_grid(game["board"]),
+                    "finished_time": finished_at,
+                    "elapsed": elapsed,
+                },
+            )
+
     if not match:
         await interaction.edit_original_response(
             content=None,
@@ -2541,7 +2936,8 @@ async def handle_challenge_completion(
         if remaining
         else "Settling match…"
     )
-    caption = f"**Board complete** · Time: **{format_time(elapsed)}**. {wait_msg}"
+    shown_elapsed = float(player.get("elapsed") or elapsed) if already and player else elapsed
+    caption = f"**Board complete** · Time: **{format_time(shown_elapsed)}**. {wait_msg}"
     file = board_to_file(image)
     await interaction.edit_original_response(
         content=caption,
@@ -2563,26 +2959,65 @@ async def handle_challenge_completion_activity(
     user_id: int,
     game: dict,
     elapsed: int,
-) -> None:
-    """Record finish time from Activity; settle challenge when everyone is done."""
+) -> dict:
+    """Record finish time from Activity; settle challenge when everyone is done.
+
+    Returns a status dict for the HTTP layer (ok / already / errors).
+    """
     finished_at = time.time()
     match_id = game["match_id"]
     slot = game["player_slot"]
+    already = False
 
-    match = await match_store.update_player(
-        match_id,
-        slot,
-        {
-            "current_board": copy_grid(game["board"]),
-            "finished_time": finished_at,
-            "elapsed": elapsed,
-        },
-    )
+    async with _challenge_match_lock(str(match_id)):
+        try:
+            current = await match_store.get_match(str(match_id))
+        except Exception as exc:  # noqa: BLE001
+            print(f"handle_challenge_completion_activity get_match failed: {exc}")
+            current = None
+        if not current:
+            key = challenge_game_key(match_id, user_id)
+            await remove_game(key)
+            return {"ok": False, "error": "match_missing"}
+        if current.get("status") == "finished":
+            key = challenge_game_key(match_id, user_id)
+            await remove_game(key)
+            return {"ok": False, "error": "already_settled"}
+
+        player = current.get(slot) if isinstance(current.get(slot), dict) else None
+        if not player:
+            key = challenge_game_key(match_id, user_id)
+            await remove_game(key)
+            return {"ok": False, "error": "match_missing"}
+        if player.get("forfeit"):
+            key = challenge_game_key(match_id, user_id)
+            await remove_game(key)
+            return {"ok": False, "error": "forfeited"}
+        if player.get("finished_time") is not None:
+            match = current
+            already = True
+        else:
+            match = await match_store.update_player(
+                match_id,
+                slot,
+                {
+                    "current_board": copy_grid(game["board"]),
+                    "finished_time": finished_at,
+                    "elapsed": elapsed,
+                },
+            )
+
     key = challenge_game_key(match_id, user_id)
     await remove_game(key)
 
     if not match:
-        return
+        return {"ok": False, "error": "match_missing"}
+
+    if already:
+        # Don't re-post completion spam; still try settle in case peers finished.
+        if challenge_ready_to_settle(match):
+            await settle_challenge_match(bot, match, reason="all finished")
+        return {"ok": True, "challenge": True, "already": True}
 
     # Send completion image & text to the private thread
     channel_id = game.get("channel_id")
@@ -2600,7 +3035,7 @@ async def handle_challenge_completion_activity(
                     difficulty=game.get("difficulty"),
                     title_id=game.get("owner_title"),
                     pin_emojis=game.get("pin_emojis"),
-                    pin_seed=game.get("pin_seed"),
+                    pin_seed=game.get("pin_seed") or user_id,
                 )
                 file = board_to_file(image)
                 remaining = sum(
@@ -2619,32 +3054,88 @@ async def handle_challenge_completion_activity(
     if challenge_ready_to_settle(match):
         await settle_challenge_match(bot, match, reason="all finished")
 
+    return {"ok": True, "challenge": True}
 
-async def handle_challenge_forfeit(
+
+async def forfeit_challenge_player(
     bot: "SudokuBot",
-    interaction: discord.Interaction,
-    game: dict,
-    view: "SudokuView",
-) -> None:
-    match_id = game["match_id"]
-    slot = game["player_slot"]
-    match = await match_store.update_player(
-        match_id,
-        slot,
-        {"forfeit": True, "finished_time": None},
-    )
+    match_id: str,
+    slot: str,
+    *,
+    game_key: tuple | None = None,
+    reason: str = "quit",
+) -> dict | None:
+    """Mark a challenge player as forfeited without clobbering an existing finish."""
+    match: dict | None = None
+    async with _challenge_match_lock(str(match_id)):
+        try:
+            current = await match_store.get_match(str(match_id))
+        except Exception as exc:  # noqa: BLE001
+            print(f"forfeit_challenge_player get_match failed: {exc}")
+            current = None
+        if not current or current.get("status") == "finished":
+            return None
+        player = current.get(slot) if isinstance(current.get(slot), dict) else None
+        if not player or player.get("forfeit") or player.get("finished_time") is not None:
+            return current
+        match = await match_store.update_player(
+            str(match_id),
+            slot,
+            {"forfeit": True, "finished_time": None},
+        )
 
-    embed = paper_embed(
-        "Quit",
-        description="You're out. Remaining players keep racing.",
-    )
-    await interaction.response.edit_message(embed=embed, view=None, attachments=[])
-    view.stop()
-    await remove_game(view.game_key)
-
+    if game_key is not None:
+        await remove_game(game_key)
     if match:
-        schedule_challenge_live_update(match_id, immediate=True)
-        await settle_challenge_match(bot, match, reason="quit")
+        schedule_challenge_live_update(str(match_id), immediate=True)
+        if challenge_ready_to_settle(match):
+            await settle_challenge_match(bot, match, reason=reason)
+    return match
+
+
+async def forfeit_challenge_activity(bot: "SudokuBot", user_id: int) -> bool:
+    """Forfeit when a challenge player closes the Activity (no /quit)."""
+    ch_key = find_challenge_game_for_user(user_id)
+    if ch_key is not None:
+        game = games.get(ch_key)
+        if game and game.get("mode") == "challenge":
+            match_id = game.get("match_id")
+            slot = game.get("player_slot")
+            if not match_id or not slot:
+                await remove_game(ch_key)
+                return False
+            await forfeit_challenge_player(
+                bot,
+                str(match_id),
+                slot,
+                game_key=ch_key,
+                reason="quit",
+            )
+            return True
+
+    try:
+        active = await match_store.list_matches(status="active")
+    except Exception as exc:  # noqa: BLE001
+        print(f"forfeit_challenge_activity list_matches failed: {exc}")
+        return False
+    for match in active:
+        mid = match.get("_id")
+        if not mid:
+            continue
+        for slot, player in match_player_entries(match):
+            if player.get("user_id") != user_id:
+                continue
+            if player.get("forfeit") or player.get("finished_time") is not None:
+                continue
+            await forfeit_challenge_player(
+                bot,
+                str(mid),
+                slot,
+                game_key=None,
+                reason="quit",
+            )
+            return True
+    return False
 
 
 async def launch_challenge_match(
@@ -2688,7 +3179,7 @@ async def launch_challenge_match(
             board=board,
             given=given,
             solution=solution,
-            difficulty=tier,
+            difficulty=difficulty_key_from_label(difficulty),
             player_names=player_names,
         )
         match_id = await match_store.insert_match(doc)
@@ -2739,11 +3230,13 @@ async def launch_challenge_match(
                 pin_emojis=owned_pin_emojis(pstats),
             )
             try:
-                await dest.send(
+                launch_msg = await dest.send(
                     f"{member.mention} Speedrun ({len(players)} players) · **{tier}**\n"
                     f"Field: {names} — click below to open the Activity and start playing!",
                     view=ChallengeLaunchActivityView(),
                 )
+                # Persist message_id so bot restart can restore without auto-forfeit.
+                games[key]["message_id"] = launch_msg.id
                 await persist_game(key, games[key])
             except discord.HTTPException as exc:
                 raise RuntimeError(
@@ -2837,9 +3330,8 @@ def challenge_standings_lines(match: dict, guild: discord.Guild | None) -> list[
             lines.append(f"✗ {mention} — quit")
             continue
         if player.get("finished_time") is not None:
-            elapsed = player.get("elapsed")
-            if elapsed is None:
-                elapsed = float(player["finished_time"]) - start
+            # Always derive display time from server wall clock (matches settlement ranking).
+            elapsed = max(0.0, float(player["finished_time"]) - start)
             lines.append(f"✅ {mention} — **{format_time(elapsed)}**")
             continue
         filled = challenge_board_filled(player.get("current_board") or [])
@@ -3066,14 +3558,19 @@ def build_activity_live_embed(
     for session in sessions:
         mention = activity_session_mention(guild, session)
         filled = int(session.get("filled") or 0)
-        elapsed = int(session.get("elapsed") or 0)
+        elapsed = activity_session_elapsed(session)
         tier = difficulty_label(session.get("difficulty"))
         marker = "🎮 " if str(session.get("user_id")) == active_uid else "▶ "
         lines.append(
             f"{marker}{mention} — **{tier}** · {filled}/{CHALLENGE_BOARD_CELLS} · "
             f"{format_time(elapsed)}"
         )
-    embed = paper_embed("Live /play")
+    embed = paper_embed("Live games")
+    kinds = {(s.get("session_kind") or "play") for s in sessions}
+    if kinds == {"daily"}:
+        embed.title = f"{PINEAPPLE} Live daily"
+    elif kinds <= {"play"}:
+        embed.title = f"{SPONGE} Live /play"
     embed.description = "\n".join(lines) or "Nobody playing right now."
     if active_uid:
         for session in sessions:
@@ -3103,6 +3600,68 @@ def daily_watch_session_id(guild_id: int, user_id: int) -> str:
     return f"activity:{guild_id}:{user_id}"
 
 
+async def get_blocking_activity_session(
+    guild_id: int,
+    user_id: int,
+    *,
+    kinds: set[str] | None = None,
+) -> dict | None:
+    """Return an open Activity session that should block starting another mode."""
+    session = await match_store.get_activity_session(
+        daily_watch_session_id(guild_id, user_id)
+    )
+    if not session:
+        return None
+    kind = session.get("session_kind") or "play"
+    if kinds is not None and kind not in kinds:
+        return None
+    if session.get("won_at"):
+        return None
+    # Preference-only docs (diff_index without board) shouldn't block.
+    if not session.get("board") and not session.get("solution"):
+        return None
+    if kind == "daily":
+        day = session.get("daily_date") or ""
+        if day and day != utc_today():
+            return None
+    else:
+        ts = float(session.get("last_move_at") or session.get("updated_at") or 0)
+        if ts > 0 and (time.time() - ts) > ACTIVITY_BLOCKING_MAX_AGE_SEC:
+            return None
+    return session
+
+
+async def daily_attempt_blocks_modes(guild_id: int, user_id: int) -> str | None:
+    """Block /play and /challenge while today's daily attempt is still open."""
+    daily = get_guild_daily(bot.data, guild_id)
+    uid = str(user_id)
+    r = (daily.get("results") or {}).get(uid) or {}
+    if r.get("in_progress") and not r.get("won"):
+        return (
+            "Finish or `/quit` today's **daily** first — your attempt is still in progress."
+        )
+    blocking = await get_blocking_activity_session(
+        guild_id, user_id, kinds={"daily"}
+    )
+    if blocking:
+        return (
+            "Finish or `/quit` today's **daily** Activity first — "
+            "your attempt is still open."
+        )
+    return None
+
+
+async def activity_blocks_challenge(guild_id: int, user_id: int) -> str | None:
+    """User-facing reason if an Activity play/daily session blocks a challenge join."""
+    blocking = await get_blocking_activity_session(
+        guild_id, user_id, kinds={"play", "daily"}
+    )
+    if not blocking:
+        return None
+    kind = blocking.get("session_kind") or "play"
+    return f"<@{user_id}> — finish your active **{kind}** Activity first (`/quit`)."
+
+
 def parse_watch_session_ids(session_id: str) -> tuple[int, int]:
     parts = str(session_id).split(":")
     guild_id = int(parts[1]) if len(parts) >= 3 else 0
@@ -3124,6 +3683,51 @@ def game_filled_count(game: dict) -> int:
 
 def game_elapsed_sec(game: dict) -> int:
     return max(0, int(time.time() - float(game.get("started_at") or time.time())))
+
+
+def activity_session_elapsed(session: dict) -> int:
+    """Wall-clock elapsed for spectators — prefer server started_at over client saves."""
+    started = float(session.get("started_at") or 0)
+    if started > 0:
+        return max(0, int(time.time() - started))
+    return max(0, int(session.get("elapsed") or 0))
+
+
+def play_puzzle_fingerprint(
+    given: list[list[bool]] | None,
+    *,
+    board: list | None = None,
+    solution: list[list[int]] | None = None,
+) -> str | None:
+    """Stable id for a /play puzzle from clue positions + clue digits."""
+    import hashlib
+
+    if not given or len(given) != 9:
+        return None
+    sol = normalize_solution(solution) if solution is not None else None
+    parts: list[str] = []
+    for r in range(9):
+        row = given[r]
+        if not isinstance(row, list) or len(row) != 9:
+            return None
+        cells: list[str] = []
+        for c in range(9):
+            if not bool(row[c]):
+                cells.append("0")
+                continue
+            digit = 0
+            if board is not None:
+                try:
+                    digit = int(cell_value(board, r, c) or 0)
+                except Exception:
+                    digit = 0
+            if digit <= 0 and sol is not None:
+                digit = int(sol[r][c] or 0)
+            if digit <= 0:
+                return None
+            cells.append(str(digit))
+        parts.append("".join(cells))
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
 
 
 async def sync_daily_watch_session(key: tuple, game: dict) -> None:
@@ -3152,11 +3756,18 @@ async def sync_daily_watch_session(key: tuple, game: dict) -> None:
         "name": game.get("owner_name") or "Player",
         "channel_id": str(game.get("channel_id")) if game.get("channel_id") else None,
         "daily_date": game.get("daily_date"),
+        "started_at": float(game.get("started_at") or time.time()),
         "last_move_at": time.time(),
     }
     existing = await match_store.get_activity_session(session_id)
     if existing:
-        for watch_key in ("watch_notified", "watch_message_id", "watch_channel_id", "watch_posted_at"):
+        for watch_key in (
+            "watch_notified",
+            "watch_message_id",
+            "watch_channel_id",
+            "watch_posted_at",
+            "watch_once_notified",
+        ):
             if existing.get(watch_key) is not None:
                 doc[watch_key] = existing[watch_key]
     await match_store.upsert_activity_session(doc)
@@ -3169,33 +3780,30 @@ async def notify_daily_play_started(
     if interaction.guild is None:
         return
     session_id = daily_watch_session_id(interaction.guild.id, interaction.user.id)
-    if session_id in _activity_notify_inflight:
-        print(f"daily watch notify skipped for {session_id}: already in flight")
+    watch_channel_id = ACTIVITY_WATCH_CHANNEL_ID
+    if not watch_channel_id and isinstance(interaction.channel, discord.abc.GuildChannel):
+        watch_channel_id = int(interaction.channel.id)
+    print(
+        f"daily watch notify for {session_id} channel={watch_channel_id or 'unset'}"
+    )
+    existing = await match_store.get_activity_session(session_id)
+    if existing and await activity_watch_is_live(bot_ref, existing):
+        print(f"daily watch notify skipped for {session_id}: announcement already live")
         return
-    _activity_notify_inflight.add(session_id)
-    try:
-        watch_channel_id = ACTIVITY_WATCH_CHANNEL_ID
-        if not watch_channel_id and isinstance(interaction.channel, discord.abc.GuildChannel):
-            watch_channel_id = int(interaction.channel.id)
-        print(
-            f"daily watch notify for {session_id} channel={watch_channel_id or 'unset'}"
-        )
-        existing = await match_store.get_activity_session(session_id)
-        if existing:
-            await delete_activity_watch_message(bot_ref, existing, session_id=session_id)
-        day = utc_today()
-        await notify_activity_play_started(
-            bot_ref,
-            session_id,
-            fallback_user=interaction.user,
-            force=True,
-            watch_channel_id=watch_channel_id or None,
-            announcement=(
-                f"{interaction.user.mention} is playing today's **Daily Sudoku** (`{day}`)!"
-            ),
-        )
-    finally:
-        _activity_notify_inflight.discard(session_id)
+    if existing and existing.get("watch_once_notified"):
+        print(f"daily watch notify skipped for {session_id}: already notified this session")
+        return
+    day = utc_today()
+    await notify_activity_play_started(
+        bot_ref,
+        session_id,
+        fallback_user=interaction.user,
+        force=False,
+        watch_channel_id=watch_channel_id or None,
+        announcement=(
+            f"{interaction.user.mention} is playing today's **Daily Sudoku** (`{day}`)!"
+        ),
+    )
 
 
 async def _notify_daily_play_started_safe(
@@ -3290,9 +3898,13 @@ async def notify_activity_play_started(
             else:
                 announcement = f"{mention} is playing **Sudoku**!"
 
+        watch_view = ActivityPlayWatchView(session_id, bot_ref)
         msg = await channel.send(
             content=announcement,
+            view=watch_view,
         )
+        watch_view.message = msg
+        bot_ref.add_view(watch_view)
         await match_store.merge_activity_session(
             session_id,
             {
@@ -3303,6 +3915,9 @@ async def notify_activity_play_started(
                 "watch_message_id": msg.id,
                 "watch_channel_id": str(channel_id),
                 "watch_posted_at": time.time(),
+                # Persist across end_watch so re-opening the same game doesn't spam.
+                # Cleared only when the whole session doc is deleted (new game / win / quit).
+                "watch_once_notified": True,
             },
         )
         print(f"activity watch posted for {session_id} in {channel_id}")
@@ -3320,31 +3935,40 @@ async def notify_activity_play_from_launch(
 ) -> None:
     if interaction.guild is None:
         return
-    session_id = f"activity:{interaction.guild.id}:{interaction.user.id}"
-    if session_id in _activity_notify_inflight:
-        print(f"activity watch launch notify skipped for {session_id}: already in flight")
-        return
-    _activity_notify_inflight.add(session_id)
-    try:
-        watch_channel_id = ACTIVITY_WATCH_CHANNEL_ID
-        if not watch_channel_id and isinstance(interaction.channel, discord.abc.GuildChannel):
-            watch_channel_id = int(interaction.channel.id)
+    if find_challenge_game_for_user(interaction.user.id):
         print(
-            f"activity watch launch notify for {session_id} "
-            f"channel={watch_channel_id or 'unset'}"
+            f"activity watch launch notify skipped for user={interaction.user.id}: "
+            "active challenge"
         )
-        existing = await match_store.get_activity_session(session_id)
-        if existing:
-            await delete_activity_watch_message(bot_ref, existing, session_id=session_id)
-        await notify_activity_play_started(
-            bot_ref,
-            session_id,
-            fallback_user=interaction.user,
-            force=True,
-            watch_channel_id=watch_channel_id or None,
-        )
-    finally:
-        _activity_notify_inflight.discard(session_id)
+        return
+    session_id = f"activity:{interaction.guild.id}:{interaction.user.id}"
+    watch_channel_id = ACTIVITY_WATCH_CHANNEL_ID
+    if not watch_channel_id and isinstance(interaction.channel, discord.abc.GuildChannel):
+        watch_channel_id = int(interaction.channel.id)
+    print(
+        f"activity watch launch notify for {session_id} "
+        f"channel={watch_channel_id or 'unset'}"
+    )
+    # Only post if the announcement is not already live in the channel.
+    # Do NOT clear watch_notified here — that creates a race with the session-save
+    # path in activity_http.py which also calls notify_activity_play_started, causing
+    # duplicate "X is playing" messages. Both paths are guarded by _activity_notify_inflight.
+    existing = await match_store.get_activity_session(session_id)
+    if existing and await activity_watch_is_live(bot_ref, existing):
+        print(f"activity watch launch notify skipped for {session_id}: announcement already live")
+        return
+    # If the player already received a notification for this game session (they closed and
+    # reopened), don't spam the channel again. The flag is only cleared on a new game/win.
+    if existing and existing.get("watch_once_notified"):
+        print(f"activity watch launch notify skipped for {session_id}: already notified this session")
+        return
+    await notify_activity_play_started(
+        bot_ref,
+        session_id,
+        fallback_user=interaction.user,
+        force=False,
+        watch_channel_id=watch_channel_id or None,
+    )
 
 
 async def _notify_activity_play_from_launch_safe(
@@ -3398,8 +4022,24 @@ async def end_activity_watch(
     session = await match_store.get_activity_session(session_id)
     if not session or not session.get("watch_message_id"):
         parts = str(session_id).split(":")
+        # activity:{guild}:{user} — keep find scoped to the same guild (or orphan).
         if len(parts) >= 3:
-            alt = await match_store.find_activity_session_by_user_id(parts[2])
+            sid_guild = parts[1]
+            sid_user = parts[2]
+            alt = None
+            if sid_guild not in ("", "0"):
+                alt = await match_store.find_activity_session_by_user_id(
+                    sid_user, guild_id=sid_guild
+                )
+            if (not alt or not alt.get("watch_message_id")) and sid_guild != "0":
+                # Explicit orphan key only — never cross-guild.
+                orphan = await match_store.get_activity_session(
+                    f"activity:0:{sid_user}"
+                )
+                if orphan and orphan.get("watch_message_id"):
+                    orphan_gid = str(orphan.get("guild_id") or "0")
+                    if orphan_gid in ("", "0", sid_guild):
+                        alt = orphan
             if alt and alt.get("watch_message_id"):
                 session_id = str(alt.get("_id") or session_id)
                 session = alt
@@ -3424,10 +4064,6 @@ async def end_activity_watch(
 async def clear_activity_session(bot_ref: "SudokuBot", session_id: str) -> None:
     """Drop the persisted session (keeps the watch announcement in chat history)."""
     await match_store.delete_activity_session(session_id)
-
-
-def schedule_activity_play_notify(session_id: str) -> None:
-    asyncio.create_task(notify_activity_play_started(bot, session_id))
 
 
 async def restore_activity_play_watch_views(bot_ref: "SudokuBot") -> None:
@@ -3478,7 +4114,11 @@ class ActivityPlayWatchView(discord.ui.View):
         await open_activity_live_spectator(interaction, self.session_id, self.bot)
 
 
-def build_activity_spectator_payload(session: dict) -> tuple[str, discord.File] | None:
+def build_activity_spectator_payload(
+    session: dict,
+    *,
+    bot_ref: "SudokuBot | None" = None,
+) -> tuple[str, discord.File] | None:
     board_raw = session.get("board")
     given = session.get("given")
     if not board_raw or not isinstance(given, list) or len(given) != 9:
@@ -3487,11 +4127,35 @@ def build_activity_spectator_payload(session: dict) -> tuple[str, discord.File] 
     name = str(session.get("name") or "Player")
     filled = int(session.get("filled") or 0)
     tier = difficulty_label(session.get("difficulty"))
-    elapsed = int(session.get("elapsed") or 0)
-    image = render_board(board, given, difficulty=session.get("difficulty"))
+    elapsed = activity_session_elapsed(session)
+    title_id = None
+    pin_emojis: list[str] = []
+    pin_seed = 1
+    try:
+        uid = int(session.get("user_id") or 0)
+        gid = int(session.get("guild_id") or 0)
+        pin_seed = uid or 1
+        if bot_ref is not None and uid and gid:
+            pstats = user_stats(guild_stats(bot_ref.data, gid), uid)
+            title_id = equipped_title_id(pstats)
+            pin_emojis = owned_pin_emojis(pstats)
+    except (TypeError, ValueError):
+        pass
+    image = render_board(
+        board,
+        given,
+        difficulty=session.get("difficulty"),
+        title_id=title_id,
+        pin_emojis=pin_emojis,
+        pin_seed=pin_seed,
+    )
     file = board_to_file(image)
     if filled >= CHALLENGE_BOARD_CELLS:
-        status = "puzzle complete"
+        status = (
+            "submitting win…"
+            if not session.get("won_at")
+            else "puzzle complete"
+        )
     else:
         status = "live — updates every few seconds"
     if session.get("session_kind") == "daily":
@@ -3515,7 +4179,9 @@ async def get_watch_session_for_spectator(session_id: str) -> dict | None:
         return session
     parts = str(session_id).split(":")
     if len(parts) >= 3:
-        alt = await match_store.find_activity_session_by_user_id(parts[2])
+        alt = await match_store.find_activity_session_by_user_id(
+            parts[2], guild_id=parts[1]
+        )
         if alt and build_activity_spectator_payload(alt) is not None:
             return alt
     return session
@@ -3589,7 +4255,7 @@ class ActivityPlayLiveSpectatorView(discord.ui.View):
     def _session_changed(self, session: dict) -> bool:
         move_at = float(session.get("last_move_at") or session.get("updated_at") or 0)
         filled = int(session.get("filled") or 0)
-        elapsed = int(session.get("elapsed") or 0)
+        elapsed = activity_session_elapsed(session)
         changed = (
             move_at != self._last_move_at
             or filled != self._last_filled
@@ -3613,7 +4279,15 @@ class ActivityPlayLiveSpectatorView(discord.ui.View):
                 pass
             self.stop()
             return False
-        payload = build_activity_spectator_payload(session)
+        if session.get("won_at"):
+            self._stop_polling()
+            try:
+                await self.message.edit(content="This game has ended.", attachments=[], view=None)
+            except discord.HTTPException:
+                pass
+            self.stop()
+            return False
+        payload = build_activity_spectator_payload(session, bot_ref=self.bot)
         if payload is None:
             return False
         if not force and not self._session_changed(session):
@@ -3626,7 +4300,7 @@ class ActivityPlayLiveSpectatorView(discord.ui.View):
             self._stop_polling()
             self.stop()
             return False
-        if int(session.get("filled") or 0) >= CHALLENGE_BOARD_CELLS:
+        if session.get("won_at"):
             self._stop_polling()
             self.stop()
         return True
@@ -3666,7 +4340,7 @@ async def open_activity_live_spectator(
     if not session:
         await interaction.followup.send("This game has ended.", ephemeral=True)
         return
-    payload = build_activity_spectator_payload(session)
+    payload = build_activity_spectator_payload(session, bot_ref=bot_ref)
     if payload is None:
         name = str(session.get("name") or "Player")
         await interaction.followup.send(
@@ -3678,7 +4352,7 @@ async def open_activity_live_spectator(
     view = ActivityPlayLiveSpectatorView(session_id, bot_ref)
     view._last_move_at = float(session.get("last_move_at") or session.get("updated_at") or 0)
     view._last_filled = int(session.get("filled") or 0)
-    view._last_elapsed = int(session.get("elapsed") or 0)
+    view._last_elapsed = activity_session_elapsed(session)
     msg = await interaction.followup.send(
         content=content,
         file=file,
@@ -3690,7 +4364,7 @@ async def open_activity_live_spectator(
 
 
 class ActivityWatchMenuView(discord.ui.View):
-    """Ephemeral /watch menu — Live button per active /play session."""
+    """Ephemeral /watch menu — Live for /play/daily and challenge races."""
 
     def __init__(
         self,
@@ -3704,7 +4378,6 @@ class ActivityWatchMenuView(discord.ui.View):
         self.bot = bot_ref
 
     def rebuild_buttons(self, sessions: list[dict]) -> None:
-        self.clear_items()
         for session in sessions[:5]:
             name = str(session.get("name") or "Player")[:20]
             sid = str(session.get("_id") or "")
@@ -3717,9 +4390,43 @@ class ActivityWatchMenuView(discord.ui.View):
             btn.callback = self._make_live_cb(sid)
             self.add_item(btn)
 
+    def rebuild_challenge_buttons(self, matches: list[dict]) -> None:
+        for match in matches[:3]:
+            match_id = str(match.get("_id") or "")
+            if not match_id:
+                continue
+            tier = difficulty_label(match.get("difficulty"))[:14]
+            n = len(match_player_entries(match))
+            btn = discord.ui.Button(
+                label=f"🏁 {tier} ({n})",
+                style=discord.ButtonStyle.success,
+            )
+            btn.callback = self._make_challenge_cb(match_id)
+            self.add_item(btn)
+
     def _make_live_cb(self, session_id: str):
         async def _cb(interaction: discord.Interaction) -> None:
             await open_activity_live_spectator(interaction, session_id, self.bot)
+
+        return _cb
+
+    def _make_challenge_cb(self, match_id: str):
+        async def _cb(interaction: discord.Interaction) -> None:
+            match = await match_store.get_match(match_id)
+            if not match or match.get("status") == "finished":
+                await interaction.response.send_message(
+                    "That challenge has already ended.",
+                    ephemeral=True,
+                )
+                return
+            embed = build_challenge_live_embed(match, interaction.guild)
+            view = build_challenge_watch_view(match, self.bot)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            try:
+                view.message = await interaction.original_response()
+                self.bot.add_view(view)
+            except discord.HTTPException:
+                pass
 
         return _cb
 
@@ -3828,10 +4535,28 @@ class ChallengeInviteView(discord.ui.View):
             if find_challenge_game_for_user(uid):
                 await _abort("Someone already has an active challenge — try again later.")
                 return
+            if solo_key(guild.id, uid) in games:
+                await _abort(
+                    "Everyone must finish open solo/daily games before challenging."
+                )
+                return
+            block_msg = await activity_blocks_challenge(guild.id, uid)
+            if block_msg:
+                await _abort(block_msg)
+                return
+            daily_block = await daily_attempt_blocks_modes(guild.id, uid)
+            if daily_block:
+                await _abort(daily_block)
+                return
 
         members: list[discord.abc.User | discord.Member] = []
         for uid in all_ids:
             m = await resolve_member_or_user(bot, guild, uid, fallback=interaction.user)
+            if m is None:
+                try:
+                    m = await guild.fetch_member(uid)
+                except discord.HTTPException:
+                    m = None
             if m is None:
                 await _abort("Could not resolve all players.")
                 return
@@ -3873,6 +4598,11 @@ class ChallengeInviteView(discord.ui.View):
                 ephemeral=True,
             )
             return
+        if interaction.guild is not None:
+            block_msg = await activity_blocks_challenge(interaction.guild.id, uid)
+            if block_msg:
+                await interaction.response.send_message(block_msg, ephemeral=True)
+                return
 
         self.accepted_ids.add(uid)
         await interaction.response.defer()
@@ -3997,6 +4727,15 @@ class OpenChallengeLobbyView(discord.ui.View):
                 ephemeral=True,
             )
             return
+        if interaction.guild is not None:
+            block_msg = await activity_blocks_challenge(interaction.guild.id, uid)
+            if block_msg:
+                await interaction.response.send_message(block_msg, ephemeral=True)
+                return
+            daily_block = await daily_attempt_blocks_modes(interaction.guild.id, uid)
+            if daily_block:
+                await interaction.response.send_message(daily_block, ephemeral=True)
+                return
         self.joined_ids.append(uid)
         await interaction.response.edit_message(
             content=self._roster_text(f"✅ {interaction.user.mention} joined."),
@@ -4047,25 +4786,58 @@ class OpenChallengeLobbyView(discord.ui.View):
             await interaction.response.send_message("Invalid channel.", ephemeral=True)
             return
 
-        members: list[discord.abc.User | discord.Member] = []
-        for uid in self.joined_ids:
-            m = await resolve_member_or_user(bot, guild, uid, fallback=interaction.user)
-            if m is None:
-                await interaction.response.send_message("Could not resolve all players.", ephemeral=True)
-                return
-            if find_challenge_game_for_user(uid):
-                await interaction.response.send_message(
-                    f"{m.mention} already has an active challenge.",
-                    ephemeral=True,
-                )
-                return
-            members.append(m)
-
         self._launching = True
         # Soft-disable until launch succeeds
         for child in self.children:
             child.disabled = True  # type: ignore[attr-defined]
         await interaction.response.defer()
+
+        async def _start_abort(msg: str) -> None:
+            self._launching = False
+            for child in self.children:
+                child.disabled = False  # type: ignore[attr-defined]
+            try:
+                await interaction.followup.send(msg, ephemeral=True)
+            except discord.HTTPException:
+                pass
+            if self.message:
+                try:
+                    await self.message.edit(
+                        content=self._roster_text(f"⚠️ {msg}"),
+                        view=self,
+                    )
+                except discord.HTTPException:
+                    pass
+
+        members: list[discord.Member] = []
+        for uid in self.joined_ids:
+            m = guild.get_member(uid)
+            if m is None:
+                try:
+                    m = await guild.fetch_member(uid)
+                except discord.HTTPException:
+                    m = None
+            if m is None:
+                await _start_abort("Could not resolve all players.")
+                return
+            if find_challenge_game_for_user(uid):
+                await _start_abort(f"<@{uid}> already has an active challenge.")
+                return
+            if solo_key(guild.id, uid) in games:
+                await _start_abort(
+                    f"<@{uid}> must finish their solo/daily game first (`/quit`)."
+                )
+                return
+            block_msg = await activity_blocks_challenge(guild.id, uid)
+            if block_msg:
+                await _start_abort(block_msg)
+                return
+            daily_block = await daily_attempt_blocks_modes(guild.id, uid)
+            if daily_block:
+                await _start_abort(daily_block)
+                return
+            members.append(m)
+
         if self.message:
             await self.message.edit(
                 content=self._roster_text("🏁 Starting…"),
@@ -4229,7 +5001,20 @@ class ConfirmQuitView(discord.ui.View):
             await interaction.response.send_message("Not your board.", ephemeral=True)
             return
 
+        # Race: last move already celebrating — don't forfeit a solved board.
+        if game.get("finishing"):
+            await interaction.response.edit_message(
+                content="Board already solved — rewards are posting.",
+                view=None,
+            )
+            self.stop()
+            return
+
         mode = game.get("mode")
+        board = game.get("board") or []
+        solution = game.get("solution")
+        solved = bool(solution and is_solved(board, solution))
+
         await interaction.response.edit_message(content="Quitting…", view=None)
         self.stop()
         if self.parent is not None:
@@ -4238,19 +5023,21 @@ class ConfirmQuitView(discord.ui.View):
         if mode == "challenge":
             match_id = game["match_id"]
             slot = game["player_slot"]
-            match = await match_store.update_player(
+            await forfeit_challenge_player(
+                self.bot,
                 match_id,
                 slot,
-                {"forfeit": True, "finished_time": None},
+                game_key=self.game_key,
+                reason="quit",
             )
-            await remove_game(self.game_key)
             embed = paper_embed(
                 "Quit",
                 description="You're out. Remaining players keep racing.",
             )
             await self._edit_board_message(game, embed=embed)
-            if match:
-                await settle_challenge_match(self.bot, match, reason="quit")
+            # forfeit_challenge_player already remove_game'd when game_key set.
+            if self.game_key in games:
+                await remove_game(self.game_key)
             return
 
         guild = interaction.guild
@@ -4258,13 +5045,137 @@ class ConfirmQuitView(discord.ui.View):
         if guild_id is None:
             await remove_game(self.game_key)
             return
-        embed = finish_forfeit(self.bot.data, int(guild_id), interaction.user, game)
+        guild_id = int(guild_id)
+
+        if solved:
+            # Mirror Activity quit views: award a completed board instead of forfeiting.
+            game["finishing"] = True
+            embed = paper_embed(
+                "Already recorded",
+                description="Rewards were already recorded for this puzzle.",
+            )
+            try:
+                if not game.get("rewarded"):
+                    mode_n = normalize_game_mode(game.get("mode"))
+                    if mode_n == "solo" or game.get("mode") == "play":
+                        given = game.get("given")
+                        given_bool = None
+                        if isinstance(given, list) and len(given) == 9:
+                            given_bool = [
+                                [bool(given[r][c]) for c in range(9)] for r in range(9)
+                            ]
+                        puzzle_key = play_puzzle_fingerprint(
+                            given_bool,
+                            board=game.get("board"),
+                            solution=game.get("solution"),
+                        )
+                        if not puzzle_key:
+                            embed = paper_embed(
+                                "Solved",
+                                description=(
+                                    "Board solved but puzzle could not be fingerprinted — "
+                                    "check `/stats`."
+                                ),
+                            )
+                        else:
+                            outcome = await award_play_win(
+                                self.bot,
+                                guild_id,
+                                interaction.user,
+                                game,
+                                puzzle_key=puzzle_key,
+                            )
+                            if outcome is None:
+                                embed = paper_embed(
+                                    "Already recorded",
+                                    description="Rewards were already recorded for this puzzle.",
+                                )
+                            else:
+                                embed = paper_embed(
+                                    "Solved — recovered",
+                                    description=(
+                                        f"+{outcome.coins} sponges · streak preserved!"
+                                    ),
+                                )
+                    else:
+                        outcome = await finish_win_and_announce(
+                            self.bot, guild_id, interaction.user, game
+                        )
+                        if outcome.quiet:
+                            embed = paper_embed(
+                                "Already recorded",
+                                description=(
+                                    "Daily already recorded for today."
+                                    if int(outcome.coins) > 0
+                                    else "You already forfeited today's daily."
+                                ),
+                            )
+                        else:
+                            embed = paper_embed(
+                                "Solved — recovered",
+                                description=(
+                                    f"+{outcome.coins} sponges · streak preserved!"
+                                ),
+                            )
+                    game["rewarded"] = True
+            except Exception as exc:  # noqa: BLE001
+                print(f"ConfirmQuitView solved award failed: {exc}")
+                embed = paper_embed(
+                    "Solved",
+                    description=(
+                        "Board was solved but rewards could not be verified — "
+                        "check `/stats`."
+                    ),
+                )
+            await remove_game(self.game_key)
+            await self._edit_board_message(game, embed=embed)
+            try:
+                await interaction.followup.send(
+                    embed.description or "Done.",
+                    ephemeral=True,
+                )
+            except discord.HTTPException:
+                pass
+            return
+
+        embed = finish_forfeit(self.bot.data, guild_id, interaction.user, game)
         await remove_game(self.game_key)
         await self._edit_board_message(game, embed=embed)
 
     @discord.ui.button(label="Keep playing", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(content="Still playing.", view=None)
+        self.stop()
+
+
+class ConfirmQuitChallengeMongoView(discord.ui.View):
+    """Quit a challenge that exists in Mongo but not yet in memory."""
+
+    def __init__(self, match_id: str, slot: str, bot_ref: "SudokuBot"):
+        super().__init__(timeout=30)
+        self.match_id = match_id
+        self.slot = slot
+        self.bot = bot_ref
+
+    @discord.ui.button(label="Quit", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(content="Quitting…", view=None)
+        self.stop()
+        await forfeit_challenge_player(
+            self.bot,
+            self.match_id,
+            self.slot,
+            game_key=None,
+            reason="quit",
+        )
+        try:
+            await interaction.followup.send("You're out of the speedrun.", ephemeral=True)
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(label="Keep playing", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(content="Still racing.", view=None)
         self.stop()
 
 
@@ -4293,21 +5204,165 @@ class ConfirmQuitActivityDailyView(discord.ui.View):
         await interaction.response.edit_message(content="Quitting...", view=None)
         self.stop()
 
-        daily = get_guild_daily(self.bot.data, guild_id)
-        daily["results"][str(uid)] = {
-            "won": False,
-            "forfeit": True,
-            "name": interaction.user.display_name,
-        }
-        stats = user_stats(guild_stats(self.bot.data, guild_id), uid)
-        stats["streak"] = 0
-        save_data(self.bot.data)
-        
+        board = normalize_board(session.get("board") or [])
+        solution = normalize_solution(session.get("solution"))
+        given_raw = session.get("given")
+
+        if board and solution and is_solved(board, solution):
+            day = session.get("daily_date") or utc_today()
+            game_state = {
+                "mode": "daily",
+                "daily_date": day,
+                "started_at": float(session.get("started_at") or time.time()),
+                "difficulty": session.get("difficulty"),
+                "board": board,
+                "given": given_raw,
+                "solution": solution,
+                "hints_used": int(session.get("hints_used") or 0),
+            }
+            outcome = await finish_win_and_announce(
+                self.bot, guild_id, interaction.user, game_state
+            )
+            if outcome.quiet:
+                msg = (
+                    "Daily already recorded for today."
+                    if int(outcome.coins) > 0
+                    else "You already forfeited today's daily."
+                )
+            else:
+                msg = (
+                    f"Solved daily recovered — +{outcome.coins} sponges, "
+                    f"streak preserved!"
+                )
+        else:
+            game = {
+                "mode": "daily",
+                "daily_date": session.get("daily_date"),
+                "started_at": session.get("started_at") or time.time(),
+                "difficulty": session.get("difficulty"),
+            }
+            finish_forfeit(self.bot.data, guild_id, interaction.user, game)
+            msg = "Forfeited today's daily. Streak wiped."
+
+        try:
+            await end_activity_watch(self.bot, self.session_id, force=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"daily quit end_watch failed: {exc}")
         await clear_activity_session(self.bot, self.session_id)
-        await interaction.followup.send(
-            "Forfeited today's daily. Streak wiped.",
-            ephemeral=True,
-        )
+        await interaction.followup.send(msg, ephemeral=True)
+
+    @discord.ui.button(label="Keep playing", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(content="Still playing.", view=None)
+        self.stop()
+
+
+class ConfirmQuitActivityPlayView(discord.ui.View):
+    """Confirm quit for a regular /play Activity session."""
+
+    def __init__(self, session_id: str, bot_ref: "SudokuBot"):
+        super().__init__(timeout=30)
+        self.session_id = session_id
+        self.bot = bot_ref
+
+    @discord.ui.button(label="Quit", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        session = await match_store.get_activity_session(self.session_id)
+        if not session:
+            await interaction.response.edit_message(content="Game already ended.", view=None)
+            self.stop()
+            return
+        uid = int(session.get("user_id") or 0)
+        if interaction.user.id != uid:
+            await interaction.response.send_message("Not your board.", ephemeral=True)
+            return
+
+        await interaction.response.edit_message(content="Quitting...", view=None)
+        self.stop()
+
+        guild_id = int(session.get("guild_id") or interaction.guild_id or 0)
+        board = normalize_board(session.get("board") or [])
+        solution = normalize_solution(session.get("solution"))
+        given_raw = session.get("given")
+        given_bool: list[list[bool]] | None = None
+        if isinstance(given_raw, list) and len(given_raw) == 9:
+            given_bool = [[bool(given_raw[r][c]) for c in range(9)] for r in range(9)]
+
+        if board and solution and is_solved(board, solution):
+            started_at = float(session.get("started_at") or time.time())
+            puzzle_key = play_puzzle_fingerprint(
+                given_bool,
+                board=board,
+                solution=solution,
+            )
+            store_ok = True
+            already_paid = False
+            if puzzle_key:
+                try:
+                    already_paid = await match_store.has_play_win(
+                        guild_id, uid, puzzle_key
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"play quit has_play_win failed: {exc}")
+                    store_ok = False
+            if not store_ok:
+                msg = (
+                    "Solved puzzle closed (could not verify rewards — "
+                    "check `/stats` or retry later)."
+                )
+            elif not puzzle_key:
+                msg = (
+                    "Solved puzzle closed (could not fingerprint puzzle — "
+                    "rewards not applied; check `/stats`)."
+                )
+            elif already_paid:
+                msg = "Solved puzzle closed (rewards were already recorded)."
+            else:
+                game_state = {
+                    "mode": "play",
+                    "started_at": started_at,
+                    "difficulty": session.get("difficulty"),
+                }
+                try:
+                    outcome = await award_play_win(
+                        self.bot,
+                        guild_id,
+                        interaction.user,
+                        game_state,
+                        puzzle_key=puzzle_key,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"play quit award_play_win failed: {exc}")
+                    msg = (
+                        "Solved puzzle closed (could not verify rewards — "
+                        "check `/stats` or retry later)."
+                    )
+                else:
+                    if outcome is None:
+                        msg = "Solved puzzle closed (rewards were already recorded)."
+                    else:
+                        msg = "Solved puzzle recovered — rewards applied!"
+        else:
+            game = {
+                "mode": "play",
+                "started_at": session.get("started_at") or time.time(),
+                "difficulty": session.get("difficulty"),
+            }
+            finish_forfeit(self.bot.data, guild_id, interaction.user, game)
+            msg = "Quit. Streak wiped — start again with `/play`."
+
+        try:
+            await end_activity_watch(self.bot, self.session_id, force=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"play quit end_watch failed: {exc}")
+        try:
+            from activity_http import _clear_user_activity_sessions
+
+            await _clear_user_activity_sessions(self.bot, guild_id, uid)
+        except Exception as exc:  # noqa: BLE001
+            print(f"play quit clear sessions failed: {exc}")
+            await clear_activity_session(self.bot, self.session_id)
+        await interaction.followup.send(msg, ephemeral=True)
 
     @discord.ui.button(label="Keep playing", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -4334,7 +5389,7 @@ class ChallengeLaunchActivityView(discord.ui.View):
                 ephemeral=True,
             )
             return
-        await _launch_activity_window(interaction)
+        await _launch_activity_window(interaction, skip_watch_notify=True)
 
 
 # ---------------------------------------------------------------------------
@@ -4788,15 +5843,50 @@ class SudokuView(discord.ui.View):
 
             # 1) Award XP + sponges first
             if not game.get("rewarded"):
-                outcome = await finish_win_and_announce(
-                    self.bot,
-                    guild_id,
-                    interaction.user,
-                    game,
-                )
+                mode_n = normalize_game_mode(game.get("mode"))
+                if mode_n == "solo" or game.get("mode") == "play":
+                    given = game.get("given")
+                    given_bool = None
+                    if isinstance(given, list) and len(given) == 9:
+                        given_bool = [
+                            [bool(given[r][c]) for c in range(9)] for r in range(9)
+                        ]
+                    puzzle_key = play_puzzle_fingerprint(
+                        given_bool,
+                        board=game.get("board"),
+                        solution=game.get("solution"),
+                    )
+                    if puzzle_key:
+                        outcome = await award_play_win(
+                            self.bot,
+                            guild_id,
+                            interaction.user,
+                            game,
+                            puzzle_key=puzzle_key,
+                        )
+                        if outcome is not None:
+                            coins = int(outcome.coins)
+                            xp = int(outcome.xp)
+                        else:
+                            coins = 0
+                            xp = 0
+                    else:
+                        coins = 0
+                        xp = 0
+                else:
+                    outcome = await finish_win_and_announce(
+                        self.bot,
+                        guild_id,
+                        interaction.user,
+                        game,
+                    )
+                    coins = int(outcome.coins)
+                    xp = int(outcome.xp)
                 game["rewarded"] = True
-                coins = int(outcome.coins)
-                xp = int(outcome.xp)
+                try:
+                    await persist_game(key, game)
+                except Exception as persist_exc:  # noqa: BLE001
+                    print(f"celebrate_win persist rewarded failed: {persist_exc}")
             else:
                 coins = 0
                 xp = 0
@@ -4826,6 +5916,14 @@ class SudokuView(discord.ui.View):
                     view=None,
                     attachments=[file],
                 )
+                if game.get("mode") == "daily" and guild_id is not None:
+                    daily_meta = get_guild_daily(self.bot.data, guild_id)
+                    entry = daily_meta.setdefault("results", {}).setdefault(
+                        str(interaction.user.id), {}
+                    )
+                    entry["won"] = True
+                    entry["announced_debug"] = True
+                    save_data(self.bot.data)
             except discord.HTTPException as ui_exc:
                 print(f"win board edit failed: {ui_exc}")
                 # Last resort: strip controls only — never leave session open
@@ -4862,6 +5960,93 @@ class SudokuView(discord.ui.View):
             return
         if interaction.guild is None:
             await interaction.response.send_message("Server only.", ephemeral=True)
+            return
+
+        if game.get("finishing"):
+            await interaction.response.send_message(
+                "Board already solved — rewards are posting.",
+                ephemeral=True,
+            )
+            return
+
+        # Solved but celebrate not started — award via board edit (not ephemeral defer).
+        if game.get("mode") != "challenge" and is_solved(
+            game.get("board") or [], game.get("solution")
+        ):
+            game["finishing"] = True
+            await interaction.response.send_message(
+                "Board already solved — applying rewards…",
+                ephemeral=True,
+            )
+            guild_id = interaction.guild.id
+            coins = 0
+            xp = 0
+            try:
+                if not game.get("rewarded"):
+                    mode_n = normalize_game_mode(game.get("mode"))
+                    if mode_n == "solo" or game.get("mode") == "play":
+                        given = game.get("given")
+                        given_bool = None
+                        if isinstance(given, list) and len(given) == 9:
+                            given_bool = [
+                                [bool(given[r][c]) for c in range(9)] for r in range(9)
+                            ]
+                        puzzle_key = play_puzzle_fingerprint(
+                            given_bool,
+                            board=game.get("board"),
+                            solution=game.get("solution"),
+                        )
+                        if puzzle_key:
+                            outcome = await award_play_win(
+                                self.bot,
+                                guild_id,
+                                interaction.user,
+                                game,
+                                puzzle_key=puzzle_key,
+                            )
+                            if outcome is not None:
+                                coins = int(outcome.coins)
+                                xp = int(outcome.xp)
+                    else:
+                        outcome = await finish_win_and_announce(
+                            self.bot, guild_id, interaction.user, game
+                        )
+                        coins = int(outcome.coins)
+                        xp = int(outcome.xp)
+                    game["rewarded"] = True
+            except Exception as exc:  # noqa: BLE001
+                print(f"on_forfeit solved award failed: {exc}")
+            caption = (
+                win_reward_caption(coins, xp)
+                if coins > 0 or xp > 0
+                else f"{BUBBLE} **Board complete!**"
+            )
+            try:
+                file = board_to_file(
+                    render_board(
+                        game["board"],
+                        game["given"],
+                        solution=game.get("solution"),
+                        conflicts=set(),
+                        difficulty=game.get("difficulty"),
+                        title_id=game.get("owner_title"),
+                        pin_emojis=game.get("pin_emojis"),
+                        pin_seed=game.get("pin_seed"),
+                    )
+                )
+                channel = await resolve_channel(self.bot, game.get("channel_id"))
+                if game.get("message_id") and channel is not None:
+                    msg = await channel.fetch_message(game["message_id"])
+                    await msg.edit(
+                        content=caption,
+                        embed=None,
+                        view=None,
+                        attachments=[file],
+                    )
+            except Exception as ui_exc:  # noqa: BLE001
+                print(f"on_forfeit solved board edit failed: {ui_exc}")
+            self.stop()
+            await remove_game(self.game_key)
             return
 
         mode = game.get("mode")
@@ -5057,7 +6242,7 @@ def apply_shop_equip(bot: "SudokuBot", guild_id: int, user_id: int, item: dict) 
     if item["kind"] == "pin":
         if item["id"] not in owned_pin_ids(stats):
             return {"ok": False, "message": "You don't own this pin yet — Buy it first."}
-        sync_pins_to_active_games(user_id, guild_id, owned_pin_emojis(stats))
+        push_cosmetics_sync(user_id, guild_id, stats)
         return {
             "ok": True,
             "message": f"**{item['label']}** is already on your border when you play.",
@@ -5070,8 +6255,7 @@ def apply_shop_equip(bot: "SudokuBot", guild_id: int, user_id: int, item: dict) 
         return {"ok": False, "message": "You don't own this title yet — Buy it first."}
     stats["title"] = tid
     save_data(bot.data)
-    sync_title_to_active_games(user_id, guild_id, tid)
-    sync_pins_to_active_games(user_id, guild_id, owned_pin_emojis(stats))
+    push_cosmetics_sync(user_id, guild_id, stats)
     return {
         "ok": True,
         "message": f"Equipped **{item['label']}**. Active boards pick it up on the next move.",
@@ -5104,8 +6288,7 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
         stats["owned_titles"].append(tid)
         stats["title"] = tid
         save_data(bot.data)
-        sync_title_to_active_games(user_id, guild_id, tid)
-        sync_pins_to_active_games(user_id, guild_id, owned_pin_emojis(stats))
+        push_cosmetics_sync(user_id, guild_id, stats)
         return {
             "ok": True,
             "bought": True,
@@ -5182,7 +6365,7 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
     stats["owned_pins"] = owned
     stats["owned_themes"] = owned  # legacy mirror
     save_data(bot.data)
-    sync_pins_to_active_games(user_id, guild_id, owned_pin_emojis(stats))
+    push_cosmetics_sync(user_id, guild_id, stats)
     return {
         "ok": True,
         "bought": True,
@@ -5228,7 +6411,7 @@ class KrustyShopView(discord.ui.View):
         page: int = 0,
         selected_id: str | None = None,
     ):
-        super().__init__(timeout=180)
+        super().__init__(timeout=600)
         self.bot = bot
         self.owner_id = owner_id
         self.guild_id = guild_id
@@ -5473,10 +6656,20 @@ class KrustyShopView(discord.ui.View):
         return True
 
     async def _refresh(self, interaction: discord.Interaction) -> None:
+        # Acknowledge immediately so Discord never hits the 3-second timeout.
+        # After defer(), edit_original_response() updates the ephemeral shop message.
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer()
+            except discord.HTTPException:
+                pass
         self._rebuild()
-        await interaction.response.edit_message(
-            embed=self.build_embed(), view=self, attachments=[]
-        )
+        try:
+            await interaction.edit_original_response(
+                embed=self.build_embed(), view=self, attachments=[]
+            )
+        except discord.HTTPException:
+            pass
 
     async def on_boosts(self, interaction: discord.Interaction) -> None:
         self.kind = "boosts"
@@ -5528,6 +6721,14 @@ class KrustyShopView(discord.ui.View):
             await interaction.response.send_message("Nothing selected.", ephemeral=True)
             return
         result = apply_shop_equip(self.bot, self.guild_id, self.owner_id, item)
+        if result.get("ok"):
+            stats = self._stats()
+            await sync_cosmetics_to_activity_sessions(
+                self.owner_id,
+                self.guild_id,
+                title_id=equipped_title_id(stats),
+                pin_emojis=owned_pin_emojis(stats),
+            )
         self._rebuild()
         await interaction.response.edit_message(
             embed=self.build_embed(), view=self, attachments=[]
@@ -5540,6 +6741,14 @@ class KrustyShopView(discord.ui.View):
             await interaction.response.send_message("Nothing selected.", ephemeral=True)
             return
         result = apply_shop_purchase(self.bot, self.guild_id, self.owner_id, item)
+        if result.get("ok"):
+            stats = self._stats()
+            await sync_cosmetics_to_activity_sessions(
+                self.owner_id,
+                self.guild_id,
+                title_id=equipped_title_id(stats),
+                pin_emojis=owned_pin_emojis(stats),
+            )
         self._rebuild()
         await interaction.response.edit_message(
             embed=self.build_embed(), view=self, attachments=[]
@@ -5859,28 +7068,113 @@ async def reply_ephemeral(interaction: discord.Interaction, content: str) -> Non
         await interaction.response.send_message(content, ephemeral=True)
 
 
-async def start_panel(
-    interaction: discord.Interaction,
-    key: tuple[int, int],
-    game: dict,
-    *,
-    silent: bool = True,
-) -> None:
-    view = SudokuView(key, bot)
-    content, file = board_file_for(game)
-    # /play stays silent; /daily can notify the channel
-    if interaction.response.is_done():
-        msg = await interaction.followup.send(
-            content=content, view=view, file=file, silent=silent
+async def restore_challenge_games_from_match(bot: "SudokuBot", match: dict) -> bool:
+    """Rebuild in-memory challenge boards when a match is active but games were lost on restart."""
+    mid = match.get("_id")
+    if not mid or match.get("status") != "active":
+        return False
+    guild_id = int(match.get("guild_id") or 0)
+    if not guild_id:
+        return False
+    given = match.get("given")
+    solution = match.get("solution")
+    template = match.get("board_template")
+    if not given or not solution:
+        return False
+
+    start_time = float(match.get("start_time") or time.time())
+    diff = match.get("difficulty") or DEFAULT_DIFFICULTY
+    restored_any = False
+
+    for slot, player in match_player_entries(match):
+        if player.get("forfeit") or player.get("finished_time"):
+            continue
+        uid = int(player.get("user_id") or 0)
+        if not uid:
+            continue
+        key = challenge_game_key(mid, uid)
+        if key in games:
+            restored_any = True
+            continue
+
+        raw_board = player.get("current_board") or template
+        if not raw_board:
+            continue
+        channel_id = player.get("thread_id") or match.get("channel_id")
+        if not channel_id:
+            continue
+
+        board = normalize_board(copy_grid(raw_board))
+        pstats = user_stats(guild_stats(bot.data, guild_id), uid)
+        owner_name = player.get("name") or pstats.get("name") or "Unknown"
+        games[key] = new_game_state(
+            mode="challenge",
+            board=board,
+            given=given,
+            solution=solution,
+            owner_id=uid,
+            owner_name=owner_name,
+            owner_title=equipped_title_id(pstats),
+            channel_id=int(channel_id),
+            guild_id=guild_id,
+            match_id=mid,
+            player_slot=slot,
+            difficulty=diff,
+            started_at=start_time,
+            pin_emojis=owned_pin_emojis(pstats),
         )
-        view.message = msg
-    else:
-        await interaction.response.send_message(
-            content=content, view=view, file=file, silent=silent
-        )
-        view.message = await interaction.original_response()
-    game["message_id"] = view.message.id
-    await persist_game(key, game)
+        games[key]["hints_used"] = int(player.get("hints_used") or 0)
+        await persist_game(key, games[key])
+        restored_any = True
+        print(f"Rehydrated challenge game {serialize_game_key(key)} from match {mid}")
+
+    return restored_any
+
+
+async def reattach_challenge_launch_panels(bot: "SudokuBot", match_id: str) -> int:
+    """Re-post Activity launch buttons for rehydrated challenge games after restart."""
+    attached = 0
+    launch_view = ChallengeLaunchActivityView()
+    for key, game in list(games.items()):
+        if not (
+            isinstance(key, tuple)
+            and len(key) >= 3
+            and key[0] == "ch"
+            and key[1] == match_id
+            and game.get("mode") == "challenge"
+        ):
+            continue
+        channel = await resolve_channel(bot, game.get("channel_id"))
+        if channel is None:
+            print(
+                f"Challenge session {serialize_game_key(key)} channel missing "
+                f"({game.get('channel_id')}) — keeping match entry, no auto-forfeit"
+            )
+            attached += 1
+            continue
+
+        reattached = False
+        if game.get("message_id"):
+            try:
+                msg = await channel.fetch_message(int(game["message_id"]))
+                await msg.edit(view=launch_view)
+                reattached = True
+            except discord.HTTPException:
+                reattached = False
+        if not reattached:
+            try:
+                tier = difficulty_label(game.get("difficulty"))
+                launch_msg = await channel.send(
+                    f"<@{game.get('owner_id')}> Speedrun · **{tier}**\n"
+                    "Bot restarted — click below to reopen the Activity!",
+                    view=launch_view,
+                )
+                game["message_id"] = launch_msg.id
+                await persist_game(key, game)
+            except discord.HTTPException as exc:
+                print(f"challenge launch re-post failed for {serialize_game_key(key)}: {exc}")
+        attached += 1
+    return attached
 
 
 async def restore_persisted_sessions(bot: "SudokuBot") -> None:
@@ -5904,10 +7198,8 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
         game["participants"] = set(game.get("participants") or [game.get("owner_id")])
         game.pop("finishing", None)
         game.pop("_digit_lock", None)
-        # Solved boards: keep rewarded so restart doesn't double-pay
-        if is_solved(game.get("board") or [], game.get("solution")):
-            game["rewarded"] = True
-        else:
+        # Only preserve rewarded if it was explicitly saved — never infer from solved board.
+        if not is_solved(game.get("board") or [], game.get("solution")):
             game.pop("rewarded", None)
 
         # Rehydrate cosmetics from current inventory (themes→pins era safe)
@@ -5922,22 +7214,51 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
             game.setdefault("pin_emojis", [])
 
         channel = await resolve_channel(bot, game.get("channel_id"))
+
+        # Activity challenges only need the private thread + in-memory game state.
+        # Never forfeit just because there is no SudokuView panel / message_id.
+        if game.get("mode") == "challenge":
+            if channel is None:
+                print(
+                    f"Challenge session {serialize_game_key(key)} channel missing "
+                    f"({game.get('channel_id')}) — keeping match entry, no auto-forfeit"
+                )
+                games[key] = game
+                restored += 1
+                continue
+
+            games[key] = game
+            launch_view = ChallengeLaunchActivityView()
+            reattached = False
+            if game.get("message_id"):
+                try:
+                    msg = await channel.fetch_message(int(game["message_id"]))
+                    await msg.edit(view=launch_view)
+                    reattached = True
+                except discord.HTTPException:
+                    reattached = False
+            if not reattached:
+                try:
+                    tier = difficulty_label(game.get("difficulty"))
+                    launch_msg = await channel.send(
+                        f"<@{game.get('owner_id')}> Speedrun · **{tier}**\n"
+                        "Bot restarted — click below to reopen the Activity!",
+                        view=launch_view,
+                    )
+                    game["message_id"] = launch_msg.id
+                    await persist_game(key, game)
+                except discord.HTTPException as exc:
+                    print(f"challenge launch re-post failed for {serialize_game_key(key)}: {exc}")
+            restored += 1
+            continue
+
         if channel is None or not game.get("message_id"):
             # Dead panel (deleted thread / lost DM) — don't block /challenge forever
             print(
                 f"Dropping unrecoverable session {serialize_game_key(key)} "
                 f"(channel={game.get('channel_id')})"
             )
-            if game.get("mode") == "challenge" and game.get("match_id") and game.get("player_slot"):
-                try:
-                    await match_store.update_player(
-                        game["match_id"],
-                        game["player_slot"],
-                        {"forfeit": True, "finished_time": None},
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    print(f"forfeit dropped challenge session failed: {exc}")
-            await drop_persisted_game(key)
+            await drop_persisted_game(key, game)
             dropped += 1
             continue
 
@@ -5988,10 +7309,44 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
         if fresh and challenge_ready_to_settle(fresh):
             await settle_challenge_match(bot, fresh, reason="restart — no live boards")
         else:
-            await match_store.update_match(
-                mid,
-                {"status": "finished", "settle_reason": "bot restart — abandoned", "winner_id": None},
-            )
+            rehydrated = False
+            if fresh:
+                rehydrated = await restore_challenge_games_from_match(bot, fresh)
+            if rehydrated:
+                await reattach_challenge_launch_panels(bot, mid)
+                schedule_challenge_live_update(mid)
+                print(f"challenge match {mid} rehydrated after restart")
+            else:
+                print(
+                    f"challenge match {mid} has no live boards after restart "
+                    f"(could not rehydrate); auto-forfeiting unfinished players"
+                )
+                if fresh:
+                    for slot, player in match_player_entries(fresh):
+                        if player.get("forfeit") or player.get("finished_time") is not None:
+                            continue
+                        try:
+                            await match_store.update_player(
+                                mid,
+                                slot,
+                                {"forfeit": True},
+                            )
+                        except Exception as ff_exc:  # noqa: BLE001
+                            print(
+                                f"restart forfeit {mid}/{slot} failed: {ff_exc}"
+                            )
+                    try:
+                        fresh = await match_store.get_match(mid)
+                    except Exception:
+                        fresh = None
+                    if fresh and challenge_ready_to_settle(fresh):
+                        await settle_challenge_match(
+                            bot, fresh, reason="restart — abandoned"
+                        )
+                    else:
+                        schedule_challenge_live_update(mid)
+                else:
+                    schedule_challenge_live_update(mid)
 
     print(
         f"Restored {restored} active game panel(s); dropped {dropped} unrecoverable; "
@@ -6003,6 +7358,11 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print(f"Activity watch channel id: {ACTIVITY_WATCH_CHANNEL_ID or 'unset'}")
+    if not os.getenv("MONGODB_URI", "").strip():
+        print(
+            "WARNING: MONGODB_URI unset — in-memory store only; "
+            "do not run multiple bot instances (locks/claims are not shared)."
+        )
     if not rotate_status.is_running():
         rotate_status.start()
     if not check_daily_announcement.is_running():
@@ -6107,8 +7467,40 @@ async def testboard_pin_autocomplete(
     return _catalog_autocomplete(current, SHOP_PINS)
 
 
-async def _launch_activity_window(interaction: discord.Interaction) -> None:
-    """Open the Embedded App Activity (Wordle-style game window)."""
+async def _launch_activity_window(
+    interaction: discord.Interaction,
+    *,
+    preferred_diff_index: int | None = None,
+    skip_watch_notify: bool = False,
+) -> None:
+    """Open the Embedded App Activity (Wordle-style game window).
+
+    If preferred_diff_index is given and the user has no active board saved, a
+    minimal session preference doc is written so the Activity starts at the
+    requested difficulty level.
+    """
+    # Write diff preference before launching so the Activity picks it up on load.
+    if preferred_diff_index is not None and interaction.guild is not None:
+        session_id = f"activity:{interaction.guild.id}:{interaction.user.id}"
+        existing = await match_store.get_activity_session(session_id)
+        if not existing or not existing.get("board"):
+            await match_store.merge_activity_session(
+                session_id,
+                {
+                    "diff_index": preferred_diff_index,
+                    "guild_id": str(interaction.guild.id),
+                    "user_id": str(interaction.user.id),
+                    "session_kind": "play",
+                    "board": None,
+                    "given": None,
+                    "solution": None,
+                    "won_at": None,
+                    "filled": 0,
+                    "watch_once_notified": False,
+                    "watch_notified": False,
+                    "watch_message_id": None,
+                },
+            )
     try:
         await interaction.response.launch_activity()
         print(
@@ -6116,7 +7508,7 @@ async def _launch_activity_window(interaction: discord.Interaction) -> None:
             f"guild={getattr(interaction.guild, 'id', None)} "
             f"channel={getattr(interaction.channel, 'id', None)}"
         )
-        if interaction.guild is not None:
+        if interaction.guild is not None and not skip_watch_notify:
             asyncio.create_task(_notify_activity_play_from_launch_safe(bot, interaction))
         return
     except Exception as exc:  # noqa: BLE001 — always acknowledge the interaction
@@ -6153,8 +7545,119 @@ async def _launch_activity_window(interaction: discord.Interaction) -> None:
     name="play",
     description="Open the Thcoku game window in this channel (like Wordle)",
 )
-async def play_cmd(interaction: discord.Interaction):
-    await _launch_activity_window(interaction)
+@app_commands.describe(difficulty="Starting difficulty (can always be changed in-game)")
+@app_commands.choices(difficulty=DIFFICULTY_CHOICES)
+async def play_cmd(
+    interaction: discord.Interaction,
+    difficulty: app_commands.Choice[str] | None = None,
+):
+    if interaction.guild is not None:
+        # Allow reopening an in-progress /play Activity (resume). Only daily
+        # shares the same window and must be finished or quit first.
+        blocking = await get_blocking_activity_session(
+            interaction.guild.id,
+            interaction.user.id,
+            kinds={"daily"},
+        )
+        if blocking:
+            await interaction.response.send_message(
+                "Finish or `/quit` today's **daily** first — it uses the same game window.",
+                ephemeral=True,
+            )
+            return
+        daily_block = await daily_attempt_blocks_modes(
+            interaction.guild.id, interaction.user.id
+        )
+        if daily_block:
+            await interaction.response.send_message(daily_block, ephemeral=True)
+            return
+        if find_challenge_game_for_user(interaction.user.id):
+            await interaction.response.send_message(
+                "Finish your speedrun challenge first.",
+                ephemeral=True,
+            )
+            return
+        sk = solo_key(interaction.guild.id, interaction.user.id)
+        if sk in games:
+            existing = games[sk]
+            await interaction.response.send_message(
+                f"Finish your **{existing.get('mode', 'solo')}** game first (`/quit`).",
+                ephemeral=True,
+            )
+            return
+    diff_idx = difficulty_index(difficulty.value) if difficulty else None
+    await _launch_activity_window(interaction, preferred_diff_index=diff_idx)
+
+
+@bot.tree.command(
+    name="watch",
+    description="Spectate active /play, /daily, and challenge races",
+)
+async def watch_cmd(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild.id
+    try:
+        sessions = await match_store.list_activity_sessions(
+            guild_id,
+            max_age_sec=WATCH_LIST_MAX_AGE_SEC,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"/watch list_activity_sessions failed: {exc}")
+        sessions = []
+
+    # Prefer sessions that still have a board to spectate.
+    playable = [
+        s for s in sessions
+        if build_activity_spectator_payload(s) is not None
+    ]
+
+    # Also surface active challenge matches in this guild.
+    challenge_matches: list[dict] = []
+    try:
+        matches = await match_store.list_matches(status="active")
+    except Exception:
+        matches = []
+    for match in matches:
+        if int(match.get("guild_id") or 0) != guild_id:
+            continue
+        challenge_matches.append(match)
+
+    if not playable and not challenge_matches:
+        await interaction.followup.send(
+            "Nobody is playing right now. Start with `/play`, `/daily`, or `/challenge`.",
+            ephemeral=True,
+        )
+        return
+
+    embed = (
+        build_activity_live_embed(playable, interaction.guild)
+        if playable
+        else paper_embed("Live challenges", description="Pick a race below to spectate.")
+    )
+    if challenge_matches:
+        challenge_lines = [
+            f"🏁 **{difficulty_label(m.get('difficulty'))}** · "
+            f"{len(match_player_entries(m))} players"
+            for m in challenge_matches[:5]
+        ]
+        embed.add_field(
+            name="Challenges",
+            value="\n".join(challenge_lines),
+            inline=False,
+        )
+    view: ActivityWatchMenuView | None = None
+    if playable or challenge_matches:
+        view = build_activity_watch_view(
+            guild_id,
+            interaction.channel_id,
+            bot,
+            playable,
+        )
+        view.rebuild_challenge_buttons(challenge_matches)
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 @bot.tree.command(name="help", description="I'm ready! How to play Bikini Bottom Sudoku")
@@ -6267,6 +7770,18 @@ async def challenge_cmd(
             ephemeral=True,
         )
         return
+    blocking_msg = await activity_blocks_challenge(
+        interaction.guild.id, interaction.user.id
+    )
+    if blocking_msg:
+        await interaction.response.send_message(blocking_msg, ephemeral=True)
+        return
+    daily_block = await daily_attempt_blocks_modes(
+        interaction.guild.id, interaction.user.id
+    )
+    if daily_block:
+        await interaction.response.send_message(daily_block, ephemeral=True)
+        return
 
     diff_key = difficulty.value if difficulty else DEFAULT_DIFFICULTY
     tier = difficulty_label(diff_key)
@@ -6335,6 +7850,14 @@ async def challenge_cmd(
                 "Everyone must finish open solo/daily games before challenging.",
                 ephemeral=True,
             )
+            return
+        block_msg = await activity_blocks_challenge(interaction.guild.id, uid)
+        if block_msg:
+            await interaction.response.send_message(block_msg, ephemeral=True)
+            return
+        daily_block = await daily_attempt_blocks_modes(interaction.guild.id, uid)
+        if daily_block:
+            await interaction.response.send_message(daily_block, ephemeral=True)
             return
 
     mark_challenge_cooldown(interaction.user.id)
@@ -6427,9 +7950,19 @@ async def daily_cmd(interaction: discord.Interaction):
             if existing and existing.get("session_kind") == "daily":
                 await _launch_activity_window(interaction)
                 return
-            # Orphan lock (restart without recoverable session) — unlock and continue
-            daily["results"].pop(uid, None)
-            save_data(bot.data)
+            # Orphan lock (no recoverable session) — treat as forfeit, not a free retry
+            finish_forfeit(
+                bot.data,
+                guild_id,
+                interaction.user,
+                {
+                    "mode": "daily",
+                    "daily_date": day,
+                    "started_at": time.time(),
+                },
+            )
+            await _deny_already_done("used (session lost)")
+            return
         else:
             if r.get("won"):
                 detail = "cleared"
@@ -6442,6 +7975,19 @@ async def daily_cmd(interaction: discord.Interaction):
 
     # Durable Mongo claim (survives local wipe / redeploy)
     try:
+        if await match_store.has_daily_forfeit(guild_id, user_id, day):
+            daily["results"][uid] = {
+                "won": False,
+                "forfeit": True,
+                "name": interaction.user.display_name,
+            }
+            save_data(bot.data)
+            await _deny_already_done("used (quit)")
+            return
+    except Exception as exc:  # noqa: BLE001
+        print(f"has_daily_forfeit failed: {exc}")
+
+    try:
         if await match_store.has_daily_claim(guild_id, user_id, day):
             daily["results"][uid] = {
                 "won": True,
@@ -6453,6 +7999,23 @@ async def daily_cmd(interaction: discord.Interaction):
     except Exception as exc:  # noqa: BLE001
         print(f"has_daily_claim failed: {exc}")
 
+    session_id = f"activity:{guild_id}:{user_id}"
+    existing_session = await match_store.get_activity_session(session_id)
+    if (
+        existing_session
+        and existing_session.get("session_kind") == "daily"
+        and (existing_session.get("daily_date") or day) == day
+        and not existing_session.get("won_at")
+    ):
+        daily["results"][uid] = {
+            "won": False,
+            "in_progress": True,
+            "name": interaction.user.display_name,
+        }
+        save_data(bot.data)
+        await _launch_activity_window(interaction)
+        return
+
     # Lock the attempt immediately so a restart can't grant a second daily
     daily["results"][uid] = {
         "won": False,
@@ -6461,8 +8024,20 @@ async def daily_cmd(interaction: discord.Interaction):
     }
     save_data(bot.data)
 
+    # Don't silently overwrite an in-progress /play Activity session.
+    play_session = await get_blocking_activity_session(
+        guild_id, user_id, kinds={"play"}
+    )
+    if play_session:
+        daily["results"].pop(uid, None)
+        save_data(bot.data)
+        await reply_ephemeral(
+            interaction,
+            "You have an active `/play` game open. Finish it or `/quit` first, then start `/daily`.",
+        )
+        return
+
     board, given, solution, diff_key = make_daily_puzzle(guild_id, daily["date"], user_id)
-    session_id = f"activity:{guild_id}:{user_id}"
     doc = {
         "_id": session_id,
         "guild_id": str(guild_id),
@@ -6506,58 +8081,126 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
     if interaction.guild is None:
         await interaction.response.send_message("Server only.", ephemeral=True)
         return
-        
+
     target_user = member or interaction.user
     guild_id, user_id = interaction.guild.id, target_user.id
     daily = get_guild_daily(bot.data, guild_id)
     day = daily["date"]
     uid = str(user_id)
-    
-    # Allow Joana or anyone who actually completed the daily in MongoDB daily wins
-    # but has a stuck in_progress lock or missing announcement
     results = daily.setdefault("results", {})
     r = results.get(uid) or {}
-    
-    # We can fetch if there's an existing claim in DB
-    from challenge_store import create_match_store
-    ms = create_match_store()
-    await ms.connect()
-    has_claim = await ms.has_daily_claim(guild_id, user_id, day)
-    
-    await interaction.response.defer()
+    if r.get("forfeit"):
+        await interaction.response.send_message(
+            "You forfeited today's daily — nothing to claim."
+            if target_user.id == interaction.user.id
+            else f"{target_user.mention} forfeited today's daily — nothing to claim.",
+            ephemeral=True,
+        )
+        return
+
+    if r.get("in_progress") and not r.get("won"):
+        await interaction.response.send_message(
+            "Finish today's daily first (`/daily`), then use this if the announcement failed.",
+            ephemeral=True,
+        )
+        return
+
+    if r.get("won") and r.get("announced_debug"):
+        await interaction.response.send_message(
+            "Today's daily has already been announced for you!"
+            if target_user.id == interaction.user.id
+            else f"Today's daily has already been announced for {target_user.mention}!",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        has_claim = await match_store.has_daily_claim(guild_id, user_id, day)
+    except Exception as exc:  # noqa: BLE001
+        print(f"claimdaily has_daily_claim failed: {exc}")
+        has_claim = False
+
+    mongo_completion: dict | None = None
+    try:
+        mongo_completion = await match_store.get_daily_completion(guild_id, user_id, day)
+    except Exception as exc:  # noqa: BLE001
+        print(f"claimdaily get_daily_completion failed: {exc}")
+
+    # Only recover announcements for players who actually completed the daily.
+    if not r.get("won") and not has_claim:
+        await interaction.response.send_message(
+            "No completed daily found for today. Finish `/daily` first.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    board, given, solution, diff_key = make_daily_puzzle(guild_id, day, user_id)
+    solved_board = [
+        [{"value": solution[r_idx][c_idx], "pencil_marks": []} for c_idx in range(9)]
+        for r_idx in range(9)
+    ]
+    elapsed = int(r.get("time") or r.get("elapsed") or 300)
+    if mongo_completion and not mongo_completion.get("forfeit"):
+        elapsed = int(mongo_completion.get("elapsed") or elapsed)
+
+    game_state = {
+        "mode": "daily",
+        "daily_date": day,
+        "started_at": time.time() - max(1, elapsed),
+        "difficulty": diff_key,
+        "board": solved_board,
+        "given": given,
+        "solution": solution,
+    }
+
+    # finish_win_and_announce skips payout when local results already have won=True.
+    # If only Mongo has the claim, mark local won first so we never double-pay.
+    if has_claim and not r.get("won"):
+        mc = mongo_completion or {}
+        coins = int(mc.get("coins") or r.get("coins") or 0)
+        xp = int(mc.get("xp") or mc.get("coins") or r.get("xp") or coins or 0)
+        if coins == 0 and xp == 0:
+            preview_streak = int(
+                user_stats(guild_stats(bot.data, guild_id), user_id).get("streak") or 0
+            ) + 1
+            coins = win_reward(
+                preview_streak,
+                daily=True,
+                difficulty=diff_key,
+            )
+            xp = coins
+        results[uid] = {
+            **r,
+            "won": True,
+            "name": target_user.display_name,
+            "coins": coins,
+            "xp": xp,
+            "time": elapsed,
+            "elapsed": elapsed,
+        }
+        save_data(bot.data)
+
+    outcome = await finish_win_and_announce(bot, guild_id, target_user, game_state)
+
+    results[uid] = results.get(uid) or {}
+    results[uid]["announced_debug"] = True
+    results[uid]["won"] = True
+    save_data(bot.data)
+
     gstats = guild_stats(bot.data, guild_id)
     stats = user_stats(gstats, user_id)
-    
-    # Reconstruct solved board and build official win embed
-    board, given, solution, diff_key = make_daily_puzzle(guild_id, day, user_id)
-    solved_board = []
-    for r_idx in range(9):
-        row = []
-        for c_idx in range(9):
-            row.append({"value": solution[r_idx][c_idx], "pencil_marks": []})
-        solved_board.append(row)
-        
-    elapsed = int(r.get("time") or 604)
-    coins = int(r.get("coins") or win_reward(int(stats.get("streak") or 1), daily=True, difficulty=diff_key))
-    xp = int(r.get("xp") or coins)
-    streak = max(int(stats.get("streak") or 1), 1)
-
     embed = build_activity_win_embed(
         user_id=user_id,
         difficulty=diff_key,
         elapsed=elapsed,
-        coins=coins,
-        xp=xp,
-        streak=streak,
+        coins=int(getattr(outcome, "coins", None) or results[uid].get("coins") or 0),
+        xp=int(getattr(outcome, "xp", None) or results[uid].get("xp") or 0),
+        streak=max(int(stats.get("streak") or 1), 1),
         is_daily=True,
         user_stats_dict=stats,
     )
-    
-    # Ensure announced_debug is set to prevent double posts
-    results[uid] = results.get(uid) or {}
-    results[uid]["announced_debug"] = True
-    save_data(bot.data)
-    
     image = await asyncio.to_thread(
         render_board,
         solved_board,
@@ -6570,13 +8213,24 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
         pin_seed=user_id,
     )
     file = board_to_file(image)
-    
-    # Post to the channel (public)
-    await interaction.channel.send(
-        embed=embed,
-        file=file,
-    )
-    await interaction.followup.send(f"Daily announcement recovered and posted for {target_user.mention}!", ephemeral=True)
+
+    try:
+        await interaction.channel.send(
+            content=f"{target_user.mention} completed today's daily!",
+            embed=embed,
+            file=file,
+        )
+        await interaction.followup.send(
+            f"Daily announcement recovered and posted for {target_user.mention}!",
+            ephemeral=True,
+        )
+    except discord.HTTPException as exc:
+        print(f"claimdaily channel post failed: {exc}")
+        await interaction.followup.send(
+            "Win recovered, but I couldn't post the board in this channel "
+            f"(check permissions). Error: {exc}",
+            ephemeral=True,
+        )
 
 
 @bot.tree.command(name="shop", description="Spend sponges at the Krusty Shop")
@@ -6618,13 +8272,65 @@ async def quit_cmd(interaction: discord.Interaction):
         )
         return
 
-    # Check for active daily Activity session
+    # Challenge active in Mongo but not yet in memory (e.g. after restart).
+    try:
+        active_matches = await match_store.list_matches(status="active")
+    except Exception as exc:  # noqa: BLE001
+        print(f"quit_cmd list_matches failed: {exc}")
+        active_matches = []
+    for match in active_matches:
+        mid = match.get("_id")
+        if not mid:
+            continue
+        for slot, player in match_player_entries(match):
+            if player.get("user_id") != interaction.user.id:
+                continue
+            if player.get("forfeit") or player.get("finished_time") is not None:
+                continue
+            # Rehydrate so ConfirmQuitView can forfeit with a game_key.
+            try:
+                await restore_challenge_games_from_match(bot, match)
+            except Exception as exc:  # noqa: BLE001
+                print(f"quit_cmd restore challenge failed: {exc}")
+            ch_key = find_challenge_game_for_user(interaction.user.id)
+            if ch_key is not None:
+                await interaction.response.send_message(
+                    "Really leave this speedrun?",
+                    view=ConfirmQuitView(ch_key, bot, None),
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_message(
+                "Really leave this speedrun?",
+                view=ConfirmQuitChallengeMongoView(str(mid), slot, bot),
+                ephemeral=True,
+            )
+            return
+
+    # Check for active daily/play Activity session (primary + orphan).
     session_id = f"activity:{guild_id}:{interaction.user.id}"
     session = await match_store.get_activity_session(session_id)
+    if not session:
+        orphan_id = f"activity:0:{interaction.user.id}"
+        orphan = await match_store.get_activity_session(orphan_id)
+        if orphan:
+            orphan_gid = str(orphan.get("guild_id") or "0")
+            if orphan_gid in ("", "0", str(guild_id)):
+                session = orphan
+                session_id = orphan_id
     if session and session.get("session_kind") == "daily":
         await interaction.response.send_message(
             "Quit today's daily? This locks your attempt and resets your streak.",
             view=ConfirmQuitActivityDailyView(session_id, bot),
+            ephemeral=True,
+        )
+        return
+    if session and (session.get("session_kind") or "play") == "play" and (
+        session.get("board") or session.get("solution")
+    ):
+        await interaction.response.send_message(
+            "Really quit this puzzle? Streak will reset.",
+            view=ConfirmQuitActivityPlayView(session_id, bot),
             ephemeral=True,
         )
         return
@@ -6653,15 +8359,23 @@ async def quit_cmd(interaction: discord.Interaction):
         )
         return
 
-    # Orphan daily lock (no live session) — clear so they aren't stuck
+    # Orphan daily lock (no live session) — forfeit so the day stays locked
     daily = get_guild_daily(bot.data, guild_id)
     entry = daily.get("results", {}).get(str(interaction.user.id))
     if entry and entry.get("in_progress") and not entry.get("won"):
-        daily["results"].pop(str(interaction.user.id), None)
-        save_data(bot.data)
+        finish_forfeit(
+            bot.data,
+            guild_id,
+            interaction.user,
+            {
+                "mode": "daily",
+                "daily_date": daily.get("date"),
+                "started_at": time.time(),
+            },
+        )
         await drop_persisted_game(sk)
         await interaction.response.send_message(
-            f"{BUBBLE} Cleared a stuck daily lock. You can try `/daily` or `/play` again.",
+            f"{BUBBLE} Cleared a stuck daily lock (counted as forfeit for today).",
             ephemeral=True,
         )
         return

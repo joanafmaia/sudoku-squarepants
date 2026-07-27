@@ -67,6 +67,18 @@ export function difficultyLabel(key) {
   return (DIFFICULTY_TIERS[key] || DIFFICULTY_TIERS[DEFAULT_DIFFICULTY]).label;
 }
 
+/** Accept either a key ("hard") or a display label ("Hard"). */
+export function difficultyKeyFromLabel(labelOrKey) {
+  if (!labelOrKey) return DEFAULT_DIFFICULTY;
+  const raw = String(labelOrKey);
+  if (DIFFICULTY_TIERS[raw]) return raw;
+  const lower = raw.toLowerCase();
+  for (const [key, meta] of Object.entries(DIFFICULTY_TIERS)) {
+    if (meta.label.toLowerCase() === lower) return key;
+  }
+  return DEFAULT_DIFFICULTY;
+}
+
 function difficultyClues(key) {
   return (DIFFICULTY_TIERS[key] || DIFFICULTY_TIERS[DEFAULT_DIFFICULTY]).clues | 0;
 }

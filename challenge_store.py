@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 import uuid
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
+
+PLAY_WINS_MEMORY_FILE = Path(__file__).with_name("play_wins_memory.json")
+DAILY_MEMORY_FILE = Path(__file__).with_name("daily_completions_memory.json")
 
 
 def _clone(obj: Any) -> Any:
@@ -65,6 +70,44 @@ class MatchStore:
         """True if this user already claimed today's daily win in durable storage."""
         return False
 
+    async def has_daily_forfeit(self, guild_id: int, user_id: int, day: str) -> bool:
+        """True if this user forfeited today's daily in durable storage."""
+        return False
+
+    async def try_record_daily_forfeit(
+        self, *, guild_id: int, user_id: int, day: str
+    ) -> bool:
+        """Atomically record a daily forfeit. False = already won or forfeited."""
+        return False
+
+    async def get_daily_completion(
+        self, guild_id: int, user_id: int, day: str
+    ) -> dict | None:
+        """Return durable daily completion doc (win or forfeit), if any."""
+        return None
+
+    async def has_play_win(
+        self, guild_id: int, user_id: int, puzzle_key: str
+    ) -> bool:
+        """True if this /play puzzle was already paid in durable storage."""
+        return False
+
+    async def try_claim_play_win(
+        self,
+        *,
+        guild_id: int,
+        user_id: int,
+        puzzle_key: str,
+    ) -> bool:
+        """Atomically claim a /play Activity win for this puzzle. False = already paid."""
+        raise NotImplementedError
+
+    async def release_play_win(
+        self, guild_id: int, user_id: int, puzzle_key: str
+    ) -> bool:
+        """Drop a play-win claim when payout failed after try_claim_play_win."""
+        return False
+
     async def count_daily_wins(self, guild_id: int, day: str) -> int:
         raise NotImplementedError
 
@@ -99,7 +142,9 @@ class MatchStore:
     async def merge_activity_session(self, session_id: str, fields: dict) -> None:
         raise NotImplementedError
 
-    async def find_activity_session_by_user_id(self, user_id: str | int) -> dict | None:
+    async def find_activity_session_by_user_id(
+        self, user_id: str | int, *, guild_id: str | int | None = None
+    ) -> dict | None:
         raise NotImplementedError
 
 
@@ -109,10 +154,53 @@ class MemoryMatchStore(MatchStore):
         self._daily: dict[str, dict] = {}
         self._active: dict[str, dict] = {}
         self._activity: dict[str, dict] = {}
+        self._play_wins: set[str] = set()
         self._leaderboard: dict | None = None
 
     async def connect(self) -> None:
+        self._load_play_wins_disk()
+        self._load_daily_disk()
         return None
+
+    def _load_play_wins_disk(self) -> None:
+        if not PLAY_WINS_MEMORY_FILE.exists():
+            return
+        try:
+            raw = json.loads(PLAY_WINS_MEMORY_FILE.read_text(encoding="utf-8"))
+            ids = raw.get("ids") if isinstance(raw, dict) else raw
+            if isinstance(ids, list):
+                self._play_wins = {str(x) for x in ids}
+        except Exception as exc:  # noqa: BLE001
+            print(f"play_wins memory load failed: {exc}")
+
+    def _persist_play_wins_disk(self) -> None:
+        try:
+            PLAY_WINS_MEMORY_FILE.write_text(
+                json.dumps({"ids": sorted(self._play_wins)}, separators=(",", ":")),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"play_wins memory save failed: {exc}")
+
+    def _load_daily_disk(self) -> None:
+        if not DAILY_MEMORY_FILE.exists():
+            return
+        try:
+            raw = json.loads(DAILY_MEMORY_FILE.read_text(encoding="utf-8"))
+            docs = raw.get("docs") if isinstance(raw, dict) else None
+            if isinstance(docs, dict):
+                self._daily = {str(k): v for k, v in docs.items() if isinstance(v, dict)}
+        except Exception as exc:  # noqa: BLE001
+            print(f"daily memory load failed: {exc}")
+
+    def _persist_daily_disk(self) -> None:
+        try:
+            DAILY_MEMORY_FILE.write_text(
+                json.dumps({"docs": self._daily}, separators=(",", ":")),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"daily memory save failed: {exc}")
 
     async def insert_match(self, doc: dict) -> str:
         match_id = doc.get("_id") or str(uuid.uuid4())
@@ -192,10 +280,16 @@ class MemoryMatchStore(MatchStore):
         for doc in self._activity.values():
             if str(doc.get("guild_id")) != gid:
                 continue
-            updated = float(doc.get("updated_at") or doc.get("last_move_at") or 0)
-            if updated < cutoff:
+            if doc.get("won_at"):
                 continue
-            out.append(_clone(doc))
+            updated = float(doc.get("updated_at") or doc.get("last_move_at") or 0)
+            if updated >= cutoff:
+                out.append(_clone(doc))
+                continue
+            if doc.get("watch_notified") and doc.get("watch_message_id"):
+                posted = float(doc.get("watch_posted_at") or updated or 0)
+                if posted >= cutoff:
+                    out.append(_clone(doc))
         out.sort(key=lambda d: float(d.get("last_move_at") or d.get("updated_at") or 0), reverse=True)
         return out
 
@@ -210,12 +304,19 @@ class MemoryMatchStore(MatchStore):
             payload["updated_at"] = time.time()
             self._activity[session_id] = payload
 
-    async def find_activity_session_by_user_id(self, user_id: str | int) -> dict | None:
+    async def find_activity_session_by_user_id(
+        self, user_id: str | int, *, guild_id: str | int | None = None
+    ) -> dict | None:
         uid = str(user_id)
+        gid = str(guild_id) if guild_id is not None else None
         best: dict | None = None
         best_ts = 0.0
+        best_with_board: dict | None = None
+        best_board_ts = 0.0
         for doc in self._activity.values():
             if str(doc.get("user_id")) != uid:
+                continue
+            if gid is not None and str(doc.get("guild_id") or "") != gid:
                 continue
             ts = float(
                 doc.get("last_move_at")
@@ -226,7 +327,11 @@ class MemoryMatchStore(MatchStore):
             if ts >= best_ts:
                 best_ts = ts
                 best = doc
-        return _clone(best) if best else None
+            if doc.get("board") and doc.get("given") and ts >= best_board_ts:
+                best_board_ts = ts
+                best_with_board = doc
+        chosen = best_with_board or best
+        return _clone(chosen) if chosen else None
 
     def _daily_key(self, guild_id: int, user_id: int, day: str) -> str:
         return f"{guild_id}:{day}:{user_id}"
@@ -258,16 +363,76 @@ class MemoryMatchStore(MatchStore):
             "coins": coins,
             "claimed_at": time.time(),
         }
+        self._persist_daily_disk()
         return True
 
     async def has_daily_claim(self, guild_id: int, user_id: int, day: str) -> bool:
-        return self._daily_key(guild_id, user_id, day) in self._daily
+        doc = self._daily.get(self._daily_key(guild_id, user_id, day))
+        return bool(doc and not doc.get("forfeit"))
+
+    async def has_daily_forfeit(self, guild_id: int, user_id: int, day: str) -> bool:
+        doc = self._daily.get(self._daily_key(guild_id, user_id, day))
+        return bool(doc and doc.get("forfeit"))
+
+    async def try_record_daily_forfeit(
+        self, *, guild_id: int, user_id: int, day: str
+    ) -> bool:
+        key = self._daily_key(guild_id, user_id, day)
+        if key in self._daily:
+            return False
+        self._daily[key] = {
+            "guild_id": guild_id,
+            "user_id": user_id,
+            "date": day,
+            "forfeit": True,
+            "claimed_at": time.time(),
+        }
+        self._persist_daily_disk()
+        return True
+
+    async def get_daily_completion(
+        self, guild_id: int, user_id: int, day: str
+    ) -> dict | None:
+        doc = self._daily.get(self._daily_key(guild_id, user_id, day))
+        return _clone(doc) if doc else None
+
+    async def has_play_win(
+        self, guild_id: int, user_id: int, puzzle_key: str
+    ) -> bool:
+        doc_id = f"{guild_id}:{user_id}:{puzzle_key}"
+        return doc_id in self._play_wins
+
+    async def try_claim_play_win(
+        self,
+        *,
+        guild_id: int,
+        user_id: int,
+        puzzle_key: str,
+    ) -> bool:
+        doc_id = f"{guild_id}:{user_id}:{puzzle_key}"
+        if doc_id in self._play_wins:
+            return False
+        self._play_wins.add(doc_id)
+        self._persist_play_wins_disk()
+        return True
+
+    async def release_play_win(
+        self, guild_id: int, user_id: int, puzzle_key: str
+    ) -> bool:
+        doc_id = f"{guild_id}:{user_id}:{puzzle_key}"
+        if doc_id not in self._play_wins:
+            return False
+        self._play_wins.discard(doc_id)
+        self._persist_play_wins_disk()
+        return True
 
     async def count_daily_wins(self, guild_id: int, day: str) -> int:
         return sum(
             1
             for doc in self._daily.values()
-            if doc.get("guild_id") == guild_id and doc.get("date") == day
+            if doc.get("guild_id") == guild_id
+            and doc.get("date") == day
+            and not doc.get("forfeit")
         )
 
     async def save_leaderboard(self, data: dict) -> None:
@@ -289,6 +454,7 @@ class MongoMatchStore(MatchStore):
         self._daily = None
         self._active = None
         self._activity = None
+        self._play_wins = None
         self._leaderboard = None
 
     async def connect(self) -> None:
@@ -302,11 +468,14 @@ class MongoMatchStore(MatchStore):
         self._daily = db["daily_completions"]
         self._active = db["active_games"]
         self._activity = db["activity_sessions"]
+        self._play_wins = db["play_wins"]
         self._leaderboard = db["leaderboard"]
         await self._col.create_index("status")
         await self._daily.create_index([("guild_id", 1), ("date", 1)])
         await self._active.create_index("updated_at")
         await self._activity.create_index("updated_at")
+        await self._activity.create_index("user_id")
+        await self._activity.create_index([("guild_id", 1), ("user_id", 1)])
 
     async def close(self) -> None:
         if self._client is not None:
@@ -391,7 +560,20 @@ class MongoMatchStore(MatchStore):
         cursor = self._activity.find(
             {
                 "guild_id": gid,
-                "updated_at": {"$gte": cutoff},
+                "$and": [
+                    {"$or": [{"won_at": {"$exists": False}}, {"won_at": None}]},
+                    {
+                        "$or": [
+                            {"updated_at": {"$gte": cutoff}},
+                            {"last_move_at": {"$gte": cutoff}},
+                            {
+                                "watch_notified": True,
+                                "watch_message_id": {"$exists": True, "$ne": None},
+                                "watch_posted_at": {"$gte": cutoff},
+                            },
+                        ],
+                    },
+                ],
             }
         )
         docs = await cursor.to_list(length=50)
@@ -412,15 +594,22 @@ class MongoMatchStore(MatchStore):
             upsert=True,
         )
 
-    async def find_activity_session_by_user_id(self, user_id: str | int) -> dict | None:
+    async def find_activity_session_by_user_id(
+        self, user_id: str | int, *, guild_id: str | int | None = None
+    ) -> dict | None:
         if self._activity is None:
             await self.connect()
-        cursor = self._activity.find({"user_id": str(user_id)}).sort("updated_at", -1).limit(5)
-        docs = await cursor.to_list(length=5)
-        for doc in docs:
-            if doc.get("board") and doc.get("given"):
-                return doc
-        return docs[0] if docs else None
+        query: dict = {"user_id": str(user_id)}
+        if guild_id is not None:
+            query["guild_id"] = str(guild_id)
+        sort = [("last_move_at", -1), ("updated_at", -1)]
+        doc = await self._activity.find_one(
+            {**query, "board": {"$exists": True}, "given": {"$exists": True}},
+            sort=sort,
+        )
+        if doc:
+            return doc
+        return await self._activity.find_one(query, sort=sort)
 
     async def try_claim_daily_win(
         self,
@@ -465,14 +654,110 @@ class MongoMatchStore(MatchStore):
         if self._daily is None:
             return False
         doc = await self._daily.find_one({"_id": f"{guild_id}:{day}:{user_id}"})
+        return doc is not None and not doc.get("forfeit")
+
+    async def has_daily_forfeit(self, guild_id: int, user_id: int, day: str) -> bool:
+        if self._daily is None:
+            await self.connect()
+        if self._daily is None:
+            return False
+        doc = await self._daily.find_one({"_id": f"{guild_id}:{day}:{user_id}"})
+        return bool(doc and doc.get("forfeit"))
+
+    async def try_record_daily_forfeit(
+        self, *, guild_id: int, user_id: int, day: str
+    ) -> bool:
+        from pymongo.errors import DuplicateKeyError
+
+        if self._daily is None:
+            await self.connect()
+        if self._daily is None:
+            raise RuntimeError("Mongo daily collection not connected")
+        doc_id = f"{guild_id}:{day}:{user_id}"
+        try:
+            await self._daily.insert_one(
+                {
+                    "_id": doc_id,
+                    "guild_id": guild_id,
+                    "user_id": user_id,
+                    "date": day,
+                    "forfeit": True,
+                    "claimed_at": time.time(),
+                }
+            )
+            return True
+        except DuplicateKeyError:
+            return False
+
+    async def get_daily_completion(
+        self, guild_id: int, user_id: int, day: str
+    ) -> dict | None:
+        if self._daily is None:
+            await self.connect()
+        if self._daily is None:
+            return None
+        doc = await self._daily.find_one({"_id": f"{guild_id}:{day}:{user_id}"})
+        return _clone(doc) if doc else None
+
+    async def has_play_win(
+        self, guild_id: int, user_id: int, puzzle_key: str
+    ) -> bool:
+        if self._play_wins is None:
+            await self.connect()
+        if self._play_wins is None:
+            return False
+        doc = await self._play_wins.find_one(
+            {"_id": f"{guild_id}:{user_id}:{puzzle_key}"}
+        )
         return doc is not None
+
+    async def try_claim_play_win(
+        self,
+        *,
+        guild_id: int,
+        user_id: int,
+        puzzle_key: str,
+    ) -> bool:
+        from pymongo.errors import DuplicateKeyError
+
+        if self._play_wins is None:
+            await self.connect()
+        if self._play_wins is None:
+            raise RuntimeError("Mongo play_wins collection not connected")
+        doc_id = f"{guild_id}:{user_id}:{puzzle_key}"
+        try:
+            await self._play_wins.insert_one(
+                {
+                    "_id": doc_id,
+                    "guild_id": guild_id,
+                    "user_id": user_id,
+                    "puzzle_key": puzzle_key,
+                    "claimed_at": time.time(),
+                }
+            )
+            return True
+        except DuplicateKeyError:
+            return False
+
+    async def release_play_win(
+        self, guild_id: int, user_id: int, puzzle_key: str
+    ) -> bool:
+        if self._play_wins is None:
+            await self.connect()
+        if self._play_wins is None:
+            return False
+        doc_id = f"{guild_id}:{user_id}:{puzzle_key}"
+        result = await self._play_wins.delete_one({"_id": doc_id})
+        return bool(getattr(result, "deleted_count", 0))
 
     async def count_daily_wins(self, guild_id: int, day: str) -> int:
         if self._daily is None:
             await self.connect()
         if self._daily is None:
             return 0
-        return await self._daily.count_documents({"guild_id": guild_id, "date": day})
+        return await self._daily.count_documents(
+            {"guild_id": guild_id, "date": day, "forfeit": {"$ne": True}}
+        )
 
     async def save_leaderboard(self, data: dict) -> None:
         if self._leaderboard is None:

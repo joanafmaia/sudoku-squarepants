@@ -13,6 +13,7 @@ import {
   makePuzzle,
   setCellValue,
   togglePencil,
+  difficultyKeyFromLabel,
 } from "./sudoku-core.js";
 
 const LIGHT_PALETTE = {
@@ -346,11 +347,15 @@ export function startThcokuGame(canvas, options = {}) {
   let ambientRaf = 0;
 
   const state = {
-    diffIndex: Math.max(0, DIFF_KEYS.indexOf(DEFAULT_DIFFICULTY)),
+    diffIndex: options.initialDiffIndex != null
+      ? Math.max(0, Math.min(DIFF_KEYS.length - 1, Number(options.initialDiffIndex)))
+      : Math.max(0, DIFF_KEYS.indexOf(DEFAULT_DIFFICULTY)),
     selected: [0, 0],
     pencilMode: false,
     status: "Generating…",
     won: false,
+    reportingWin: false,
+    boardGen: 0,
     startedAt: Date.now(),
     board: [],
     given: [],
@@ -365,7 +370,13 @@ export function startThcokuGame(canvas, options = {}) {
     raf: 0,
     winZoom: 1,
     sessionKind: options.sessionKind || null,
+    dailyDate: options.dailyDate || null,
+    matchId: options.matchId || null,
+    playerSlot: options.playerSlot || null,
     undoStack: [],
+    hintsUsed: 0,
+    hintsMax: options.sessionKind === "daily" ? 3 : 10,
+    serverHints: false,
   };
 
   const diffBtn = controls.querySelector("#ctrl-diff");
@@ -465,7 +476,7 @@ export function startThcokuGame(canvas, options = {}) {
   }
 
   function getSnapshot() {
-    if (!state.board?.length || state.won) return null;
+    if (!state.board?.length || state.won || state.reportingWin) return null;
     let userMoves = 0;
     for (let r = 0; r < 9; r++) {
       for (let c = 0; c < 9; c++) {
@@ -481,39 +492,66 @@ export function startThcokuGame(canvas, options = {}) {
 
   function getStartSnapshot() {
     /** Board state for watch notify as soon as /play opens (before any moves). */
-    if (!state.board?.length || state.won) return null;
+    if (!state.board?.length || state.won || state.reportingWin) return null;
     return snapshotPayload();
   }
 
   function snapshotPayload() {
-    return {
+    const payload = {
       difficulty: state.difficulty,
       diff_index: state.diffIndex,
       elapsed: Math.floor((Date.now() - state.startedAt) / 1000),
       board: state.board,
       given: state.given,
-      solution: state.solution,
       filled: filledCount(state.board),
       session_kind: state.sessionKind,
+      hints_used: state.hintsUsed,
+      hints_max: state.hintsMax,
+      started_at: state.startedAt / 1000,
     };
+    if (state.dailyDate) payload.daily_date = state.dailyDate;
+    if (state.matchId) payload.match_id = state.matchId;
+    if (state.playerSlot) payload.player_slot = state.playerSlot;
+    if (!state.serverHints && Array.isArray(state.solution) && state.solution.length === 9) {
+      payload.solution = state.solution;
+    }
+    return payload;
   }
 
   function loadSnapshot(snap) {
-    if (!snap?.board || !snap?.given || !snap?.solution) return false;
+    if (!snap?.board || !snap?.given) return false;
     state.board = snap.board;
     state.given = snap.given;
-    state.solution = snap.solution;
-    state.difficulty = snap.difficulty || DEFAULT_DIFFICULTY;
+    state.solution = Array.isArray(snap.solution) && snap.solution.length === 9 ? snap.solution : [];
+    state.serverHints = !(Array.isArray(snap.solution) && snap.solution.length === 9);
+    state.hintsUsed = Number(snap.hints_used) || 0;
+    state.hintsMax =
+      snap.hints_max != null
+        ? Number(snap.hints_max)
+        : state.sessionKind === "daily"
+          ? 3
+          : 10;
+    state.difficulty = difficultyKeyFromLabel(snap.difficulty || DEFAULT_DIFFICULTY);
     const idx = DIFF_KEYS.indexOf(state.difficulty);
     state.diffIndex = snap.diff_index != null ? Number(snap.diff_index) : idx >= 0 ? idx : 0;
     state.selected = [0, 0];
     state.won = false;
+    state.reportingWin = false;
     state.bubbles = [];
     state.confetti = [];
     state.pencilMode = false;
     state.flashCell = null;
-    state.startedAt = Date.now() - Math.max(0, Number(snap.elapsed) || 0) * 1000;
+    if (snap.started_at != null && Number(snap.started_at) > 0) {
+      state.startedAt = Number(snap.started_at) * 1000;
+    } else {
+      state.startedAt = Date.now() - Math.max(0, Number(snap.elapsed) || 0) * 1000;
+    }
     state.sessionKind = snap.session_kind || null;
+    state.dailyDate = snap.daily_date || null;
+    state.matchId = snap.match_id || null;
+    state.playerSlot = snap.player_slot || null;
+    state.undoStack = [];
+    state.boardGen += 1;
     const user = discordUsername();
     const hello = user ? `Hey, ${user}! ` : "";
     state.status = `${hello}Continuing · ${filledCount(state.board)}/81`;
@@ -571,6 +609,11 @@ export function startThcokuGame(canvas, options = {}) {
     if (state.sessionKind === "daily" || state.sessionKind === "challenge") {
       return;
     }
+    if (state.reportingWin) {
+      state.status = "Saving win — wait a sec…";
+      draw();
+      return;
+    }
     if (typeof options.onNewGame === "function") {
       try {
         options.onNewGame();
@@ -581,10 +624,13 @@ export function startThcokuGame(canvas, options = {}) {
     const key = DIFF_KEYS[state.diffIndex];
     state.status = `Cooking (${difficultyLabel(key)})…`;
     state.won = false;
+    state.reportingWin = false;
+    state.boardGen += 1;
     state.bubbles = [];
     state.confetti = [];
     state.undoStack = [];
     state.winZoom = 1;
+    state.undoStack = [];
     draw();
     const puzzle = makePuzzle(key);
     state.board = puzzle.board;
@@ -595,6 +641,9 @@ export function startThcokuGame(canvas, options = {}) {
     state.startedAt = Date.now();
     state.pencilMode = false;
     state.flashCell = null;
+    state.hintsUsed = 0;
+    state.hintsMax = state.sessionKind === "daily" ? 3 : 10;
+    state.serverHints = false;
     const user = discordUsername();
     state.status = user ? `Hey, ${user}! I'm ready!` : "Tap a cell — I'm ready!";
     syncControls();
@@ -621,7 +670,7 @@ export function startThcokuGame(canvas, options = {}) {
   }
 
   function undo() {
-    if (state.won || !state.undoStack.length) return;
+    if (state.won || state.reportingWin || !state.undoStack.length) return;
     const prev = state.undoStack.pop();
     state.board = prev.map((row) =>
       row.map((cell) => ({
@@ -641,16 +690,131 @@ export function startThcokuGame(canvas, options = {}) {
     }
   }
 
-  function hint() {
-    if (state.won || !state.solution || !state.board) return;
-    const [r, c] = state.selected;
-    let targetR = r;
-    let targetC = c;
-    if (state.given[r][c] || state.board[r][c].val === state.solution[r][c]) {
+  function maybeCelebrateAfterMove() {
+    const conflicts = findConflicts(state.board);
+    const n = filledCount(state.board);
+    if (!state.serverHints && isSolved(state.board, state.solution)) {
+      celebrateWin();
+      return true;
+    }
+    if (state.serverHints && n >= 81 && conflicts.size === 0) {
+      celebrateWin();
+      return true;
+    }
+    return false;
+  }
+
+  function celebrateWin() {
+    if (state.won || state.reportingWin) return;
+    state.reportingWin = true;
+    const elapsed = Math.floor((Date.now() - state.startedAt) / 1000);
+    const gen = state.boardGen;
+    const run = async () => {
+      try {
+        if (typeof window.thcokuReportWin === "function") {
+          const data = await window.thcokuReportWin(state.difficulty, elapsed, {
+            board: state.board,
+            given: state.given,
+            solution: state.solution,
+          });
+          if (!data) return;
+        }
+        // Abort celebration if the board was replaced mid-report.
+        if (gen !== state.boardGen) return;
+        state.won = true;
+        state.winAt = Date.now();
+        state.winZoom = 1.04;
+        const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
+        const ss = String(elapsed % 60).padStart(2, "0");
+        state.status = `Order up! ${mm}:${ss}`;
+        spawnBubbles();
+        spawnConfetti();
+        playFx("win");
+        draw();
+        if (typeof options.onWin === "function") {
+          try {
+            options.onWin();
+          } catch (err) {
+            console.warn("[Thcoku] onWin", err);
+          }
+        }
+      } finally {
+        if (gen === state.boardGen) state.reportingWin = false;
+        else state.reportingWin = false;
+      }
+    };
+    void run();
+  }
+
+  async function hint() {
+    if (state.won || state.reportingWin || !state.board) return;
+    if (state.hintsUsed >= state.hintsMax) {
+      state.status = "No hints left!";
+      draw();
+      return;
+    }
+
+    let targetR = state.selected[0];
+    let targetC = state.selected[1];
+
+    if (state.serverHints || !state.solution?.length) {
+      if (typeof options.onHint !== "function") {
+        state.status = "Hints unavailable offline.";
+        draw();
+        return;
+      }
+      try {
+        const result = await options.onHint({
+          row: targetR,
+          col: targetC,
+          board: state.board,
+        });
+        if (!result?.ok) {
+          state.status =
+            result?.error === "hints_exhausted"
+              ? "No hints left!"
+              : "Hint unavailable — try again.";
+          if (result?.hints_used != null) state.hintsUsed = Number(result.hints_used);
+          if (result?.hints_max != null) state.hintsMax = Number(result.hints_max);
+          draw();
+          return;
+        }
+        targetR = Number(result.row);
+        targetC = Number(result.col);
+        const correctVal = Number(result.value);
+        state.hintsUsed = Number(result.hints_used) || state.hintsUsed + 1;
+        if (result.hints_max != null) state.hintsMax = Number(result.hints_max);
+        saveUndoState();
+        state.selected = [targetR, targetC];
+        setCellValue(state.board, targetR, targetC, correctVal);
+        clearPencilDigitPeers(state.board, targetR, targetC, correctVal);
+        state.flashCell = [targetR, targetC];
+        state.flashUntil = Date.now() + 300;
+        state.status = `Hint applied! 💡 (${correctVal}) · ${state.hintsUsed}/${state.hintsMax}`;
+        playFx("hint");
+        if (!maybeCelebrateAfterMove()) {
+          draw();
+        }
+        if (typeof options.onProgress === "function") {
+          try {
+            options.onProgress();
+          } catch (err) {
+            console.warn("[Thcoku] onProgress", err);
+          }
+        }
+      } catch (err) {
+        console.warn("[Thcoku] onHint", err);
+        state.status = "Hint failed — check connection.";
+        draw();
+      }
+      return;
+    }
+
+    if (state.given[targetR][targetC] || cellValue(state.board, targetR, targetC) === state.solution[targetR][targetC]) {
       let found = false;
       for (let ri = 0; ri < 9; ri++) {
         for (let ci = 0; ci < 9; ci++) {
-          if (!state.given[ri][ci] && state.board[ri][ci].val !== state.solution[ri][ci]) {
+          if (!state.given[ri][ci] && cellValue(state.board, ri, ci) !== state.solution[ri][ci]) {
             targetR = ri;
             targetC = ci;
             found = true;
@@ -666,20 +830,27 @@ export function startThcokuGame(canvas, options = {}) {
     const correctVal = state.solution[targetR][targetC];
     setCellValue(state.board, targetR, targetC, correctVal);
     clearPencilDigitPeers(state.board, targetR, targetC, correctVal);
+    state.hintsUsed += 1;
     state.flashCell = [targetR, targetC];
     state.flashUntil = Date.now() + 300;
-    state.status = `Hint applied! 💡 (${correctVal})`;
+    state.status = `Hint applied! 💡 (${correctVal}) · ${state.hintsUsed}/${state.hintsMax}`;
     playFx("hint");
     if (isSolved(state.board, state.solution)) {
-      state.won = true;
-      state.winAt = Date.now();
-      playFx("win");
+      celebrateWin();
+    } else {
+      draw();
     }
-    draw();
+    if (typeof options.onProgress === "function") {
+      try {
+        options.onProgress();
+      } catch (err) {
+        console.warn("[Thcoku] onProgress", err);
+      }
+    }
   }
 
   function place(digit) {
-    if (state.won) return;
+    if (state.won || state.reportingWin) return;
     const [r, c] = state.selected;
     if (state.given[r][c]) {
       state.status = "Fixed clue — barnacles!";
@@ -723,36 +894,14 @@ export function startThcokuGame(canvas, options = {}) {
       state.status = "Conflict — tartar sauce!";
       state.shakeUntil = Date.now() + 280;
       playFx("error");
-    } else if (isSolved(state.board, state.solution)) {
-      state.won = true;
-      state.winAt = Date.now();
-      state.winZoom = 1.04;
-      const elapsed = Math.floor((Date.now() - state.startedAt) / 1000);
-      const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
-      const ss = String(elapsed % 60).padStart(2, "0");
-      state.status = `Order up! ${mm}:${ss}`;
-      spawnBubbles();
-      spawnConfetti();
-      playFx("win");
-      if (typeof window.thcokuReportWin === "function") {
-        window.thcokuReportWin(state.difficulty, elapsed, {
-          board: state.board,
-          given: state.given,
-          solution: state.solution,
-        });
-      }
-      if (typeof options.onWin === "function") {
-        try {
-          options.onWin();
-        } catch (err) {
-          console.warn("[Thcoku] onWin", err);
-        }
-      }
+      draw();
+    } else if (maybeCelebrateAfterMove()) {
+      /* celebrateWin draws */
     } else {
       state.status = digit ? fmt(pick(STATUS_OK), n) : fmt(pick(STATUS_CLEAR), n);
       if (digit) playFx("pop");
+      draw();
     }
-    draw();
     ensureAnim();
     if (!state.won && typeof options.onProgress === "function") {
       try {
@@ -773,6 +922,16 @@ export function startThcokuGame(canvas, options = {}) {
     const cell = cellAt(x, y);
     if (!cell) return;
     if (state.won && Date.now() - state.winAt > 800) {
+      if (state.sessionKind === "daily" || state.sessionKind === "challenge") {
+        state.status = pick([
+          "Nice solve!",
+          "GG!",
+          "Order up!",
+          "I'm ready!",
+        ]);
+        draw();
+        return;
+      }
       newGame();
       return;
     }
@@ -1122,9 +1281,11 @@ export function startThcokuGame(canvas, options = {}) {
     }
     if (action === "clear") place(0);
     else if (action === "undo") undo();
-    else if (action === "hint") hint();
+    else if (action === "hint") void hint();
     else if (action === "quit") {
       if (typeof options.onQuit === "function") options.onQuit();
+    } else if (action === "new") {
+      if (state.sessionKind !== "daily" && state.sessionKind !== "challenge") newGame();
     } else if (action === "diff") {
       if (state.sessionKind !== "daily" && state.sessionKind !== "challenge") {
         state.diffIndex = (state.diffIndex + 1) % DIFF_KEYS.length;
@@ -1145,7 +1306,7 @@ export function startThcokuGame(canvas, options = {}) {
       evt.preventDefault();
       undo();
     } else if (evt.key.toLowerCase() === "u") undo();
-    else if (evt.key.toLowerCase() === "h") hint();
+    else if (evt.key.toLowerCase() === "h") void hint();
     else if (evt.key === "p" || evt.key === "P") {
       state.pencilMode = !state.pencilMode;
       syncControls();

@@ -6,18 +6,6 @@
 
 import { MongoClient } from "mongodb";
 
-const DIFFICULTY_MULT = {
-  very_easy: 0.5,
-  easy: 0.75,
-  medium: 1,
-  hard: 1.5,
-  very_hard: 2,
-  expertttt: 3,
-};
-
-const BASE_WIN_REWARD = 50;
-const STREAK_BONUS_PER = 5;
-
 let cachedClient = null;
 
 export function corsHeaders() {
@@ -103,33 +91,6 @@ export function ensureUserStats(gstats, userId) {
   s.best_time = s.best_time == null ? null : Number(s.best_time);
   s.name = s.name || "Unknown";
   return s;
-}
-
-export function difficultyMultiplier(difficulty) {
-  if (!difficulty) return 1;
-  if (DIFFICULTY_MULT[difficulty] != null) return DIFFICULTY_MULT[difficulty];
-  const lower = String(difficulty).toLowerCase().replace(/\s+/g, "_");
-  if (DIFFICULTY_MULT[lower] != null) return DIFFICULTY_MULT[lower];
-  for (const [key, meta] of Object.entries({
-    very_easy: "Very Easy",
-    easy: "Easy",
-    medium: "Medium",
-    hard: "Hard",
-    very_hard: "Very Hard",
-    expertttt: "Expertttt",
-  })) {
-    if (meta.toLowerCase() === String(difficulty).toLowerCase()) {
-      return DIFFICULTY_MULT[key];
-    }
-  }
-  return 1;
-}
-
-/** Solo Activity win reward (mirrors bot win_reward without daily/challenge). */
-export function activityWinReward(streak, difficulty) {
-  let coins = BASE_WIN_REWARD + Math.max(0, streak - 1) * STREAK_BONUS_PER;
-  coins = Math.round(coins * difficultyMultiplier(difficulty));
-  return Math.max(20, coins);
 }
 
 export function collectTopXp(data, { guildId = null, limit = 10 } = {}) {

@@ -1,4 +1,4 @@
-# Netlify — Discord Activity (cliente Vite + Functions OAuth/Mongo)
+# Netlify — Discord Activity static (legacy). Runtime APIs live on Render (activity_http.py).
 [build]
   command = "npm install && npm install --prefix activity/client && npm run build --prefix activity/client"
   publish = "activity/client/dist"
@@ -34,18 +34,7 @@
   status = 200
   force = true
 
-# Activity solo win → XP / sponges in Mongo
-[[redirects]]
-  from = "/api/activity/win"
-  to = "/.netlify/functions/activity-win"
-  status = 200
-  force = true
-
-[[redirects]]
-  from = "/activity/win"
-  to = "/.netlify/functions/activity-win"
-  status = 200
-  force = true
+# /api/activity/* (win, session, profile) — use Render unified server, not Netlify Functions.
 
 # SPA fallback
 [[redirects]]

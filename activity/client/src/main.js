@@ -62,8 +62,33 @@ function userId() {
   return window.__DISCORD_AUTH__?.user?.id || "local";
 }
 
+let cachedGuildId = null;
+
+function localSessionStorageKey(gid) {
+  return `thcoku_session_v1:${gid}:${userId()}`;
+}
+
 function localSessionKey() {
-  return `thcoku_session_v1:${guildId()}:${userId()}`;
+  return localSessionStorageKey(cachedGuildId || guildId());
+}
+
+function readLocalSessionForGuild(gid) {
+  const keys = [localSessionStorageKey(gid)];
+  if (gid && gid !== "0") {
+    keys.push(localSessionStorageKey("0"));
+  }
+  for (const key of keys) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const session = JSON.parse(raw);
+      if (!session?.board || !session?.given) continue;
+      return session;
+    } catch {
+      /* try next key */
+    }
+  }
+  return null;
 }
 
 function channelId() {
@@ -78,10 +103,21 @@ function playerName() {
   );
 }
 
+async function sessionPayloadAsync(snap) {
+  const gid = await resolveGuildId(8000);
+  cachedGuildId = gid;
+  return {
+    ...snap,
+    guild_id: gid,
+    channel_id: channelId(),
+    name: playerName(),
+  };
+}
+
 function sessionPayload(snap) {
   return {
     ...snap,
-    guild_id: guildId(),
+    guild_id: cachedGuildId || guildId(),
     channel_id: channelId(),
     name: playerName(),
   };
@@ -100,23 +136,98 @@ function writeLocalSession(snap) {
 }
 
 function readLocalSession() {
-  try {
-    const raw = localStorage.getItem(localSessionKey());
-    if (!raw) return null;
-    const session = JSON.parse(raw);
-    if (!session?.board || !session?.given || !session?.solution) return null;
-    return session;
-  } catch {
-    return null;
-  }
+  return readLocalSessionForGuild(cachedGuildId || guildId());
 }
 
 function clearLocalSession() {
+  const keys = new Set([localSessionKey(), localSessionStorageKey("0")]);
+  const gid = cachedGuildId || guildId();
+  if (gid) keys.add(localSessionStorageKey(gid));
+  // Sweep other guild keys for this user to avoid stale resume after server switch.
   try {
-    localStorage.removeItem(localSessionKey());
+    const uid = userId();
+    const prefix = `thcoku_session_v1:`;
+    const suffix = uid ? `:${uid}` : null;
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(prefix)) continue;
+      if (suffix && key.endsWith(suffix)) keys.add(key);
+    }
   } catch {
     /* ignore */
   }
+  for (const key of keys) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function givenFingerprint(given) {
+  if (!Array.isArray(given) || given.length !== 9) return "";
+  const parts = [];
+  for (let r = 0; r < 9; r++) {
+    const row = given[r];
+    if (!Array.isArray(row) || row.length !== 9) return "";
+    for (let c = 0; c < 9; c++) {
+      // Boolean mask: true = clue. Digits live on board; compare mask + board clue cells below.
+      parts.push(row[c] ? "1" : "0");
+    }
+  }
+  return parts.join("");
+}
+
+function playPuzzleCompatible(remote, local) {
+  if (!remote?.given || !local?.given) return false;
+  if (!Array.isArray(remote.given) || !Array.isArray(local.given)) return false;
+  if (remote.given.length !== 9 || local.given.length !== 9) return false;
+  for (let r = 0; r < 9; r++) {
+    if (!Array.isArray(remote.given[r]) || remote.given[r].length !== 9) return false;
+    if (!Array.isArray(local.given[r]) || local.given[r].length !== 9) return false;
+  }
+  if (givenFingerprint(remote.given) !== givenFingerprint(local.given)) return false;
+  // Also compare clue digits where both mark a cell as given.
+  for (let r = 0; r < 9; r++) {
+    for (let c = 0; c < 9; c++) {
+      if (!remote.given[r][c] || !local.given[r][c]) continue;
+      const rv = remote.board?.[r]?.[c]?.value ?? remote.board?.[r]?.[c] ?? 0;
+      const lv = local.board?.[r]?.[c]?.value ?? local.board?.[r]?.[c] ?? 0;
+      if (Number(rv) !== Number(lv)) return false;
+    }
+  }
+  return true;
+}
+
+function sessionsCompatible(remote, local) {
+  if (!remote || !local) return false;
+  const rk = remote.session_kind || "play";
+  const lk = local.session_kind || "play";
+  if (rk !== lk) return false;
+  if (rk === "daily") {
+    if (remote.daily_date && local.daily_date) {
+      if (String(remote.daily_date) !== String(local.daily_date)) return false;
+    } else if (!playPuzzleCompatible(remote, local)) {
+      // Legacy local without daily_date — only merge if same puzzle clues.
+      return false;
+    }
+  }
+  if (rk === "challenge") {
+    if (remote.match_id && local.match_id) {
+      if (String(remote.match_id) !== String(local.match_id)) return false;
+    } else if (!playPuzzleCompatible(remote, local)) {
+      return false;
+    }
+  }
+  if (rk === "play" || (!remote.session_kind && !local.session_kind)) {
+    if (!playPuzzleCompatible(remote, local)) return false;
+  }
+  // Daily/challenge with matching ids still need matching clues before board merge.
+  if ((rk === "daily" || rk === "challenge") && remote.given && local.given) {
+    if (!playPuzzleCompatible(remote, local)) return false;
+  }
+  return true;
 }
 
 let currentTheme = localStorage.getItem("thcoku_theme") || "light";
@@ -166,11 +277,21 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
     gameApi = startThcokuGame(canvas, {
       cosmetics: cosmetics || { title: null, pins: [], seed: 1 },
       autoStart: gameOptions.autoStart !== false,
+      sessionKind: gameOptions.sessionKind || null,
+      dailyDate: gameOptions.dailyDate || null,
+      matchId: gameOptions.matchId || null,
+      playerSlot: gameOptions.playerSlot || null,
+      initialDiffIndex: gameOptions.initialDiffIndex ?? null,
       onQuit: () => {
         quitAndClose();
       },
       onWin: () => {
         setTimeout(() => closeDiscordActivity(), 2500);
+      },
+      onNewGame: () => {
+        clearLocalSession();
+        // Drop remote session so the next save can authorize a fresh puzzle.
+        clearSavedSession();
       },
       onBoardReady: () => {
         saveSessionNow({ force: true });
@@ -178,6 +299,32 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
       onProgress: () => {
         // Persist immediately so Discord "Exit" cannot race the async flush.
         saveSessionNow({ keepalive: false, force: true });
+      },
+      onHint: async ({ row, col, board }) => {
+        if (!window.__DISCORD_ACCESS_TOKEN__) {
+          return { ok: false, error: "offline" };
+        }
+        try {
+          const gid = await resolveGuildId(8000);
+          cachedGuildId = gid;
+          const res = await apiFetch("/api/activity/hint", {
+            method: "POST",
+            body: JSON.stringify({
+              guild_id: gid,
+              row,
+              col,
+              board,
+            }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res?.ok) {
+            return { ok: false, ...(typeof data === "object" ? data : {}) };
+          }
+          return data;
+        } catch (err) {
+          console.warn("[Thcoku] hint request failed", err);
+          return { ok: false, error: "hint_failed" };
+        }
       },
     });
     applyTheme(currentTheme);
@@ -195,7 +342,9 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
 async function loadCosmetics() {
   if (!window.__DISCORD_ACCESS_TOKEN__) return null;
   try {
-    const res = await apiFetch(`/api/activity/profile?guild_id=${encodeURIComponent(guildId())}`);
+    const gid = await resolveGuildId(3000);
+    cachedGuildId = gid;
+    const res = await apiFetch(`/api/activity/profile?guild_id=${encodeURIComponent(gid)}`);
     if (!res || !res.ok) return null;
     const data = await res.json();
     return {
@@ -210,27 +359,76 @@ async function loadCosmetics() {
 }
 
 async function loadSavedSession() {
+  const gid = window.__DISCORD_ACCESS_TOKEN__
+    ? await resolveGuildId(3000)
+    : guildId();
+  cachedGuildId = gid;
   let remote = null;
   if (window.__DISCORD_ACCESS_TOKEN__) {
     try {
-      const res = await apiFetch(`/api/activity/session?guild_id=${encodeURIComponent(guildId())}`);
+      const res = await apiFetch(`/api/activity/session?guild_id=${encodeURIComponent(gid)}`);
       if (res && res.ok) {
         const data = await res.json();
         const session = data?.session;
-        if (session?.board && session?.given && session?.solution) {
-          remote = session;
+        if (session) {
+          if (session.won_at) {
+            clearLocalSession();
+            if (session.diff_index != null) {
+              remote = { diff_index: Number(session.diff_index), board: null };
+            }
+          } else if (session.board && session.given) {
+            remote = session;
+          } else if (session.diff_index != null) {
+            // Preference-only session (no board): used to start at the requested difficulty.
+            remote = { diff_index: Number(session.diff_index), board: null };
+          }
         }
       }
     } catch (err) {
       console.warn("[Thcoku] session load failed", err);
     }
   }
-  const local = readLocalSession();
-  // Prefer the freshest progress (remote filled/elapsed vs local).
-  if (remote && local) {
-    const rScore = (Number(remote.filled) || 0) * 10000 + (Number(remote.elapsed) || 0);
-    const lScore = (Number(local.filled) || 0) * 10000 + (Number(local.elapsed) || 0);
-    return lScore > rScore ? local : remote;
+  const local = readLocalSessionForGuild(gid);
+  // Daily / challenge: always prefer the server session (avoid wrong puzzle from localStorage).
+  if (remote?.board && (remote.session_kind === "daily" || remote.session_kind === "challenge")) {
+    if (local && !sessionsCompatible(remote, local)) {
+      clearLocalSession();
+    } else if (local && sessionsCompatible(remote, local)) {
+      const rFilled = Number(remote.filled) || 0;
+      const lFilled = Number(local.filled) || 0;
+      if (lFilled > rFilled) {
+        return {
+          ...remote,
+          board: local.board,
+          filled: lFilled,
+          elapsed: local.elapsed ?? remote.elapsed,
+          hints_used: Math.max(
+            Number(remote.hints_used) || 0,
+            Number(local.hints_used) || 0
+          ),
+        };
+      }
+    }
+    return remote;
+  }
+  // Never resume a local daily/challenge without a matching remote session.
+  if (!remote?.board && local && (local.session_kind === "daily" || local.session_kind === "challenge")) {
+    clearLocalSession();
+    return remote;
+  }
+  // Prefer the freshest full-board progress for /play; ignore board-less pref when local exists.
+  if (remote?.board && local && !remote?.won_at) {
+    if (!sessionsCompatible(remote, local)) {
+      clearLocalSession();
+      return remote;
+    }
+    const rFilled = Number(remote.filled) || 0;
+    const lFilled = Number(local.filled) || 0;
+    if (rFilled > lFilled) return remote;
+    if (lFilled > rFilled) return local;
+    const rTs = Number(remote.updated_at || remote.last_move_at || 0);
+    const lTs = Number(local.saved_at || 0);
+    return rTs >= lTs ? remote : local;
   }
   return remote || local;
 }
@@ -238,14 +436,30 @@ async function loadSavedSession() {
 async function clearSavedSession() {
   clearLocalSession();
   if (!window.__DISCORD_ACCESS_TOKEN__) return;
-  const gid = encodeURIComponent(guildId());
+  const gid = await resolveGuildId(3000);
+  cachedGuildId = gid;
+  const encoded = encodeURIComponent(gid);
   try {
-    let res = await apiFetch(`/api/activity/session?guild_id=${gid}`, { method: "DELETE" });
+    let res = await apiFetch(`/api/activity/session?guild_id=${encoded}`, { method: "DELETE" });
+    if (res?.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (data.cleared !== false) return;
+      if (data.reason === "active_challenge") {
+        console.info("[Thcoku] session kept — challenge race in progress");
+        return;
+      }
+    }
     if (res && (res.ok || res.status === 401 || res.status === 404)) return;
-    await apiFetch("/api/activity/session", {
+    res = await apiFetch("/api/activity/session", {
       method: "POST",
-      body: JSON.stringify({ clear: true, guild_id: guildId() }),
+      body: JSON.stringify({ clear: true, guild_id: gid }),
     });
+    if (res?.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (data.cleared === false && data.reason === "active_challenge") {
+        console.info("[Thcoku] session kept — challenge race in progress");
+      }
+    }
   } catch (err) {
     console.warn("[Thcoku] session clear failed", err);
   }
@@ -295,29 +509,39 @@ async function reportSessionActive() {
   }
 }
 
-function endWatchOnExit({ force = false } = {}) {
+function endWatchOnExit({ force = false, challengeForfeit = false } = {}) {
   if (!window.__DISCORD_ACCESS_TOKEN__) return;
-  const body = JSON.stringify({
-    end_watch: true,
-    force,
-    guild_id: guildId(),
-  });
-  for (const url of apiUrlCandidates("/api/activity/session")) {
-    try {
-      fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${window.__DISCORD_ACCESS_TOKEN__}`,
-        },
-        body,
-        keepalive: true,
-      });
-      break;
-    } catch {
-      /* try next candidate */
+  // Fire-and-forget; resolve guild id when possible so we don't target activity:0:uid.
+  const post = (gid) => {
+    const body = JSON.stringify({
+      end_watch: true,
+      force,
+      challenge_forfeit: challengeForfeit,
+      guild_id: gid,
+    });
+    for (const url of apiUrlCandidates("/api/activity/session")) {
+      try {
+        fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${window.__DISCORD_ACCESS_TOKEN__}`,
+          },
+          body,
+          keepalive: true,
+        });
+        break;
+      } catch {
+        /* try next candidate */
+      }
     }
+  };
+  const immediate = guildId();
+  if (immediate && immediate !== "0") {
+    post(immediate);
+    return;
   }
+  resolveGuildId(8000).then(post).catch(() => post(cachedGuildId || guildId()));
 }
 
 function scheduleEndWatchOnHide() {
@@ -338,39 +562,52 @@ function cancelEndWatchOnHide() {
 }
 
 function flushSessionOnExit({ endWatch = false } = {}) {
-  // Save board progress; only remove the watch announcement on real close (not tab hide).
   const snap = currentSessionSnap();
-  if (snap) {
-    writeLocalSession(snap);
-    if (window.__DISCORD_ACCESS_TOKEN__) {
-      const body = JSON.stringify(sessionPayload(snap));
-      for (const url of apiUrlCandidates("/api/activity/session")) {
-        try {
-          fetch(url, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${window.__DISCORD_ACCESS_TOKEN__}`,
-            },
-            body,
-            keepalive: true,
-          });
-          break;
-        } catch {
-          /* try next candidate */
+  const challengeForfeit =
+    endWatch && snap?.session_kind === "challenge";
+  const run = async () => {
+    if (snap && !challengeForfeit) {
+      writeLocalSession(snap);
+      if (window.__DISCORD_ACCESS_TOKEN__) {
+        const body = JSON.stringify(await sessionPayloadAsync(snap));
+        for (const url of apiUrlCandidates("/api/activity/session")) {
+          try {
+            fetch(url, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${window.__DISCORD_ACCESS_TOKEN__}`,
+              },
+              body,
+              keepalive: true,
+            });
+            break;
+          } catch {
+            /* try next candidate */
+          }
         }
       }
+    } else if (snap && challengeForfeit) {
+      writeLocalSession(snap);
     }
-  }
-  if (endWatch) {
-    endWatchOnExit({ force: true });
-  }
+    if (endWatch) {
+      endWatchOnExit({ force: true, challengeForfeit });
+    }
+  };
+  void run();
+}
+
+async function refreshCosmeticsIfPlaying() {
+  if (!gameStarted || !gameApi?.setCosmetics || !window.__DISCORD_ACCESS_TOKEN__) return;
+  const cosmetics = await loadCosmetics();
+  if (cosmetics) gameApi.setCosmetics(cosmetics);
 }
 
 function startAutosave() {
   stopAutosave();
   autosaveTimer = setInterval(() => {
     saveSessionNow();
+    refreshCosmeticsIfPlaying();
   }, 4000);
   if (exitHooksBound) return;
   exitHooksBound = true;
@@ -459,16 +696,22 @@ function askResume(session) {
   });
 }
 
-async function beginPlay({ resumeSession = null } = {}) {
+async function beginPlay({ resumeSession = null, initialDiffIndex = null } = {}) {
   sessionOpenedAt = Date.now();
   const sessionKind = resumeSession?.session_kind || null;
+  const sessionMeta = {
+    sessionKind,
+    dailyDate: resumeSession?.daily_date || null,
+    matchId: resumeSession?.match_id || null,
+    playerSlot: resumeSession?.player_slot || null,
+  };
   if (resumeSession) {
-    startGameOnce(null, { autoStart: false, sessionKind });
+    startGameOnce(null, { autoStart: false, ...sessionMeta });
     if (!gameApi?.loadSnapshot?.(resumeSession)) {
       gameApi?.newGame?.();
     }
   } else {
-    startGameOnce(null, { autoStart: true, sessionKind });
+    startGameOnce(null, { autoStart: true, ...sessionMeta, initialDiffIndex });
   }
   startAutosave();
   await reportSessionActive();
@@ -485,21 +728,22 @@ async function beginPlay({ resumeSession = null } = {}) {
 }
 
 async function prefetchSessionBoard(session) {
-  if (!session?.board || !session?.given || !session?.solution) return;
+  if (!session?.board || !session?.given) return;
   if (!window.__DISCORD_ACCESS_TOKEN__) return;
-  await saveSessionNow({
-    force: true,
-    snap: {
-      difficulty: session.difficulty || "medium",
-      diff_index: session.diff_index ?? 0,
-      elapsed: session.elapsed ?? 0,
-      board: session.board,
-      given: session.given,
-      solution: session.solution,
-      filled: session.filled ?? 0,
-      session_kind: session.session_kind,
-    },
-  });
+  const { saved_at: _saved, ...rest } = session;
+  const snap = {
+    ...rest,
+    difficulty: session.difficulty || "medium",
+    diff_index: session.diff_index ?? 0,
+    elapsed: session.elapsed ?? 0,
+    board: session.board,
+    given: session.given,
+    filled: session.filled ?? 0,
+    session_kind: session.session_kind,
+    hints_used: session.hints_used ?? 0,
+  };
+  if (session.solution) snap.solution = session.solution;
+  await saveSessionNow({ force: true, snap });
 }
 
 async function showGame() {
@@ -511,12 +755,14 @@ async function showGame() {
   }
 
   const session = await loadSavedSession();
-  if (session) {
-    if (Number(session.filled) >= 81 || session.won) {
-      await clearSavedSession();
-      await beginPlay({ resumeSession: null });
-      return;
-    }
+  if (session && (Number(session.filled) >= 81 || session.won)) {
+    await clearSavedSession();
+    await beginPlay({ resumeSession: null });
+    return;
+  }
+
+  // Full session with a saved board → offer resume or start fresh.
+  if (session && session.board) {
     await prefetchSessionBoard(session);
     if (session.session_kind === "daily" || session.session_kind === "challenge") {
       await beginPlay({ resumeSession: session });
@@ -527,12 +773,15 @@ async function showGame() {
       await beginPlay({ resumeSession: session });
     } else {
       await clearSavedSession();
-      await beginPlay({ resumeSession: null });
+      // Preserve the difficulty preference when starting fresh after declining resume.
+      await beginPlay({ resumeSession: null, initialDiffIndex: session.diff_index ?? null });
     }
     return;
   }
 
-  await beginPlay({ resumeSession: null });
+  // No saved board — start fresh, but use any stored difficulty preference.
+  const prefDiffIndex = session?.diff_index ?? null;
+  await beginPlay({ resumeSession: null, initialDiffIndex: prefDiffIndex });
 }
 
 /** When Activities map `/api` → host, Discord strips `/api`, so `/api/token` becomes `/token`. */
@@ -598,17 +847,19 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boa
   await clearSavedSession();
   if (!window.__DISCORD_ACCESS_TOKEN__) {
     showWinToast("Local win (no Discord auth — XP not saved).");
-    return null;
+    return { ok: true, local: true, elapsed };
   }
   try {
+    // resolveGuildId waits up to 8s for the SDK to populate guildId — avoids sending "0".
+    const resolvedGuildId = await resolveGuildId();
     const sdk = window.__DISCORD_SDK__;
     const res = await apiFetch("/api/activity/win", {
       method: "POST",
       body: JSON.stringify({
         difficulty,
         elapsed: Math.floor(Number(elapsed) || 0),
-        guild_id: sdk?.guildId ?? "0",
-        channel_id: sdk?.channelId ?? null,
+        guild_id: resolvedGuildId,
+        channel_id: sdk?.channelId ?? channelId(),
         name: playerName(),
         board: boardPayload?.board ?? null,
         given: boardPayload?.given ?? null,
@@ -616,22 +867,67 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boa
       }),
     });
     const data = await res.json().catch(() => ({}));
-    await clearSavedSession();
-    if (!res.ok) {
-      showWinToast(`Win OK, but Mongo failed (${data.error || res.status}).`);
+    // Soft wins may return HTTP 200 with ok:true + quiet/already_won flags.
+    if (
+      data.quiet ||
+      data.already_won ||
+      data.error === "already_won" ||
+      data.error === "daily_locked"
+    ) {
+      clearLocalSession();
+      showWinToast(
+        data.error === "daily_locked"
+          ? "Daily already locked for today."
+          : "Win already recorded for this puzzle."
+      );
+      return { ok: true, already_won: true, elapsed: data.elapsed };
+    }
+    if (!res.ok || data.ok === false) {
+      if (
+        data.error === "already_settled" ||
+        data.error === "forfeited" ||
+        data.error === "match_missing"
+      ) {
+        clearLocalSession();
+        showWinToast(
+          data.error === "forfeited"
+            ? "You already left this race."
+            : "Race already settled."
+        );
+        return { ok: true, already_won: true, elapsed: data.elapsed };
+      }
+      if (data.error === "not_solved") {
+        showWinToast("Board looks full but isn't solved yet — keep going.");
+        return null;
+      }
+      showWinToast(`Could not save win (${data.error || res.status}).`);
       return null;
     }
-    const posted = data.posted ? " · photo in chat" : "";
+    clearLocalSession();
+    if (data.challenge) {
+      const shown = formatTime(data.elapsed ?? elapsed);
+      showWinToast(
+        `Board complete · ${shown} — rewards when the race settles.`
+      );
+      return data;
+    }
+    const shown = formatTime(data.elapsed ?? elapsed);
+    const chatNote =
+      data.posted === false && data.post_error
+        ? " · rewards saved (chat photo failed)"
+        : data.posted
+          ? " · photo in chat"
+          : "";
+    const xp = data.xp ?? 0;
+    const coins = data.coins ?? 0;
+    const streak = data.streak ?? "?";
     showWinToast(
-      `Order up! +${data.xp} XP · +${data.coins} sponges · streak ${data.streak} · ${formatTime(
-        elapsed
-      )}${posted}`
+      `Order up! +${xp} XP · +${coins} sponges · streak ${streak} · ${shown}${chatNote}`
     );
     return data;
   } catch (err) {
     console.error(err);
-    await clearSavedSession();
-    showWinToast("Win OK, but could not save to Mongo.");
+    showWinToast("Could not save win — check your connection.");
     return null;
   }
 };
