@@ -633,7 +633,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                             file=file,
                         )
                         posted = True
-                        # Prevent /claimdaily from re-posting the same daily win.
+                        # Prevent /z-admin claimdaily from re-posting the same daily win.
                         try:
                             from bot import get_guild_daily, save_data as _save
 

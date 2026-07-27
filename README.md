@@ -19,8 +19,8 @@ Free tip: keep the service awake with **UptimeRobot** → `https://YOUR-SERVICE.
 
 ## Features
 
-- **`/play`** — opens the Discord Activity window (like Wordle)
-- **`/daily`** · **`/challenge`** · **`/shop`** · **`/leaderboard`** · **`/stats`**
+- **`/1-play`** — opens the Discord Activity window (like Wordle)
+- **`/2-daily`** · **`/3-challenge`** · **`/9-shop`** · **`/12-leaderboard`** · **`/11-stats`**
 - Activity wins write XP/sponges to the same Mongo leaderboard as the bot
 - HTTP `/health` for Render + UptimeRobot
 
@@ -93,4 +93,4 @@ Never commit `.env`.
 
 ## Commands
 
-`/help` · `/play` · `/daily` · `/challenge` · `/shop` · `/quit` · `/leaderboard` · `/stats` · `/testboard`
+`/5-help` · `/1-play` · `/2-daily` · `/3-challenge` · `/9-shop` · `/8-quit` · `/12-leaderboard` · `/11-stats` · `/z-admin testboard`
