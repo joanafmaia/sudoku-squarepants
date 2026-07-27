@@ -201,6 +201,15 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+import {
+  armProceduralBgm,
+  configureProceduralBgm,
+  pauseProceduralBgm,
+  resumeProceduralBgm,
+  stopProceduralBgm,
+  syncProceduralBgmEnabled,
+} from "./procedural-bgm.js";
+
 let audioCtx = null;
 const SOUND_STORAGE_KEY = "thcoku_sound";
 
@@ -227,6 +236,8 @@ export function setSoundEnabled(enabled) {
   } catch {
     /* localStorage disabled */
   }
+  syncProceduralBgmEnabled(soundEnabled);
+  if (soundEnabled) ensureBgmStarted();
 }
 
 function getAudioCtx() {
@@ -240,11 +251,21 @@ function getAudioCtx() {
   return audioCtx;
 }
 
+configureProceduralBgm({
+  getCtx: getAudioCtx,
+  isEnabled: () => soundEnabled,
+});
+
+function ensureBgmStarted() {
+  armProceduralBgm();
+}
+
 export function playFx(type) {
   if (!soundEnabled) return;
   try {
     const ctx = getAudioCtx();
     if (!ctx) return;
+    ensureBgmStarted();
     const now = ctx.currentTime;
 
     if (type === "pop") {
@@ -1389,6 +1410,7 @@ export function startThcokuGame(canvas, options = {}) {
   }
 
   canvas.addEventListener("pointerdown", (evt) => {
+    if (soundEnabled) ensureBgmStarted();
     const { x, y } = canvasPos(evt);
     handleBoardPointer(x, y);
   });
