@@ -21,6 +21,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
+from activity_watchers import prune_watchers
+
 BotGetter = Callable[[], Any]
 
 CORS = {
@@ -856,24 +858,6 @@ def _client_spectate_session(doc: dict) -> dict:
     return payload
 
 
-SPECTATOR_PRESENCE_TTL_SEC = 15
-
-
-def _prune_watchers(watchers: dict | None) -> dict:
-    now = time.time()
-    cleaned: dict = {}
-    for viewer_id, meta in (watchers or {}).items():
-        if not isinstance(meta, dict):
-            continue
-        if now - float(meta.get("last_seen") or 0) > SPECTATOR_PRESENCE_TTL_SEC:
-            continue
-        cleaned[str(viewer_id)] = {
-            "name": str(meta.get("name") or "Player"),
-            "last_seen": float(meta.get("last_seen") or now),
-        }
-    return cleaned
-
-
 async def _touch_spectator_presence(
     *,
     session_id: str,
@@ -883,7 +867,7 @@ async def _touch_spectator_presence(
     from bot import match_store
 
     session = await match_store.get_activity_session(session_id)
-    watchers = _prune_watchers((session or {}).get("watchers"))
+    watchers = prune_watchers((session or {}).get("watchers"))
     watchers[str(viewer_id)] = {
         "name": viewer_name or "Player",
         "last_seen": time.time(),
@@ -909,7 +893,7 @@ async def _load_activity_watchers(
         )
     if session:
         session_id = str(session.get("_id") or session_id)
-    watchers = _prune_watchers((session or {}).get("watchers"))
+    watchers = prune_watchers((session or {}).get("watchers"))
     if session and watchers != (session.get("watchers") or {}):
         await match_store.merge_activity_session(session_id, {"watchers": watchers})
     rows = [

@@ -3991,19 +3991,11 @@ def activity_session_mention(guild: discord.Guild | None, session: dict) -> str:
     return f"<@{uid}>"
 
 
-SPECTATOR_PRESENCE_TTL_SEC = 15
+from activity_watchers import prune_watchers
 
 
 def prune_activity_watchers(watchers: dict | None) -> dict:
-    now = time.time()
-    cleaned: dict = {}
-    for viewer_id, meta in (watchers or {}).items():
-        if not isinstance(meta, dict):
-            continue
-        if now - float(meta.get("last_seen") or 0) > SPECTATOR_PRESENCE_TTL_SEC:
-            continue
-        cleaned[str(viewer_id)] = meta
-    return cleaned
+    return prune_watchers(watchers)
 
 
 def format_activity_watchers_suffix(
@@ -4046,6 +4038,10 @@ async def activity_sessions_for_challenge(match: dict) -> dict[str, dict]:
         session = await match_store.get_activity_session(
             daily_watch_session_id(guild_id, int(uid))
         )
+        if not session:
+            session = await match_store.find_activity_session_by_user_id(
+                uid, guild_id=guild_id
+            )
         if session:
             out[str(uid)] = session
     return out
@@ -4058,21 +4054,28 @@ def format_challenge_watchers_suffix(
 ) -> str:
     if not player_sessions:
         return ""
-    labels: list[str] = []
-    seen: set[str] = set()
-    for _slot, player in match_player_entries(match):
-        uid = str(player.get("user_id") or "")
-        if not uid or uid in seen:
-            continue
-        seen.add(uid)
-        suffix = format_activity_watchers_suffix(player_sessions.get(uid), guild)
-        if suffix:
-            labels.append(suffix.removeprefix(" · 👀 "))
-    if not labels:
+    unique: dict[str, str] = {}
+    for session in player_sessions.values():
+        for viewer_id, meta in prune_activity_watchers(session.get("watchers")).items():
+            if viewer_id in unique:
+                continue
+            try:
+                uid = int(viewer_id)
+            except (TypeError, ValueError):
+                unique[viewer_id] = str(meta.get("name") or "Player")
+                continue
+            if guild is not None and guild.get_member(uid) is not None:
+                unique[viewer_id] = f"<@{uid}>"
+            else:
+                unique[viewer_id] = str(meta.get("name") or "Player")
+    if not unique:
         return ""
+    labels = [unique[k] for k in sorted(unique.keys(), key=lambda k: unique[k])]
     if len(labels) == 1:
         return f" · 👀 {labels[0]}"
-    return f" · 👀 {labels[0]} +{len(labels) - 1} more"
+    if len(labels) == 2:
+        return f" · 👀 {labels[0]} & {labels[1]}"
+    return f" · 👀 {labels[0]}, {labels[1]} +{len(labels) - 2}"
 
 
 def activity_most_recent_user_id(sessions: list[dict]) -> str | None:

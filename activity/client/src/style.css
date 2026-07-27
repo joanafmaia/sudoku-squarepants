@@ -409,11 +409,16 @@ body {
   }
 }
 
-#theme-toggle {
+#app-toolbar {
   position: absolute;
   top: 12px;
   right: 14px;
   z-index: 50;
+  display: flex;
+  gap: 8px;
+}
+
+#app-toolbar button {
   appearance: none;
   border: 2px solid var(--gold);
   border-radius: 999px;
@@ -425,7 +430,7 @@ body {
   transition: transform 0.15s ease, background 0.2s ease;
 }
 
-#theme-toggle:active {
+#app-toolbar button:active {
   transform: scale(0.92);
 }
 
@@ -450,7 +455,7 @@ body.theme-dark #canvas {
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5), 0 0 0 3px rgba(56, 189, 248, 0.4);
 }
 
-body.theme-dark #theme-toggle {
+body.theme-dark #app-toolbar button {
   background: rgba(30, 41, 59, 0.9);
   border-color: #38bdf8;
   color: #fff;

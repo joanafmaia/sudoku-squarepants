@@ -202,6 +202,33 @@ function roundRect(ctx, x, y, w, h, r) {
 }
 
 let audioCtx = null;
+const SOUND_STORAGE_KEY = "thcoku_sound";
+
+function readSoundEnabled() {
+  try {
+    const stored = localStorage.getItem(SOUND_STORAGE_KEY);
+    if (stored === "off" || stored === "0") return false;
+  } catch {
+    /* localStorage disabled */
+  }
+  return true;
+}
+
+let soundEnabled = readSoundEnabled();
+
+export function isSoundEnabled() {
+  return soundEnabled;
+}
+
+export function setSoundEnabled(enabled) {
+  soundEnabled = Boolean(enabled);
+  try {
+    localStorage.setItem(SOUND_STORAGE_KEY, soundEnabled ? "on" : "off");
+  } catch {
+    /* localStorage disabled */
+  }
+}
+
 function getAudioCtx() {
   if (!audioCtx) {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
@@ -214,6 +241,7 @@ function getAudioCtx() {
 }
 
 export function playFx(type) {
+  if (!soundEnabled) return;
   try {
     const ctx = getAudioCtx();
     if (!ctx) return;
@@ -485,9 +513,9 @@ export function startThcokuGame(canvas, options = {}) {
     ctx.textBaseline = "middle";
     ctx.fillText("Thcoku", 36, 34);
     ctx.font = "600 15px Fredoka, Segoe UI, Apple Color Emoji, Segoe UI Emoji, sans-serif";
-    ctx.fillText(headerTitleLine().slice(0, 48), 130, 34);
-    ctx.font = "500 14px Fredoka, Segoe UI, sans-serif";
     const badge = watchersBadge();
+    ctx.fillText(headerTitleLine().slice(0, badge ? 34 : 48), 130, 34);
+    ctx.font = "500 14px Fredoka, Segoe UI, sans-serif";
     const statusLimit = badge ? 28 : 42;
     ctx.textAlign = "left";
     ctx.fillText(String(state.status).slice(0, statusLimit), 36, 58);

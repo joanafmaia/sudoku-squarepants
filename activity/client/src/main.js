@@ -4,7 +4,7 @@
  * Saves in-progress boards to Mongo and offers Resume / New puzzle on next /play.
  */
 import { DiscordSDK, RPCCloseCodes } from "@discord/embedded-app-sdk";
-import { startThcokuGame } from "./game.js";
+import { startThcokuGame, isSoundEnabled, setSoundEnabled } from "./game.js";
 import { difficultyLabel } from "./sudoku-core.js";
 
 const CLIENT_ID = import.meta.env.VITE_DISCORD_CLIENT_ID;
@@ -263,6 +263,22 @@ function applyTheme(theme) {
     btn.title = `Theme: ${theme.toUpperCase()} (Click to change)`;
   }
 }
+
+function applySound(enabled) {
+  setSoundEnabled(enabled);
+  const btn = document.getElementById("sound-toggle");
+  if (btn) {
+    btn.textContent = enabled ? "🔊" : "🔇";
+    btn.title = enabled ? "Sound on (click to mute)" : "Sound off (click to unmute)";
+    btn.setAttribute("aria-pressed", enabled ? "false" : "true");
+  }
+}
+
+document.getElementById("sound-toggle")?.addEventListener("click", () => {
+  applySound(!isSoundEnabled());
+});
+
+applySound(isSoundEnabled());
 
 document.getElementById("theme-toggle")?.addEventListener("click", () => {
   const idx = THEMES.indexOf(currentTheme);
