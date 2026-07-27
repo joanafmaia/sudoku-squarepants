@@ -42,6 +42,10 @@ class MatchStore:
     async def list_matches(self, *, status: str) -> list[dict]:
         raise NotImplementedError
 
+    async def delete_matches_for_guild(self, guild_id: int) -> int:
+        """Delete all challenge matches for a guild. Returns deleted count."""
+        return 0
+
     async def upsert_active_game(self, doc: dict) -> None:
         raise NotImplementedError
 
@@ -249,6 +253,17 @@ class MemoryMatchStore(MatchStore):
 
     async def list_matches(self, *, status: str) -> list[dict]:
         return [_clone(d) for d in self._docs.values() if d.get("status") == status]
+
+    async def delete_matches_for_guild(self, guild_id: int) -> int:
+        gid = int(guild_id)
+        to_drop = [
+            mid
+            for mid, doc in self._docs.items()
+            if int(doc.get("guild_id") or 0) == gid
+        ]
+        for mid in to_drop:
+            self._docs.pop(mid, None)
+        return len(to_drop)
 
     async def upsert_active_game(self, doc: dict) -> None:
         payload = _clone(doc)
@@ -557,6 +572,16 @@ class MongoMatchStore(MatchStore):
     async def list_matches(self, *, status: str) -> list[dict]:
         cursor = self._col.find({"status": status})
         return await cursor.to_list(length=500)
+
+    async def delete_matches_for_guild(self, guild_id: int) -> int:
+        if self._col is None:
+            await self.connect()
+        gid = int(guild_id)
+        # Matches are stored with int guild_id; also clear any legacy string keys.
+        result = await self._col.delete_many(
+            {"$or": [{"guild_id": gid}, {"guild_id": str(gid)}]}
+        )
+        return int(result.deleted_count or 0)
 
     async def upsert_active_game(self, doc: dict) -> None:
         payload = _clone(doc)

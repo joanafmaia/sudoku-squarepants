@@ -419,27 +419,8 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
     )
     uid = int(user["id"])
 
-    from bot import find_challenge_game_for_user, games, handle_challenge_completion_activity
-    ch_key = find_challenge_game_for_user(uid)
-    if not ch_key:
-        # Mongo fallback after restart — rehydrate then complete.
-        try:
-            from bot import match_store, match_player_entries, restore_challenge_games_from_match
-
-            active = await match_store.list_matches(status="active")
-            for match in active:
-                for slot, player in match_player_entries(match):
-                    if player.get("user_id") != uid:
-                        continue
-                    if player.get("forfeit") or player.get("finished_time") is not None:
-                        continue
-                    await restore_challenge_games_from_match(bot, match)
-                    ch_key = find_challenge_game_for_user(uid)
-                    break
-                if ch_key:
-                    break
-        except Exception as exc:  # noqa: BLE001
-            print(f"activity challenge win rehydrate failed: {exc}")
+    from bot import ensure_challenge_game_for_user, games, handle_challenge_completion_activity
+    ch_key = await ensure_challenge_game_for_user(bot, uid)
     if ch_key:
         game = games[ch_key]
         board = _normalize_activity_board(body.get("board"))
@@ -1072,8 +1053,8 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         uid,
     )
     if body.get("clear") or body.get("action") == "clear":
-        from bot import find_challenge_game_for_user, games
-        if find_challenge_game_for_user(uid):
+        from bot import ensure_challenge_game_for_user
+        if await ensure_challenge_game_for_user(bot, uid):
             return {"ok": True, "cleared": False, "reason": "active_challenge"}
         return await _delete_activity_session(bot, user=user, guild_id=guild_id)
 
@@ -1120,17 +1101,19 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
     given_raw = body.get("given")
     given = _normalize_activity_given(given_raw, board)
 
-    from bot import find_challenge_game_for_user, games, sync_challenge_board
-    ch_key = find_challenge_game_for_user(uid)
+    from bot import ensure_challenge_game_for_user, games, sync_challenge_board
+    ch_key = await ensure_challenge_game_for_user(bot, uid)
     if ch_key:
         game = games[ch_key]
         if board:
-            if not _validate_challenge_board_update(game, board):
+            sanitized = _sanitize_challenge_board_update(game, board)
+            if sanitized is None:
                 print(
                     f"activity challenge save rejected invalid board user={uid} "
                     f"match={game.get('match_id')}"
                 )
                 return {"ok": False, "error": "invalid_board", "challenge": True}
+            board = sanitized
             game["board"] = board
             game["filled"] = sum(1 for r in range(9) for c in range(9) if board[r][c]["value"])
             started = float(game.get("started_at") or time.time())
@@ -1319,8 +1302,8 @@ async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict
     from bot import match_store, clear_activity_session
 
     uid = int(user["id"])
-    from bot import find_challenge_game_for_user, games, game_filled_count
-    ch_key = find_challenge_game_for_user(uid)
+    from bot import ensure_challenge_game_for_user, games, game_filled_count
+    ch_key = await ensure_challenge_game_for_user(bot, uid)
     if ch_key:
         game = games[ch_key]
         from bot import DIFF_KEYS_LIST, difficulty_key_from_label
@@ -1368,7 +1351,7 @@ async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict
 
 async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
     from bot import (
-        find_challenge_game_for_user,
+        ensure_challenge_game_for_user,
         games,
         match_store,
         normalize_solution,
@@ -1384,7 +1367,7 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
     board = _normalize_activity_board(body.get("board"))
     game: dict | None = None
 
-    ch_key = find_challenge_game_for_user(uid)
+    ch_key = await ensure_challenge_game_for_user(bot, uid)
     if ch_key:
         game = games.get(ch_key)
         if not game or board is None:
@@ -1470,14 +1453,14 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
 async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict:
     uid = int(user["id"])
     from bot import (
-        find_challenge_game_for_user,
+        ensure_challenge_game_for_user,
         finish_forfeit,
         is_solved,
         match_store,
         normalize_solution,
     )
 
-    if find_challenge_game_for_user(uid):
+    if await ensure_challenge_game_for_user(bot, uid):
         return {
             "ok": True,
             "cleared": False,
@@ -1646,23 +1629,56 @@ def _normalize_activity_given(raw: Any, board: list[list[dict]] | None) -> list[
     return [[board[r][c]["value"] != 0 for c in range(9)] for r in range(9)]
 
 
-def _validate_challenge_board_update(game: dict, board: list[list[dict]]) -> bool:
-    """Reject forged challenge edits (given cells rewritten, invalid digits)."""
+def _sanitize_challenge_board_update(
+    game: dict, board: list[list[dict]]
+) -> list[list[dict]] | None:
+    """Return a board safe to persist for a challenge race.
+
+    Clue cells are forced to the solution. Wrong non-clue digits are cleared so a
+    forged/local wrong board cannot overwrite good race progress, while still
+    allowing mid-race mistakes without failing the whole autosave.
+    """
     from bot import cell_value, normalize_solution
 
     given = game.get("given")
     solution = normalize_solution(game.get("solution"))
     if not given or not solution:
-        return False
+        return None
+    out: list[list[dict]] = []
     for r in range(9):
+        row_out: list[dict] = []
         for c in range(9):
+            cell = board[r][c]
+            marks = cell.get("pencil_marks") if isinstance(cell, dict) else []
+            if not isinstance(marks, list):
+                marks = []
             val = cell_value(board, r, c)
             if val != 0 and (val < 1 or val > 9):
-                return False
-            # Clue cells must stay on the puzzle solution (allow repairing a blank clue).
-            if given[r][c] and val != solution[r][c]:
-                return False
-    return True
+                return None
+            if given[r][c]:
+                row_out.append({"value": int(solution[r][c]), "pencil_marks": []})
+                continue
+            if val != 0 and val != solution[r][c]:
+                row_out.append(
+                    {
+                        "value": 0,
+                        "pencil_marks": [int(m) for m in marks if str(m).isdigit()],
+                    }
+                )
+                continue
+            row_out.append(
+                {
+                    "value": int(val),
+                    "pencil_marks": [int(m) for m in marks if str(m).isdigit()],
+                }
+            )
+        out.append(row_out)
+    return out
+
+
+def _validate_challenge_board_update(game: dict, board: list[list[dict]]) -> bool:
+    """True when the board can be sanitized into a valid challenge update."""
+    return _sanitize_challenge_board_update(game, board) is not None
 
 
 def _verify_activity_solve(

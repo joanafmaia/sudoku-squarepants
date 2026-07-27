@@ -401,7 +401,13 @@ async function loadSavedSession() {
   if (remote?.board && (remote.session_kind === "daily" || remote.session_kind === "challenge")) {
     if (local && !sessionsCompatible(remote, local)) {
       clearLocalSession();
-    } else if (local && sessionsCompatible(remote, local)) {
+    } else if (
+      local &&
+      sessionsCompatible(remote, local) &&
+      remote.session_kind === "daily"
+    ) {
+      // Daily may merge fresher local fills; challenge always trusts the server board
+      // (wrong local merges were overwriting race progress).
       const rFilled = Number(remote.filled) || 0;
       const lFilled = Number(local.filled) || 0;
       if (lFilled > rFilled) {
@@ -415,6 +421,15 @@ async function loadSavedSession() {
             Number(local.hints_used) || 0
           ),
         };
+      }
+    } else if (local && sessionsCompatible(remote, local) && remote.session_kind === "challenge") {
+      // Keep local hints if higher; never replace the server board.
+      const hints = Math.max(
+        Number(remote.hints_used) || 0,
+        Number(local.hints_used) || 0
+      );
+      if (hints > (Number(remote.hints_used) || 0)) {
+        return { ...remote, hints_used: hints };
       }
     }
     return remote;
@@ -498,6 +513,9 @@ async function saveSessionNow({ keepalive = false, force = false, snap = null } 
       const data = await res.json().catch(() => ({}));
       console.warn("[Thcoku] session save failed", res?.status, data.error || data);
       if (data.error === "invalid_board" && (data.challenge || snap.session_kind === "challenge")) {
+        // Mistakes mid-race are rejected silently; only reload a "full" forged board.
+        const filled = Number(snap.filled) || 0;
+        if (filled < 81) return;
         showWinToast("Challenge board mismatch — reloading race puzzle…");
         try {
           clearLocalSession();
@@ -570,11 +588,9 @@ function scheduleEndWatchOnHide() {
   hideEndWatchTimer = setTimeout(() => {
     hideEndWatchTimer = null;
     if (document.visibilityState === "hidden") {
-      // After a long hide, treat challenge leave as a real forfeit (AFK).
-      // Immediate pagehide/freeze must NOT forfeit — Discord remounts on open.
-      const snap = currentSessionSnap();
-      const challengeForfeit = snap?.session_kind === "challenge";
-      endWatchOnExit({ force: true, challengeForfeit });
+      // Clear "is playing" after a long hide — never auto-forfeit the race.
+      // Forfeit only via Quit / explicit challenge_forfeit.
+      endWatchOnExit({ force: true, challengeForfeit: false });
     }
   }, HIDE_END_WATCH_DELAY_MS);
 }
@@ -588,11 +604,11 @@ function cancelEndWatchOnHide() {
 
 function flushSessionOnExit({ endWatch = false } = {}) {
   const snap = currentSessionSnap();
-  // Never forfeit on unload/remount — only Quit or long-hide timer may.
+  // Never forfeit on unload/remount — only Quit may.
   const run = async () => {
     if (snap) {
       writeLocalSession(snap);
-      if (window.__DISCORD_ACCESS_TOKEN__ && snap.session_kind !== "challenge") {
+      if (window.__DISCORD_ACCESS_TOKEN__) {
         const body = JSON.stringify(await sessionPayloadAsync(snap));
         for (const url of apiUrlCandidates("/api/activity/session")) {
           try {
