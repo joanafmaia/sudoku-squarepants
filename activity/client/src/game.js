@@ -287,15 +287,15 @@ function ensureControls(shell) {
       .map((n) => `<button type="button" class="ctrl-digit" data-digit="${n}">${n}</button>`)
       .join("")}
     </div>
-    <div class="ctrl-actions" role="group" aria-label="Game Setup Actions">
-      <button type="button" data-action="quit" id="ctrl-quit" class="btn-danger">🚪 Quit</button>
-      <button type="button" data-action="diff" id="ctrl-diff">Medium</button>
-      <button type="button" data-action="pencil" id="ctrl-pencil">Pencil</button>
-    </div>
-    <div class="ctrl-actions" role="group" aria-label="Editing Actions">
+    <div class="ctrl-actions ctrl-actions-edit" role="group" aria-label="Editing Actions">
       <button type="button" data-action="undo" id="ctrl-undo" title="Undo move">↩ Undo</button>
       <button type="button" data-action="clear" class="ctrl-clear">Clear</button>
       <button type="button" data-action="hint" id="ctrl-hint" title="Get a hint">💡 Hint</button>
+    </div>
+    <div class="ctrl-actions ctrl-actions-meta" id="ctrl-meta" role="group" aria-label="Game Setup Actions">
+      <button type="button" data-action="quit" id="ctrl-quit" class="btn-danger">🚪 Quit</button>
+      <button type="button" data-action="pencil" id="ctrl-pencil">Notes</button>
+      <button type="button" data-action="diff" id="ctrl-diff">Medium</button>
     </div>
   `;
   shell.appendChild(bar);
@@ -600,7 +600,7 @@ export function startThcokuGame(canvas, options = {}) {
   function difficultyLocked() {
     if (state.spectatorMode) return true;
     const k = state.sessionKind;
-    return k == null || k === "play" || k === "daily" || k === "challenge";
+    return k === "daily" || k === "challenge";
   }
 
   function syncControls() {
@@ -610,8 +610,20 @@ export function startThcokuGame(canvas, options = {}) {
       pencilBtn.classList.toggle("is-active", state.pencilMode);
     }
     const spec = state.spectatorMode;
-    if (diffBtn) diffBtn.style.display = difficultyLocked() ? "none" : "";
-    if (pencilBtn) pencilBtn.style.display = spec ? "none" : "";
+    const meta = controls.querySelector("#ctrl-meta");
+    const hideDiff = difficultyLocked();
+    if (diffBtn) {
+      diffBtn.hidden = hideDiff || spec;
+      diffBtn.style.display = "";
+    }
+    if (pencilBtn) {
+      pencilBtn.hidden = spec;
+      pencilBtn.style.display = "";
+    }
+    if (meta) {
+      meta.classList.toggle("is-solo", spec);
+      meta.classList.toggle("is-compact", !spec && hideDiff);
+    }
     const newBtn = controls.querySelector('[data-action="new"]');
     if (newBtn) newBtn.style.display = spec ? "none" : "";
     controls.querySelectorAll("[data-action]").forEach((btn) => {
@@ -1425,5 +1437,6 @@ export function startThcokuGame(canvas, options = {}) {
     getStartSnapshot,
     loadSnapshot,
     loadSpectatorSnapshot,
+    syncControls,
   };
 }

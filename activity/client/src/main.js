@@ -860,12 +860,12 @@ async function beginPlay({ resumeSession = null, initialDiffIndex = null } = {})
   startAutosave();
   await reportSessionActive();
 
-  const diffBtn = document.querySelector("#ctrl-diff");
-  if (diffBtn) diffBtn.style.display = "none";
+  // Diff stays available for /play; daily/challenge hide it via syncControls (compact row).
   if (sessionKind === "daily" || sessionKind === "challenge") {
     const newBtn = document.querySelector('[data-action="new"]');
     if (newBtn) newBtn.style.display = "none";
   }
+  gameApi?.syncControls?.();
 
   const cosmetics = await loadCosmetics();
   if (cosmetics && gameApi?.setCosmetics) gameApi.setCosmetics(cosmetics);

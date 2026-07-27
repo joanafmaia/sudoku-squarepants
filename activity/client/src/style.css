@@ -227,6 +227,21 @@ body {
   gap: 8px;
 }
 
+/* Challenge/daily: Diff hidden — Quit + Notes share the row evenly */
+.ctrl-actions-meta.is-compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ctrl-actions-meta.is-compact #ctrl-diff,
+.ctrl-actions-meta.is-solo #ctrl-diff,
+.ctrl-actions-meta.is-solo #ctrl-pencil {
+  display: none !important;
+}
+
+.ctrl-actions-meta.is-solo {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 #game-controls button {
   appearance: none;
   border: 2px solid var(--header);
@@ -238,6 +253,8 @@ body {
   font-size: 1.1rem;
   min-height: 48px;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   margin: 0;
   padding: 0 8px;
   cursor: pointer;
