@@ -100,7 +100,7 @@ def is_bot_admin(user_id: int | None) -> bool:
         return False
 
 
-# Fixed weekly difficulty for /2-daily (Monday=0 … Sunday=6)
+# Fixed weekly difficulty for /daily (Monday=0 … Sunday=6)
 DAILY_WEEKDAY_DIFFICULTY = {
     0: "very_easy",   # Monday
     1: "easy",        # Tuesday
@@ -1275,7 +1275,7 @@ def utc_today() -> str:
 
 
 def apply_daily_calendar_streak(stats: dict, day: str) -> int:
-    """Advance streak for consecutive UTC days with a completed /2-daily.
+    """Advance streak for consecutive UTC days with a completed /daily.
 
     - At most +1 per calendar day
     - Missed days break the streak, unless streak shields cover each missed day
@@ -2460,7 +2460,7 @@ async def ensure_challenge_game_for_user(bot: "SudokuBot", user_id: int) -> tupl
 async def challenge_blocks_user(user_id: int) -> str | None:
     """Reason the user cannot start play/daily/another challenge (unsettled race)."""
     if find_challenge_game_for_user(user_id):
-        return "Finish your speedrun challenge first (`/8-quit`)."
+        return "Finish your speedrun challenge first (`/quit`)."
     try:
         active = await match_store.list_matches(status="active")
     except Exception as exc:  # noqa: BLE001
@@ -2478,7 +2478,7 @@ async def challenge_blocks_user(user_id: int) -> str | None:
                     "You're waiting for other players to finish your challenge "
                     "before you can start something new."
                 )
-            return "Finish your speedrun challenge first (`/8-quit`)."
+            return "Finish your speedrun challenge first (`/quit`)."
     return None
 
 
@@ -4182,14 +4182,14 @@ async def daily_attempt_blocks_modes(guild_id: int, user_id: int) -> str | None:
     r = (daily.get("results") or {}).get(uid) or {}
     if r.get("in_progress") and not r.get("won"):
         return (
-            "Finish or `/8-quit` today's **daily** first — your attempt is still in progress."
+            "Finish or `/quit` today's **daily** first — your attempt is still in progress."
         )
     blocking = await get_blocking_activity_session(
         guild_id, user_id, kinds={"daily"}
     )
     if blocking:
         return (
-            "Finish or `/8-quit` today's **daily** Activity first — "
+            "Finish or `/quit` today's **daily** Activity first — "
             "your attempt is still open."
         )
     return None
@@ -4203,7 +4203,7 @@ async def activity_blocks_challenge(guild_id: int, user_id: int) -> str | None:
     if not blocking:
         return None
     kind = blocking.get("session_kind") or "play"
-    return f"<@{user_id}> — finish your active **{kind}** Activity first (`/8-quit`)."
+    return f"<@{user_id}> — finish your active **{kind}** Activity first (`/quit`)."
 
 
 def parse_watch_session_ids(session_id: str) -> tuple[int, int]:
@@ -4739,7 +4739,7 @@ async def open_activity_spectator_in_activity(
         return
     if interaction.user.id == target_user_id:
         await interaction.response.send_message(
-            "That's your own game — use `/1-play` to continue playing.",
+            "That's your own game — use `/play` to continue playing.",
             ephemeral=True,
         )
         return
@@ -5153,7 +5153,7 @@ class OpenChallengeLobbyView(discord.ui.View):
             return
         if interaction.guild and solo_key(interaction.guild.id, uid) in games:
             await interaction.response.send_message(
-                "Finish your solo/daily game first (`/8-quit`).",
+                "Finish your solo/daily game first (`/quit`).",
                 ephemeral=True,
             )
             return
@@ -5259,7 +5259,7 @@ class OpenChallengeLobbyView(discord.ui.View):
                 return
             if solo_key(guild.id, uid) in games:
                 await _start_abort(
-                    f"<@{uid}> must finish their solo/daily game first (`/8-quit`)."
+                    f"<@{uid}> must finish their solo/daily game first (`/quit`)."
                 )
                 return
             block_msg = await activity_blocks_challenge(guild.id, uid)
@@ -5378,7 +5378,7 @@ class BoardRefreshView(discord.ui.View):
             traceback.print_exc()
             try:
                 await interaction.followup.send(
-                    "Couldn't refresh the board — try `/1-play` or tap Refresh again.",
+                    "Couldn't refresh the board — try `/play` or tap Refresh again.",
                     ephemeral=True,
                 )
             except (discord.errors.NotFound, discord.HTTPException):
@@ -5508,7 +5508,7 @@ class ConfirmQuitView(discord.ui.View):
                                 "Solved",
                                 description=(
                                     "Board solved but puzzle could not be fingerprinted — "
-                                    "check `/11-stats`."
+                                    "check `/stats`."
                                 ),
                             )
                         else:
@@ -5558,7 +5558,7 @@ class ConfirmQuitView(discord.ui.View):
                     "Solved",
                     description=(
                         "Board was solved but rewards could not be verified — "
-                        "check `/11-stats`."
+                        "check `/stats`."
                     ),
                 )
             await remove_game(self.game_key)
@@ -5742,12 +5742,12 @@ class ConfirmQuitActivityPlayView(discord.ui.View):
             if not store_ok:
                 msg = (
                     "Solved puzzle closed (could not verify rewards — "
-                    "check `/11-stats` or retry later)."
+                    "check `/stats` or retry later)."
                 )
             elif not puzzle_key:
                 msg = (
                     "Solved puzzle closed (could not fingerprint puzzle — "
-                    "rewards not applied; check `/11-stats`)."
+                    "rewards not applied; check `/stats`)."
                 )
             elif already_paid:
                 msg = "Solved puzzle closed (rewards were already recorded)."
@@ -5769,7 +5769,7 @@ class ConfirmQuitActivityPlayView(discord.ui.View):
                     print(f"play quit award_play_win failed: {exc}")
                     msg = (
                         "Solved puzzle closed (could not verify rewards — "
-                        "check `/11-stats` or retry later)."
+                        "check `/stats` or retry later)."
                     )
                 else:
                     if outcome is None:
@@ -5783,7 +5783,7 @@ class ConfirmQuitActivityPlayView(discord.ui.View):
                 "difficulty": session.get("difficulty"),
             }
             finish_forfeit(self.bot.data, guild_id, interaction.user, game)
-            msg = "Quit. Streak wiped — start again with `/1-play`."
+            msg = "Quit. Streak wiped — start again with `/play`."
 
         try:
             await end_activity_watch(self.bot, self.session_id, force=True)
@@ -5819,7 +5819,7 @@ class ChallengeLaunchActivityView(discord.ui.View):
         ch_key = await ensure_challenge_game_for_user(bot, interaction.user.id)
         if not ch_key:
             await interaction.response.send_message(
-                "You do not have an active challenge in this server. Start one with `/3-challenge`.",
+                "You do not have an active challenge in this server. Start one with `/challenge`.",
                 ephemeral=True,
             )
             return
@@ -5837,7 +5837,7 @@ class ChallengeLaunchActivityView(discord.ui.View):
                 await interaction.response.send_message(
                     "Discord can't start Activities in this thread. "
                     "Go to the sudoku text channel and tap the shared Play button, "
-                    "or `/8-quit` and start a new `/3-challenge`.",
+                    "or `/quit` and start a new `/challenge`.",
                     ephemeral=True,
                 )
                 return
@@ -6037,7 +6037,7 @@ class SudokuView(discord.ui.View):
             return False
         if game["mode"] in ("solo", "daily", "challenge") and interaction.user.id != game["owner_id"]:
             await interaction.response.send_message(
-                "This board belongs to someone else. Start yours with `/1-play` or `/2-daily`.",
+                "This board belongs to someone else. Start yours with `/play` or `/daily`.",
                 ephemeral=True,
             )
             return False
@@ -6395,7 +6395,7 @@ class SudokuView(discord.ui.View):
             traceback.print_exc()
             try:
                 await interaction.followup.send(
-                    f"{BUBBLE} Puzzle solved — check `/11-stats` for sponges.",
+                    f"{BUBBLE} Puzzle solved — check `/stats` for sponges.",
                     ephemeral=True,
                 )
             except discord.HTTPException:
@@ -6772,7 +6772,7 @@ def shop_page_embed(
             detail += f"\nBorder pin sticker: {selected['emoji']} · Theme: **{theme}**"
             if selected.get("on_sale"):
                 detail += "\n🔥 *Today's bundle deal — 50% off!*"
-            detail += "\nGift owned pins with `/10-giftpin` or the **Gift** button."
+            detail += "\nGift owned pins with `/giftpin` or the **Gift** button."
 
         embed.add_field(
             name="🔍 Selected Item",
@@ -7404,7 +7404,7 @@ class KrustyShopView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message(
-                "This Krusty Shop ticket isn't yours — open `/9-shop`.",
+                "This Krusty Shop ticket isn't yours — open `/shop`.",
                 ephemeral=True,
             )
             return False
@@ -7438,7 +7438,7 @@ class KrustyShopView(discord.ui.View):
                 print(f"KrustyShopView refresh retry failed: {type(exc2).__name__}: {exc2}")
                 try:
                     await interaction.followup.send(
-                        "Couldn't refresh the shop — run `/9-shop` again.",
+                        "Couldn't refresh the shop — run `/shop` again.",
                         ephemeral=True,
                     )
                 except discord.HTTPException:
@@ -7787,13 +7787,13 @@ async def broadcast_daily_announcement(target_channel_id: int | None = None) -> 
             name="🏷️ Shop Deal of the Day",
             value=(
                 f"{deal['emoji']} **{deal['label']}** — {shop_item_price_text(deal)}\n"
-                f"Open `/9-shop` → **Pins** (50% off until next UTC midnight)"
+                f"Open `/shop` → **Pins** (50% off until next UTC midnight)"
             ),
             inline=False,
         )
     embed.add_field(
         name="How to Play",
-        value="Type `/2-daily` in chat or launch the game using the **Activity** button in Discord!",
+        value="Type `/daily` in chat or launch the game using the **Activity** button in Discord!",
         inline=False,
     )
 
@@ -7857,8 +7857,7 @@ async def _wait_daily_announce_ready():
     await bot.wait_until_ready()
 
 
-# Slash commands: Discord sorts A–Z in the picker. User commands use numeric prefixes
-# (1-play, 2-daily, …) so the most-used ones appear first; admin tools live under z-admin.
+# Slash commands: Discord sorts A–Z in the picker. Admin tools live under z-admin (sorts last).
 admin_group = app_commands.Group(
     name="z-admin",
     description="Bot admin tools (server staff)",
@@ -8441,7 +8440,7 @@ async def _launch_activity_window(
                 "(sem `https://`)\n"
                 "3. Também `/pyscript` → `pyscript.net` e `/jsdelivr` → `cdn.jsdelivr.net`\n"
                 "4. **Activities → Settings** → ativa **Enable Activities**\n"
-                "5. Reinicia o Discord e tenta `/1-play` outra vez"
+                "5. Reinicia o Discord e tenta `/play` outra vez"
             )
         else:
             tip = (
@@ -8460,7 +8459,7 @@ async def _launch_activity_window(
 
 
 @bot.tree.command(
-    name="1-play",
+    name="play",
     description="Pick a difficulty, then open the Thcoku game window",
 )
 @app_commands.describe(difficulty="Required — choose the level before the game opens")
@@ -8479,7 +8478,7 @@ async def play_cmd(
         )
         if blocking:
             await interaction.response.send_message(
-                "Finish or `/8-quit` today's **daily** first — it uses the same game window.",
+                "Finish or `/quit` today's **daily** first — it uses the same game window.",
                 ephemeral=True,
             )
             return
@@ -8503,7 +8502,7 @@ async def play_cmd(
         if sk in games:
             existing = games[sk]
             await interaction.response.send_message(
-                f"Finish your **{existing.get('mode', 'solo')}** game first (`/8-quit`).",
+                f"Finish your **{existing.get('mode', 'solo')}** game first (`/quit`).",
                 ephemeral=True,
             )
             return
@@ -8512,8 +8511,8 @@ async def play_cmd(
 
 
 @bot.tree.command(
-    name="4-watch",
-    description="Spectate active /1-play, /2-daily, and challenge races",
+    name="watch",
+    description="Spectate active /play, /daily, and challenge races",
 )
 async def watch_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -8550,7 +8549,7 @@ async def watch_cmd(interaction: discord.Interaction):
 
     if not playable and not challenge_matches:
         await interaction.followup.send(
-            "Nobody is playing right now. Start with `/1-play`, `/2-daily`, or `/3-challenge`.",
+            "Nobody is playing right now. Start with `/play`, `/daily`, or `/challenge`.",
             ephemeral=True,
         )
         return
@@ -8588,7 +8587,7 @@ async def watch_cmd(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-@bot.tree.command(name="5-help", description="I'm ready! How to play Bikini Bottom Sudoku")
+@bot.tree.command(name="help", description="I'm ready! How to play Bikini Bottom Sudoku")
 async def help_cmd(interaction: discord.Interaction):
     tiers = " · ".join(
         f"{meta['label']} ×{meta['multiplier']:.2f}"
@@ -8603,12 +8602,12 @@ async def help_cmd(interaction: discord.Interaction):
     embed.add_field(
         name=f"{BUBBLE} Play",
         value=(
-            "`/1-play` — pick a **difficulty**, then open the game window\n"
-            "`/2-daily` — one pineapple puzzle a day\n"
-            "`/3-challenge` — race your pals on the same puzzle\n"
-            "`/4-watch` — spectate active `/1-play`, `/2-daily`, and challenge races\n"
-            "`/6-recover` — reopen a saved puzzle (e.g. almost finished)\n"
-            "`/7-cleargame` — abandon a stuck puzzle · `/8-quit` — leave any active game"
+            "`/play` — pick a **difficulty**, then open the game window\n"
+            "`/daily` — one pineapple puzzle a day\n"
+            "`/challenge` — race your pals on the same puzzle\n"
+            "`/watch` — spectate active `/play`, `/daily`, and challenge races\n"
+            "`/recover` — reopen a saved puzzle (e.g. almost finished)\n"
+            "`/cleargame` — abandon a stuck puzzle · `/quit` — leave any active game"
         ),
         inline=False,
     )
@@ -8627,10 +8626,10 @@ async def help_cmd(interaction: discord.Interaction):
         name=f"{XP} XP & {SPONGE} Sponges",
         value=(
             f"**XP** ranks the leaderboard (never spent).\n"
-            f"**Sponges** buy cosmetics in `/9-shop`:\n"
+            f"**Sponges** buy cosmetics in `/shop`:\n"
             f"· **Titles** — header flair on your board\n"
             f"· **Pins** — emoji stickers on the border\n"
-            f"· Open `/9-shop` → pick from the menu → **Buy** / **Equip** "
+            f"· Open `/shop` → pick from the menu → **Buy** / **Equip** "
             f"(filter All / Can buy / Owned · pages ◀ ▶)\n"
             f"Solve **{format_xp(BASE_WIN_REWARD, signed=True)}** + "
             f"**{format_sponges(BASE_WIN_REWARD, signed=True)}** · "
@@ -8644,14 +8643,14 @@ async def help_cmd(interaction: discord.Interaction):
     )
     embed.add_field(
         name=f"{PINEAPPLE} More",
-        value="`/9-shop` · `/11-stats` · `/13-achievements` · `/12-leaderboard` · `/6-recover` · `/7-cleargame` · `/8-quit`",
+        value="`/shop` · `/stats` · `/achievements` · `/leaderboard` · `/recover` · `/cleargame` · `/quit`",
         inline=False,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(
-    name="3-challenge",
+    name="challenge",
     description="Speedrun challenge — invite players or open a Join lobby (2–5 total)",
 )
 @app_commands.describe(
@@ -8714,7 +8713,7 @@ async def challenge_cmd(
     sk_self = solo_key(interaction.guild.id, interaction.user.id)
     if sk_self in games:
         await interaction.response.send_message(
-            "Finish your solo/daily game first (`/8-quit`).",
+            "Finish your solo/daily game first (`/quit`).",
             ephemeral=True,
         )
         return
@@ -8788,7 +8787,7 @@ async def challenge_cmd(
     for uid in seen:
         if find_challenge_game_for_user(uid):
             await interaction.response.send_message(
-                f"<@{uid}> already has an active challenge — they need `/8-quit` first.",
+                f"<@{uid}> already has an active challenge — they need `/quit` first.",
                 ephemeral=True,
             )
             return
@@ -8835,7 +8834,7 @@ async def challenge_cmd(
 
 
 
-@bot.tree.command(name="2-daily", description="Play today's daily Sudoku (same level, unique board)")
+@bot.tree.command(name="daily", description="Play today's daily Sudoku (same level, unique board)")
 async def daily_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message("Server only.", ephemeral=True)
@@ -8889,7 +8888,7 @@ async def daily_cmd(interaction: discord.Interaction):
             return
         else:
             await interaction.response.send_message(
-                f"Finish your **{existing['mode']}** game first (**Quit** / `/8-quit`).",
+                f"Finish your **{existing['mode']}** game first (**Quit** / `/quit`).",
                 ephemeral=True,
             )
             return
@@ -8898,7 +8897,7 @@ async def daily_cmd(interaction: discord.Interaction):
         await reply_ephemeral(
             interaction,
             f"{PINEAPPLE} You've already **{detail}** today's daily (`{day}`).\n"
-            f"Only **one** pineapple puzzle per day — play more with `/1-play`.",
+            f"Only **one** pineapple puzzle per day — play more with `/play`.",
         )
 
     if uid in daily["results"]:
@@ -8992,7 +8991,7 @@ async def daily_cmd(interaction: discord.Interaction):
         save_data(bot.data)
         await reply_ephemeral(
             interaction,
-            "You have an active `/1-play` game open. Finish it or `/8-quit` first, then start `/2-daily`.",
+            "You have an active `/play` game open. Finish it or `/quit` first, then start `/daily`.",
         )
         return
 
@@ -9105,7 +9104,7 @@ async def resetdaily_cmd(interaction: discord.Interaction):
         f"• Cleared **{claims_cleared}** durable claim(s)\n"
         f"• Cleared **{sessions_cleared}** Activity daily session(s)\n"
         f"• Cleared **{games_cleared}** in-memory daily game(s)\n\n"
-        f"Everyone can run `/2-daily` again. "
+        f"Everyone can run `/daily` again. "
         f"**Note:** XP/sponges already awarded are not removed.",
         ephemeral=True,
     )
@@ -9113,7 +9112,7 @@ async def resetdaily_cmd(interaction: discord.Interaction):
 
 @admin_group.command(
     name="clearstale",
-    description="Remove idle Activity sessions from /4-watch (this server)",
+    description="Remove idle Activity sessions from /watch (this server)",
 )
 async def clearstale_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -9155,7 +9154,7 @@ async def clearstale_cmd(interaction: discord.Interaction):
             print(f"clearstale clear session failed for {sid}: {exc}")
 
     await interaction.followup.send(
-        f"{BUBBLE} Cleared **{cleared}** idle Activity session(s) from `/4-watch` "
+        f"{BUBBLE} Cleared **{cleared}** idle Activity session(s) from `/watch` "
         f"(no moves for {WATCH_IDLE_HIDE_SEC // 60}+ min).",
         ephemeral=True,
     )
@@ -9278,7 +9277,7 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
 
     if r.get("in_progress") and not r.get("won"):
         await interaction.response.send_message(
-            "Finish today's daily first (`/2-daily`), then use this if the announcement failed.",
+            "Finish today's daily first (`/daily`), then use this if the announcement failed.",
             ephemeral=True,
         )
         return
@@ -9307,7 +9306,7 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
     # Only recover announcements for players who actually completed the daily.
     if not r.get("won") and not has_claim:
         await interaction.response.send_message(
-            "No completed daily found for today. Finish `/2-daily` first.",
+            "No completed daily found for today. Finish `/daily` first.",
             ephemeral=True,
         )
         return
@@ -9415,7 +9414,7 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
 bot.tree.add_command(admin_group)
 
 
-@bot.tree.command(name="9-shop", description="Spend sponges at the Krusty Shop")
+@bot.tree.command(name="shop", description="Spend sponges at the Krusty Shop")
 async def shop_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message("Server only.", ephemeral=True)
@@ -9438,7 +9437,7 @@ async def shop_cmd(interaction: discord.Interaction):
     view.message = await interaction.original_response()
 
 
-@bot.tree.command(name="10-giftpin", description="Gift an owned border pin to another player")
+@bot.tree.command(name="giftpin", description="Gift an owned border pin to another player")
 @app_commands.describe(pin="Pin you own", member="Player who receives the pin")
 async def giftpin_cmd(
     interaction: discord.Interaction,
@@ -9527,7 +9526,7 @@ async def giftpin_autocomplete(
 
 
 @bot.tree.command(
-    name="6-recover",
+    name="recover",
     description="Reopen your saved in-progress puzzle in the Activity",
 )
 async def recover_cmd(interaction: discord.Interaction):
@@ -9540,7 +9539,7 @@ async def recover_cmd(interaction: discord.Interaction):
 
     if find_challenge_game_for_user(uid):
         await interaction.response.send_message(
-            "Finish or `/8-quit` your speedrun challenge first.",
+            "Finish or `/quit` your speedrun challenge first.",
             ephemeral=True,
         )
         return
@@ -9552,13 +9551,13 @@ async def recover_cmd(interaction: discord.Interaction):
     session, _session_id = await lookup_user_activity_session(guild_id, uid)
     if not session or not session.get("board"):
         await interaction.response.send_message(
-            f"{BUBBLE} No saved puzzle found. Start with `/1-play` or `/2-daily`.",
+            f"{BUBBLE} No saved puzzle found. Start with `/play` or `/daily`.",
             ephemeral=True,
         )
         return
     if session.get("won_at"):
         await interaction.response.send_message(
-            "That puzzle is already finished — use `/1-play` for a new game.",
+            "That puzzle is already finished — use `/play` for a new game.",
             ephemeral=True,
         )
         return
@@ -9575,11 +9574,11 @@ async def recover_cmd(interaction: discord.Interaction):
 
 
 @bot.tree.command(
-    name="7-cleargame",
-    description="Abandon your saved puzzle and remove it from /4-watch",
+    name="cleargame",
+    description="Abandon your saved puzzle and remove it from /watch",
 )
 async def cleargame_cmd(interaction: discord.Interaction):
-    """Same as /8-quit for Activity sessions, with clearer wording for stuck boards."""
+    """Same as /quit for Activity sessions, with clearer wording for stuck boards."""
     if interaction.guild is None:
         await interaction.response.send_message("Server only.", ephemeral=True)
         return
@@ -9612,8 +9611,8 @@ async def cleargame_cmd(interaction: discord.Interaction):
     ):
         filled = int(session.get("filled") or 0)
         await interaction.response.send_message(
-            f"Abandon this puzzle ({filled}/81)? It will be removed from `/4-watch`. "
-            "Your `/1-play` streak will reset.",
+            f"Abandon this puzzle ({filled}/81)? It will be removed from `/watch`. "
+            "Your `/play` streak will reset.",
             view=ConfirmQuitActivityPlayView(
                 session_id or daily_watch_session_id(guild_id, interaction.user.id),
                 bot,
@@ -9623,13 +9622,13 @@ async def cleargame_cmd(interaction: discord.Interaction):
         return
 
     await interaction.response.send_message(
-        f"{BUBBLE} No saved puzzle to clear. If `/4-watch` still shows an old game, "
+        f"{BUBBLE} No saved puzzle to clear. If `/watch` still shows an old game, "
         "an admin can run `/z-admin clearstale`.",
         ephemeral=True,
     )
 
 
-@bot.tree.command(name="8-quit", description="Leave your active Sudoku game or challenge")
+@bot.tree.command(name="quit", description="Leave your active Sudoku game or challenge")
 async def quit_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message("Server only.", ephemeral=True)
@@ -9712,7 +9711,7 @@ async def quit_cmd(interaction: discord.Interaction):
             coins = await close_solved_session(bot, sk, game, interaction.user, guild_id)
             msg = (
                 f"{SPONGE} That board was already solved — session closed."
-                + (f" Rewards: **{format_sponges(coins, signed=True)}** (see `/11-stats`)." if coins else "")
+                + (f" Rewards: **{format_sponges(coins, signed=True)}** (see `/stats`)." if coins else "")
             )
             await interaction.followup.send(msg, ephemeral=True)
             return
@@ -9752,7 +9751,7 @@ async def quit_cmd(interaction: discord.Interaction):
 
 
 @bot.tree.command(
-    name="12-leaderboard",
+    name="leaderboard",
     description="Bikini Bottom rankings — XP, daily today, shop whales",
 )
 @app_commands.describe(board="Which leaderboard to show")
@@ -9780,7 +9779,7 @@ async def leaderboard_cmd(
         results = daily.get("results") or {}
         if not results:
             await interaction.response.send_message(
-                f"{PINEAPPLE} Nobody's cleared today's pineapple yet — be the first with `/2-daily`!",
+                f"{PINEAPPLE} Nobody's cleared today's pineapple yet — be the first with `/daily`!",
                 ephemeral=True,
             )
             return
@@ -9851,7 +9850,7 @@ async def leaderboard_cmd(
             f"{SPONGE} **{int(s.get('coins', 0))}**"
         )
         nonempty = lambda s: s.get("xp", 0) > 0 or s.get("wins", 0) > 0
-        empty_msg = f"{BUBBLE} Nobody on this board yet — go earn some XP with `/1-play`!"
+        empty_msg = f"{BUBBLE} Nobody on this board yet — go earn some XP with `/play`!"
         mode = "xp"
 
     ranked = [(uid, s) for uid, s in ranked if nonempty(s)]
@@ -9871,7 +9870,7 @@ async def leaderboard_cmd(
     await interaction.response.send_message(embed=embed, silent=True)
 
 
-@bot.tree.command(name="11-stats", description="Your Bikini Bottom Sudoku report card")
+@bot.tree.command(name="stats", description="Your Bikini Bottom Sudoku report card")
 @app_commands.describe(member="Peek at a neighbor's stats")
 async def stats_cmd(interaction: discord.Interaction, member: discord.Member | None = None):
     if interaction.guild is None:
@@ -9927,7 +9926,7 @@ async def stats_cmd(interaction: discord.Interaction, member: discord.Member | N
         embed.add_field(name="Boards played", value=f"**{games_n}**", inline=True)
         embed.add_field(
             name=f"Badges 🏆 ({have}/{total})",
-            value=f"**{badge_str}**\n_Full list + how to unlock: `/13-achievements`_",
+            value=f"**{badge_str}**\n_Full list + how to unlock: `/achievements`_",
             inline=False,
         )
         await interaction.response.send_message(embed=embed, silent=True)
@@ -9944,7 +9943,7 @@ async def stats_cmd(interaction: discord.Interaction, member: discord.Member | N
 
 
 @bot.tree.command(
-    name="13-achievements",
+    name="achievements",
     description="Browse all badges — unlocked and still locked",
 )
 @app_commands.describe(member="Peek at a neighbor's achievement progress")
