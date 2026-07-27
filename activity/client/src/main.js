@@ -667,11 +667,11 @@ function startAutosave() {
 }
 
 export function closeDiscordActivity() {
+  const discordSdk = window.__DISCORD_SDK__ || window.discordSdk;
   try {
-    if (window.discordSdk && typeof window.discordSdk.close === "function") {
-      window.discordSdk.close();
-    } else if (window.discordSdk?.commands && typeof window.discordSdk.commands.closeActivity === "function") {
-      window.discordSdk.commands.closeActivity().catch(() => {});
+    if (discordSdk && typeof discordSdk.close === "function") {
+      // CLOSE_NORMAL asks Discord to remove the Activity iframe silently.
+      discordSdk.close(1000, "Player quit the game");
     } else {
       window.close();
     }
