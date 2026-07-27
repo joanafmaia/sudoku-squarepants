@@ -211,32 +211,56 @@ import {
 } from "./procedural-bgm.js";
 
 let audioCtx = null;
-const SOUND_STORAGE_KEY = "thcoku_sound";
+const MUSIC_STORAGE_KEY = "thcoku_music";
+const SFX_STORAGE_KEY = "thcoku_sfx";
+const LEGACY_SOUND_KEY = "thcoku_sound";
 
-function readSoundEnabled() {
+function readStoredBool(key, fallback) {
   try {
-    const stored = localStorage.getItem(SOUND_STORAGE_KEY);
+    const stored = localStorage.getItem(key);
     if (stored === "off" || stored === "0") return false;
+    if (stored === "on" || stored === "1") return true;
   } catch {
     /* localStorage disabled */
   }
-  return true;
+  return fallback;
 }
 
-let soundEnabled = readSoundEnabled();
-
-export function isSoundEnabled() {
-  return soundEnabled;
-}
-
-export function setSoundEnabled(enabled) {
-  soundEnabled = Boolean(enabled);
+function readInitialAudioPrefs() {
   try {
-    localStorage.setItem(SOUND_STORAGE_KEY, soundEnabled ? "on" : "off");
+    const legacy = localStorage.getItem(LEGACY_SOUND_KEY);
+    if (legacy === "off" || legacy === "0") {
+      return { music: false, sfx: false };
+    }
   } catch {
     /* localStorage disabled */
   }
-  if (soundEnabled) {
+  return {
+    music: readStoredBool(MUSIC_STORAGE_KEY, true),
+    sfx: readStoredBool(SFX_STORAGE_KEY, true),
+  };
+}
+
+const initialAudio = readInitialAudioPrefs();
+let musicEnabled = initialAudio.music;
+let sfxEnabled = initialAudio.sfx;
+
+export function isMusicEnabled() {
+  return musicEnabled;
+}
+
+export function isSfxEnabled() {
+  return sfxEnabled;
+}
+
+export function setMusicEnabled(enabled) {
+  musicEnabled = Boolean(enabled);
+  try {
+    localStorage.setItem(MUSIC_STORAGE_KEY, musicEnabled ? "on" : "off");
+  } catch {
+    /* localStorage disabled */
+  }
+  if (musicEnabled) {
     getAudioCtx();
     syncProceduralBgmEnabled(true);
     ensureBgmStarted();
@@ -245,6 +269,16 @@ export function setSoundEnabled(enabled) {
     syncProceduralBgmEnabled(false);
     pauseProceduralBgm();
   }
+}
+
+export function setSfxEnabled(enabled) {
+  sfxEnabled = Boolean(enabled);
+  try {
+    localStorage.setItem(SFX_STORAGE_KEY, sfxEnabled ? "on" : "off");
+  } catch {
+    /* localStorage disabled */
+  }
+  if (sfxEnabled) getAudioCtx();
 }
 
 function getAudioCtx() {
@@ -260,7 +294,7 @@ function getAudioCtx() {
 
 configureProceduralBgm({
   getCtx: getAudioCtx,
-  isEnabled: () => soundEnabled,
+  isEnabled: () => musicEnabled,
 });
 
 function ensureBgmStarted() {
@@ -268,11 +302,11 @@ function ensureBgmStarted() {
 }
 
 export function playFx(type) {
-  if (!soundEnabled) return;
+  if (!sfxEnabled) return;
   try {
     const ctx = getAudioCtx();
     if (!ctx) return;
-    ensureBgmStarted();
+    if (musicEnabled) ensureBgmStarted();
     const now = ctx.currentTime;
 
     if (type === "pop") {
@@ -1420,7 +1454,8 @@ export function startThcokuGame(canvas, options = {}) {
   }
 
   canvas.addEventListener("pointerdown", (evt) => {
-    if (soundEnabled) ensureBgmStarted();
+    getAudioCtx();
+    if (musicEnabled) ensureBgmStarted();
     const { x, y } = canvasPos(evt);
     handleBoardPointer(x, y);
   });

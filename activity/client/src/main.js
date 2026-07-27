@@ -4,7 +4,13 @@
  * Saves in-progress boards to Mongo and offers Resume / New puzzle on next /play.
  */
 import { DiscordSDK, RPCCloseCodes } from "@discord/embedded-app-sdk";
-import { startThcokuGame, isSoundEnabled, setSoundEnabled } from "./game.js";
+import {
+  startThcokuGame,
+  isMusicEnabled,
+  isSfxEnabled,
+  setMusicEnabled,
+  setSfxEnabled,
+} from "./game.js";
 import { pauseProceduralBgm, resumeProceduralBgm } from "./procedural-bgm.js";
 import { difficultyLabel } from "./sudoku-core.js";
 
@@ -265,25 +271,44 @@ function applyTheme(theme) {
   }
 }
 
-function applySound(enabled) {
-  setSoundEnabled(enabled);
-  const btn = document.getElementById("sound-toggle");
+function applyMusic(enabled) {
+  setMusicEnabled(enabled);
+  const btn = document.getElementById("music-toggle");
+  if (btn) {
+    btn.textContent = enabled ? "🌊" : "🌊";
+    btn.title = enabled ? "Música do oceano ligada (clica para desligar)" : "Música desligada (clica para ligar)";
+    btn.setAttribute("aria-pressed", enabled ? "false" : "true");
+    btn.classList.toggle("is-muted", !enabled);
+  }
+}
+
+function applySfx(enabled) {
+  setSfxEnabled(enabled);
+  const btn = document.getElementById("sfx-toggle");
   if (btn) {
     btn.textContent = enabled ? "🔊" : "🔇";
-    btn.title = enabled ? "Sound & music on (click to mute)" : "Sound & music off (click to unmute)";
+    btn.title = enabled ? "Sons do jogo ligados (clica para desligar)" : "Sons desligados (clica para ligar)";
     btn.setAttribute("aria-pressed", enabled ? "false" : "true");
   }
 }
 
-document.getElementById("sound-toggle")?.addEventListener("click", (e) => {
+document.getElementById("music-toggle")?.addEventListener("click", (e) => {
   e.preventDefault();
   e.stopPropagation();
-  applySound(!isSoundEnabled());
+  applyMusic(!isMusicEnabled());
 });
 
-applySound(isSoundEnabled());
+document.getElementById("sfx-toggle")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  applySfx(!isSfxEnabled());
+});
+
+applyMusic(isMusicEnabled());
+applySfx(isSfxEnabled());
 
 document.addEventListener("visibilitychange", () => {
+  if (!isMusicEnabled()) return;
   if (document.visibilityState === "hidden") pauseProceduralBgm();
   else resumeProceduralBgm();
 });

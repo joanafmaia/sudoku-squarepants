@@ -451,6 +451,11 @@ body {
   transform: scale(0.92);
 }
 
+#app-toolbar button.is-muted {
+  opacity: 0.45;
+  filter: grayscale(0.85);
+}
+
 body.theme-dark {
   background:
     radial-gradient(circle at 18% 12%, #1e293b 0%, transparent 42%),
