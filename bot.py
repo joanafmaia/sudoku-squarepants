@@ -7363,7 +7363,7 @@ async def _launch_activity_window(
     name="play",
     description="Open the Thcoku game window in this channel (like Wordle)",
 )
-@app_commands.describe(difficulty="Starting difficulty (can always be changed in-game)")
+@app_commands.describe(difficulty="Difficulty for this game (choose before opening)")
 @app_commands.choices(difficulty=DIFFICULTY_CHOICES)
 async def play_cmd(
     interaction: discord.Interaction,

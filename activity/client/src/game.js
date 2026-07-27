@@ -369,7 +369,7 @@ export function startThcokuGame(canvas, options = {}) {
     shakeUntil: 0,
     raf: 0,
     winZoom: 1,
-    sessionKind: options.sessionKind || null,
+    sessionKind: options.sessionKind ?? "play",
     dailyDate: options.dailyDate || null,
     matchId: options.matchId || null,
     playerSlot: options.playerSlot || null,
@@ -593,6 +593,12 @@ export function startThcokuGame(canvas, options = {}) {
     draw();
   }
 
+  function difficultyLocked() {
+    if (state.spectatorMode) return true;
+    const k = state.sessionKind;
+    return k == null || k === "play" || k === "daily" || k === "challenge";
+  }
+
   function syncControls() {
     if (diffBtn) diffBtn.textContent = difficultyLabel(DIFF_KEYS[state.diffIndex]);
     if (pencilBtn) {
@@ -600,7 +606,7 @@ export function startThcokuGame(canvas, options = {}) {
       pencilBtn.classList.toggle("is-active", state.pencilMode);
     }
     const spec = state.spectatorMode;
-    if (diffBtn) diffBtn.style.display = spec ? "none" : "";
+    if (diffBtn) diffBtn.style.display = difficultyLocked() ? "none" : "";
     if (pencilBtn) pencilBtn.style.display = spec ? "none" : "";
     const newBtn = controls.querySelector('[data-action="new"]');
     if (newBtn) newBtn.style.display = spec ? "none" : "";
@@ -1334,7 +1340,7 @@ export function startThcokuGame(canvas, options = {}) {
     } else if (action === "new") {
       if (state.sessionKind !== "daily" && state.sessionKind !== "challenge") newGame();
     } else if (action === "diff") {
-      if (state.sessionKind !== "daily" && state.sessionKind !== "challenge") {
+      if (!difficultyLocked()) {
         state.diffIndex = (state.diffIndex + 1) % DIFF_KEYS.length;
         newGame();
       }

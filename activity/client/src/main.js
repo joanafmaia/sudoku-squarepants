@@ -787,7 +787,7 @@ async function beginSpectate(targetUserId) {
 
 async function beginPlay({ resumeSession = null, initialDiffIndex = null } = {}) {
   sessionOpenedAt = Date.now();
-  const sessionKind = resumeSession?.session_kind || null;
+  const sessionKind = resumeSession?.session_kind ?? "play";
   const sessionMeta = {
     sessionKind,
     dailyDate: resumeSession?.daily_date || null,
@@ -805,11 +805,11 @@ async function beginPlay({ resumeSession = null, initialDiffIndex = null } = {})
   startAutosave();
   await reportSessionActive();
 
+  const diffBtn = document.querySelector("#ctrl-diff");
+  if (diffBtn) diffBtn.style.display = "none";
   if (sessionKind === "daily" || sessionKind === "challenge") {
     const newBtn = document.querySelector('[data-action="new"]');
-    const diffBtn = document.querySelector('#ctrl-diff');
-    if (newBtn) newBtn.style.display = 'none';
-    if (diffBtn) diffBtn.style.display = 'none';
+    if (newBtn) newBtn.style.display = "none";
   }
 
   const cosmetics = await loadCosmetics();
@@ -943,12 +943,13 @@ function showWinToast(message) {
 
 /** Called from the Canvas game after a solved board. */
 window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boardPayload) {
-  await clearSavedSession();
   if (!window.__DISCORD_ACCESS_TOKEN__) {
     showWinToast("Local win (no Discord auth — XP not saved).");
     return { ok: true, local: true, elapsed };
   }
   try {
+    // Persist the solved board before /win — server rejects wins without a session doc.
+    await saveSessionNow({ force: true });
     // resolveGuildId waits up to 8s for the SDK to populate guildId — avoids sending "0".
     const resolvedGuildId = await resolveGuildId();
     const sdk = window.__DISCORD_SDK__;
@@ -979,6 +980,7 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boa
           ? "Daily already locked for today."
           : "Win already recorded for this puzzle."
       );
+      await clearSavedSession();
       return { ok: true, already_won: true, elapsed: data.elapsed };
     }
     if (!res.ok || data.ok === false) {
@@ -987,7 +989,7 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boa
         data.error === "forfeited" ||
         data.error === "match_missing"
       ) {
-        clearLocalSession();
+        await clearSavedSession();
         showWinToast(
           data.error === "forfeited"
             ? "You already left this race."
@@ -1002,7 +1004,7 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boa
       showWinToast(`Could not save win (${data.error || res.status}).`);
       return null;
     }
-    clearLocalSession();
+    await clearSavedSession();
     if (data.challenge) {
       const shown = formatTime(data.elapsed ?? elapsed);
       showWinToast(
