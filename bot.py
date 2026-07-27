@@ -3751,7 +3751,12 @@ def challenge_player_mention(guild: discord.Guild | None, player: dict) -> str:
     return f"<@{uid}>"
 
 
-def challenge_standings_lines(match: dict, guild: discord.Guild | None) -> list[str]:
+def challenge_standings_lines(
+    match: dict,
+    guild: discord.Guild | None,
+    *,
+    player_sessions: dict[str, dict] | None = None,
+) -> list[str]:
     start = float(match.get("start_time") or time.time())
     active = challenge_active_player(match)
     active_uid = active[1].get("user_id") if active else None
@@ -3769,11 +3774,25 @@ def challenge_standings_lines(match: dict, guild: discord.Guild | None) -> list[
         filled = challenge_board_filled(player.get("current_board") or [])
         elapsed = time.time() - start
         marker = "🎮 " if player.get("user_id") == active_uid else "▶ "
-        lines.append(f"{marker}{mention} — {filled}/{CHALLENGE_BOARD_CELLS} · {format_time(elapsed)}")
+        watcher_suffix = ""
+        if player_sessions and player.get("user_id") is not None:
+            watcher_suffix = format_activity_watchers_suffix(
+                player_sessions.get(str(player["user_id"])),
+                guild,
+            )
+        lines.append(
+            f"{marker}{mention} — {filled}/{CHALLENGE_BOARD_CELLS} · "
+            f"{format_time(elapsed)}{watcher_suffix}"
+        )
     return lines
 
 
-def build_challenge_live_embed(match: dict, guild: discord.Guild | None) -> discord.Embed:
+def build_challenge_live_embed(
+    match: dict,
+    guild: discord.Guild | None,
+    *,
+    player_sessions: dict[str, dict] | None = None,
+) -> discord.Embed:
     tier = difficulty_label(match.get("difficulty"))
     if match.get("status") == "finished":
         title = "Challenge ended"
@@ -3782,7 +3801,10 @@ def build_challenge_live_embed(match: dict, guild: discord.Guild | None) -> disc
         title = f"Live challenge — {tier}"
         footer = "Fastest clean solve wins · /watch to spectate"
     embed = paper_embed(title)
-    embed.description = "\n".join(challenge_standings_lines(match, guild)) or "No players."
+    embed.description = (
+        "\n".join(challenge_standings_lines(match, guild, player_sessions=player_sessions))
+        or "No players."
+    )
     active = challenge_active_player(match)
     if active and match.get("status") != "finished":
         _slot, player = active
@@ -3817,7 +3839,8 @@ async def update_challenge_live_message(bot_ref: "SudokuBot", match_id: str) -> 
         msg = await channel.fetch_message(int(match["live_message_id"]))
     except (discord.HTTPException, discord.NotFound):
         return
-    embed = build_challenge_live_embed(match, guild)
+    player_sessions = await activity_sessions_for_challenge(match)
+    embed = build_challenge_live_embed(match, guild, player_sessions=player_sessions)
     finished = match.get("status") == "finished"
     view = None if finished else build_challenge_watch_view(match, bot_ref)
     try:
@@ -3857,7 +3880,8 @@ async def post_challenge_live_panel(
     guild: discord.Guild,
 ) -> None:
     match_id = match["_id"]
-    embed = build_challenge_live_embed(match, guild)
+    player_sessions = await activity_sessions_for_challenge(match)
+    embed = build_challenge_live_embed(match, guild, player_sessions=player_sessions)
     view = build_challenge_watch_view(match, bot_ref)
     try:
         msg = await home.send(embed=embed, view=view, silent=True)
@@ -3967,6 +3991,90 @@ def activity_session_mention(guild: discord.Guild | None, session: dict) -> str:
     return f"<@{uid}>"
 
 
+SPECTATOR_PRESENCE_TTL_SEC = 15
+
+
+def prune_activity_watchers(watchers: dict | None) -> dict:
+    now = time.time()
+    cleaned: dict = {}
+    for viewer_id, meta in (watchers or {}).items():
+        if not isinstance(meta, dict):
+            continue
+        if now - float(meta.get("last_seen") or 0) > SPECTATOR_PRESENCE_TTL_SEC:
+            continue
+        cleaned[str(viewer_id)] = meta
+    return cleaned
+
+
+def format_activity_watchers_suffix(
+    session: dict | None,
+    guild: discord.Guild | None,
+) -> str:
+    watchers = prune_activity_watchers((session or {}).get("watchers"))
+    if not watchers:
+        return ""
+    labels: list[str] = []
+    for viewer_id, meta in sorted(
+        watchers.items(),
+        key=lambda item: str(item[1].get("name") or ""),
+    ):
+        try:
+            uid = int(viewer_id)
+        except (TypeError, ValueError):
+            labels.append(str(meta.get("name") or "Player"))
+            continue
+        if guild is not None and guild.get_member(uid) is not None:
+            labels.append(f"<@{uid}>")
+        else:
+            labels.append(str(meta.get("name") or "Player"))
+    if len(labels) == 1:
+        tail = labels[0]
+    elif len(labels) == 2:
+        tail = f"{labels[0]} & {labels[1]}"
+    else:
+        tail = f"{labels[0]}, {labels[1]} +{len(labels) - 2}"
+    return f" · 👀 {tail}"
+
+
+async def activity_sessions_for_challenge(match: dict) -> dict[str, dict]:
+    guild_id = int(match.get("guild_id") or 0)
+    out: dict[str, dict] = {}
+    for _slot, player in match_player_entries(match):
+        uid = player.get("user_id")
+        if uid is None:
+            continue
+        session = await match_store.get_activity_session(
+            daily_watch_session_id(guild_id, int(uid))
+        )
+        if session:
+            out[str(uid)] = session
+    return out
+
+
+def format_challenge_watchers_suffix(
+    match: dict,
+    player_sessions: dict[str, dict] | None,
+    guild: discord.Guild | None,
+) -> str:
+    if not player_sessions:
+        return ""
+    labels: list[str] = []
+    seen: set[str] = set()
+    for _slot, player in match_player_entries(match):
+        uid = str(player.get("user_id") or "")
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        suffix = format_activity_watchers_suffix(player_sessions.get(uid), guild)
+        if suffix:
+            labels.append(suffix.removeprefix(" · 👀 "))
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return f" · 👀 {labels[0]}"
+    return f" · 👀 {labels[0]} +{len(labels) - 1} more"
+
+
 def activity_most_recent_user_id(sessions: list[dict]) -> str | None:
     now = time.time()
     best_uid: str | None = None
@@ -3995,7 +4103,7 @@ def build_activity_live_embed(
         marker = "🎮 " if str(session.get("user_id")) == active_uid else "▶ "
         lines.append(
             f"{marker}{mention} — **{tier}** · {filled}/{CHALLENGE_BOARD_CELLS} · "
-            f"{format_time(elapsed)}"
+            f"{format_time(elapsed)}{format_activity_watchers_suffix(session, guild)}"
         )
     embed = paper_embed("Watch games")
     kinds = {(s.get("session_kind") or "play") for s in sessions}
@@ -4687,7 +4795,12 @@ class ActivityWatchMenuView(discord.ui.View):
                     ephemeral=True,
                 )
                 return
-            embed = build_challenge_live_embed(match, interaction.guild)
+            player_sessions = await activity_sessions_for_challenge(match)
+            embed = build_challenge_live_embed(
+                match,
+                interaction.guild,
+                player_sessions=player_sessions,
+            )
             view = build_challenge_watch_view(match, self.bot)
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
             try:
@@ -8401,11 +8514,16 @@ async def watch_cmd(interaction: discord.Interaction):
         else paper_embed("Live challenges", description="Pick a race below to spectate.")
     )
     if challenge_matches:
-        challenge_lines = [
-            f"🏁 **{difficulty_label(m.get('difficulty'))}** · "
-            f"{len(match_player_entries(m))} players"
-            for m in challenge_matches[:5]
-        ]
+        challenge_lines: list[str] = []
+        for m in challenge_matches[:5]:
+            player_sessions = await activity_sessions_for_challenge(m)
+            suffix = format_challenge_watchers_suffix(
+                m, player_sessions, interaction.guild
+            )
+            challenge_lines.append(
+                f"🏁 **{difficulty_label(m.get('difficulty'))}** · "
+                f"{len(match_player_entries(m))} players{suffix}"
+            )
         embed.add_field(
             name="Challenges",
             value="\n".join(challenge_lines),
