@@ -47,7 +47,8 @@ body {
 
 #boot[hidden],
 #win-toast[hidden],
-#resume[hidden] {
+#resume[hidden],
+#quit-screen[hidden] {
   display: none !important;
 }
 
@@ -105,6 +106,29 @@ body {
 
 .resume-actions button:active {
   transform: translateY(1px);
+}
+
+/* Shown while Quit tears the session down, and left up if the host ignores the close. */
+#quit-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-content: center;
+  gap: 1rem;
+  padding: 2rem;
+  text-align: center;
+  background:
+    radial-gradient(circle at 18% 12%, #bae6fd 0%, transparent 42%),
+    radial-gradient(circle at 88% 88%, #fde68a 0%, transparent 38%),
+    linear-gradient(160deg, var(--lagoon), #38bdf8 55%, #0ea5e9);
+  animation: fade-in 0.3s ease;
+}
+
+#quit-copy {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 600;
 }
 
 #boot-status {
@@ -312,6 +336,8 @@ body {
   max-width: min(90vw, 480px);
   text-align: center;
   animation: toast-in 0.35s ease;
+  /* Sits over the bottom control row on narrow layouts — must not eat taps. */
+  pointer-events: none;
 }
 
 /* Mobile / Activity narrow: stack (board on top, pad below) */
