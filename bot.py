@@ -8438,7 +8438,7 @@ async def help_cmd(interaction: discord.Interaction):
     embed.add_field(
         name=f"{BUBBLE} Play",
         value=(
-            "`/play` — **opens the game window** (Activity)\n"
+            "`/play` — pick a **difficulty**, then open the game window\n"
             "`/daily` — one pineapple puzzle a day\n"
             "`/challenge` — race your pals on the same puzzle\n"
             "`/watch` — spectate active `/play`, `/daily`, and challenge races"
