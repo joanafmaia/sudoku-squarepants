@@ -3475,6 +3475,8 @@ async def launch_challenge_match(
             key = challenge_game_key(match_id, member.id)
             player_board = copy_grid(board)
             pstats = user_stats(guild_stats(bot.data, interaction.guild.id), member.id)
+            # Activities cannot start in private threads — keep launch buttons on the
+            # parent text channel; the private thread is only a personal race note.
             games[key] = new_game_state(
                 mode="challenge",
                 board=player_board,
@@ -3483,7 +3485,7 @@ async def launch_challenge_match(
                 owner_id=member.id,
                 owner_name=member.display_name,
                 owner_title=equipped_title_id(pstats),
-                channel_id=getattr(dest, "id", home.id),
+                channel_id=home.id,
                 guild_id=interaction.guild.id,
                 match_id=match_id,
                 player_slot=slot,
@@ -3491,24 +3493,34 @@ async def launch_challenge_match(
                 started_at=start_time,
                 pin_emojis=owned_pin_emojis(pstats),
             )
+            games[key]["thread_id"] = getattr(dest, "id", None)
             try:
-                launch_msg = await dest.send(
+                thread_note = (
                     f"{member.mention} Speedrun ({len(players)} players) · **{tier}**\n"
-                    f"Field: {names} — click below to open the Activity and start playing!",
+                    f"Field: {names}\n"
+                    f"Discord **cannot** open Activities in private threads — "
+                    f"tap **Play in Activity** in {home.mention}."
+                )
+                await dest.send(thread_note)
+            except discord.HTTPException as exc:
+                print(f"challenge thread note failed for {member.id}: {exc}")
+            try:
+                launch_msg = await home.send(
+                    f"{member.mention} — your speedrun is ready · **{tier}**\n"
+                    f"Field: {names} — tap below to open the Activity!",
                     view=ChallengeLaunchActivityView(),
                 )
-                # Persist message_id so bot restart can restore without auto-forfeit.
                 games[key]["message_id"] = launch_msg.id
                 await persist_game(key, games[key])
             except discord.HTTPException as exc:
                 raise RuntimeError(
-                    f"Couldn't deliver board to {member.mention} ({exc}). "
-                    "Open DMs from server members or grant thread permissions."
+                    f"Couldn't post Play button in {home.mention} for {member.mention} ({exc})."
                 ) from exc
 
         await interaction.followup.send(
             f"Challenge started ({len(players)}): {roster} · **{tier}**. "
-            "Private boards are open — fastest clean solve wins.",
+            f"Tap **Play in Activity** in {home.mention} — private threads are notes only "
+            "(Discord blocks Activities there).",
         )
         fresh = await match_store.get_match(match_id)
         if fresh is not None:
@@ -5486,6 +5498,36 @@ class ChallengeLaunchActivityView(discord.ui.View):
                 "You do not have an active challenge in this server. Start one with `/challenge`.",
                 ephemeral=True,
             )
+            return
+        # Discord rejects Activities launched from private (and often public) threads.
+        if isinstance(interaction.channel, discord.Thread):
+            parent = interaction.channel.parent
+            home: discord.TextChannel | None = (
+                parent if isinstance(parent, discord.TextChannel) else None
+            )
+            if home is None:
+                game = games.get(ch_key) or {}
+                resolved = await resolve_channel(bot, game.get("channel_id"))
+                home = resolved if isinstance(resolved, discord.TextChannel) else None
+            if home is None:
+                await interaction.response.send_message(
+                    "Discord can't start Activities in this thread. "
+                    "Go to the sudoku text channel and look for the Play button, "
+                    "or `/quit` and start a new `/challenge`.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_message(
+                f"Discord blocks Activities in threads. I posted a Play button in {home.mention}.",
+                ephemeral=True,
+            )
+            try:
+                await home.send(
+                    f"{interaction.user.mention} — tap below to open your challenge Activity:",
+                    view=ChallengeLaunchActivityView(),
+                )
+            except discord.HTTPException as exc:
+                print(f"challenge launch redirect to parent failed: {exc}")
             return
         await _launch_activity_window(interaction, skip_watch_notify=True)
 
@@ -7611,6 +7653,16 @@ async def reattach_challenge_launch_panels(bot: "SudokuBot", match_id: str) -> i
         ):
             continue
         channel = await resolve_channel(bot, game.get("channel_id"))
+        # Prefer parent text channel — Activities cannot launch from private threads.
+        if isinstance(channel, discord.Thread) and isinstance(channel.parent, discord.TextChannel):
+            channel = channel.parent
+        if channel is None and game.get("guild_id"):
+            try:
+                match = await match_store.get_match(match_id)
+            except Exception:
+                match = None
+            if match:
+                channel = await resolve_channel(bot, match.get("channel_id"))
         if channel is None:
             print(
                 f"Challenge session {serialize_game_key(key)} channel missing "
@@ -7620,7 +7672,7 @@ async def reattach_challenge_launch_panels(bot: "SudokuBot", match_id: str) -> i
             continue
 
         reattached = False
-        if game.get("message_id"):
+        if game.get("message_id") and not isinstance(channel, discord.Thread):
             try:
                 msg = await channel.fetch_message(int(game["message_id"]))
                 await msg.edit(view=launch_view)
@@ -7636,6 +7688,7 @@ async def reattach_challenge_launch_panels(bot: "SudokuBot", match_id: str) -> i
                     view=launch_view,
                 )
                 game["message_id"] = launch_msg.id
+                game["channel_id"] = getattr(channel, "id", game.get("channel_id"))
                 await persist_game(key, game)
             except discord.HTTPException as exc:
                 print(f"challenge launch re-post failed for {serialize_game_key(key)}: {exc}")
@@ -8224,8 +8277,10 @@ async def challenge_cmd(
         return
 
     if find_challenge_game_for_user(interaction.user.id):
+        ch_key = find_challenge_game_for_user(interaction.user.id)
         await interaction.response.send_message(
-            "You already have an active challenge.",
+            "You already have an active challenge — leave it first?",
+            view=ConfirmQuitView(ch_key, bot, None),
             ephemeral=True,
         )
         return
@@ -8306,7 +8361,7 @@ async def challenge_cmd(
     for uid in seen:
         if find_challenge_game_for_user(uid):
             await interaction.response.send_message(
-                "Someone in this lobby already has an active challenge.",
+                f"<@{uid}> already has an active challenge — they need `/quit` first.",
                 ephemeral=True,
             )
             return
