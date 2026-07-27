@@ -503,6 +503,50 @@ async def restore_leaderboard_from_mongo(bot: "SudokuBot") -> None:
     if changed:
         save_data(bot.data)
 
+    # One-time: reset inflated win-count streaks to a fair calendar baseline of 1.
+    try:
+        reset_n = migrate_fair_daily_streaks(bot.data)
+        if reset_n:
+            save_data(bot.data)
+            try:
+                await match_store.save_leaderboard(bot.data)
+            except Exception as save_exc:  # noqa: BLE001
+                print(f"fair streak reset mongo save failed: {save_exc}")
+            print(f"Fair daily streak reset → 1 for {reset_n} player(s).")
+    except Exception as exc:  # noqa: BLE001
+        print(f"fair streak reset failed: {exc}")
+
+
+STREAK_FAIR_RESET_FLAG = "streak_calendar_fair_reset_v1"
+
+
+def migrate_fair_daily_streaks(data: dict) -> int:
+    """Set every player's daily streak to 1 once (legacy win-count streaks were inflated)."""
+    if data.get(STREAK_FAIR_RESET_FLAG):
+        return 0
+    today = utc_today()
+    touched = 0
+    for guild_key, gstats in list(data.items()):
+        if not isinstance(gstats, dict) or not str(guild_key).isdigit():
+            continue
+        daily_meta = gstats.get("_daily") if isinstance(gstats.get("_daily"), dict) else {}
+        results = daily_meta.get("results") if isinstance(daily_meta.get("results"), dict) else {}
+        daily_date = str(daily_meta.get("date") or "")
+        for uid, stats in iter_players(gstats):
+            if not isinstance(stats, dict):
+                continue
+            stats["streak"] = 1
+            stats["best_streak"] = 1
+            # If they already cleared today's daily, stamp today so tomorrow can become 2.
+            prior = results.get(str(uid)) or {}
+            if daily_date == today and prior.get("won"):
+                stats["last_streak_day"] = today
+            else:
+                stats["last_streak_day"] = None
+            touched += 1
+    data[STREAK_FAIR_RESET_FLAG] = True
+    return touched
+
 
 def catalog_spend_total(stats: dict) -> int:
     """Sum of shop prices for currently owned titles + pins (legacy purchase estimate)."""
