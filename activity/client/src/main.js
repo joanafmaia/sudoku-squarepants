@@ -3,7 +3,7 @@
  * Initializes Discord session, then starts the Canvas puzzle (no leaderboard UI).
  * Saves in-progress boards to Mongo and offers Resume / New puzzle on next /play.
  */
-import { DiscordSDK } from "@discord/embedded-app-sdk";
+import { DiscordSDK, RPCCloseCodes } from "@discord/embedded-app-sdk";
 import { startThcokuGame } from "./game.js";
 import { difficultyLabel } from "./sudoku-core.js";
 
@@ -668,13 +668,13 @@ function startAutosave() {
 
 export function closeDiscordActivity() {
   try {
-    if (window.discordSdk && typeof window.discordSdk.close === "function") {
-      window.discordSdk.close();
-    } else if (window.discordSdk?.commands && typeof window.discordSdk.commands.closeActivity === "function") {
-      window.discordSdk.commands.closeActivity().catch(() => {});
-    } else {
-      window.close();
+    // SDK is stored as __DISCORD_SDK__ during setupDiscordSdk — not window.discordSdk.
+    const sdk = window.__DISCORD_SDK__;
+    if (sdk && typeof sdk.close === "function") {
+      sdk.close(RPCCloseCodes.CLOSE_NORMAL, "User quit");
+      return;
     }
+    window.close();
   } catch (err) {
     console.warn("closeDiscordActivity error:", err);
     try { window.close(); } catch {}
@@ -687,25 +687,34 @@ async function quitAndClose() {
     const isChallenge = snap?.session_kind === "challenge";
     clearLocalSession();
     if (window.__DISCORD_ACCESS_TOKEN__) {
-      const gid = await resolveGuildId();
-      if (isChallenge) {
-        await apiFetch("/api/activity/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            challenge_forfeit: true,
-            end_watch: true,
-            force: true,
-            guild_id: gid,
-          }),
-        });
-      } else {
-        await apiFetch("/api/activity/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "clear", guild_id: gid }),
-        });
-      }
+      // Prefer cached guild; only wait briefly so Quit is not stuck for seconds.
+      const clearSession = async () => {
+        const gid = cachedGuildId || (await resolveGuildId(1500));
+        if (isChallenge) {
+          await apiFetch("/api/activity/session", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              challenge_forfeit: true,
+              end_watch: true,
+              force: true,
+              guild_id: gid,
+            }),
+            keepalive: true,
+          });
+        } else {
+          await apiFetch("/api/activity/session", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "clear", guild_id: gid }),
+            keepalive: true,
+          });
+        }
+      };
+      await Promise.race([
+        clearSession(),
+        new Promise((resolve) => setTimeout(resolve, 2500)),
+      ]);
     }
   } catch (err) {
     console.warn("quitAndClose failed:", err);
