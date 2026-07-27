@@ -443,14 +443,19 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
     if ch_key:
         game = games[ch_key]
         board = _normalize_activity_board(body.get("board"))
+        if board is None:
+            board = _normalize_activity_board(game.get("board"))
         given = game.get("given")
         if isinstance(given, list):
             given_norm = _normalize_activity_given(given, board)
         else:
             given_norm = None
         if not _verify_activity_solve(board, solution=game.get("solution"), given=given_norm):
-            print(f"activity win rejected challenge user={uid}: not_solved")
-            return {"ok": False, "error": "not_solved"}
+            print(
+                f"activity win rejected challenge user={uid}: not_solved "
+                f"({_challenge_solve_debug(board, game)})"
+            )
+            return {"ok": False, "error": "not_solved", "challenge": True}
         if board:
             game["board"] = board
         # Server wall-clock elapsed — ignore spoofable client timer.
@@ -1125,7 +1130,7 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
                     f"activity challenge save rejected invalid board user={uid} "
                     f"match={game.get('match_id')}"
                 )
-                return {"ok": False, "error": "invalid_board"}
+                return {"ok": False, "error": "invalid_board", "challenge": True}
             game["board"] = board
             game["filled"] = sum(1 for r in range(9) for c in range(9) if board[r][c]["value"])
             started = float(game.get("started_at") or time.time())
@@ -1345,7 +1350,8 @@ async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict
                     "match_id": game.get("match_id"),
                     "player_slot": game.get("player_slot"),
                 },
-                strip_solution=True,
+                # Include solution so the Activity celebrates the same grid the server grades.
+                strip_solution=False,
             )
             | {
                 "match_id": game.get("match_id"),
@@ -1646,19 +1652,16 @@ def _validate_challenge_board_update(game: dict, board: list[list[dict]]) -> boo
 
     given = game.get("given")
     solution = normalize_solution(game.get("solution"))
-    old_board = game.get("board")
-    if not given or not solution or not old_board:
+    if not given or not solution:
         return False
     for r in range(9):
         for c in range(9):
             val = cell_value(board, r, c)
             if val != 0 and (val < 1 or val > 9):
                 return False
-            if given[r][c]:
-                if val != solution[r][c]:
-                    return False
-                if cell_value(old_board, r, c) != val:
-                    return False
+            # Clue cells must stay on the puzzle solution (allow repairing a blank clue).
+            if given[r][c] and val != solution[r][c]:
+                return False
     return True
 
 
@@ -1669,7 +1672,7 @@ def _verify_activity_solve(
     given: list[list[bool]] | None = None,
 ) -> bool:
     """True only when board is fully solved against the authoritative solution."""
-    from bot import cell_value, is_solved, normalize_solution
+    from bot import cell_value, find_conflicts, filled_count, is_solved, normalize_solution, values_grid
 
     if board is None:
         return False
@@ -1682,7 +1685,49 @@ def _verify_activity_solve(
             for c in range(9):
                 if given[r][c] and cell_value(board, r, c) != sol[r][c]:
                     return False
-    return is_solved(board, sol)
+    if is_solved(board, sol):
+        return True
+    # Unique-puzzle fallback: a conflict-free complete grid that respects clues
+    # is the solution even if the stored solution grid was corrupted in memory.
+    if filled_count(board) < 81 or find_conflicts(board):
+        return False
+    grid = values_grid(board)
+    if not _is_valid_complete_sudoku(grid):
+        return False
+    if given is not None:
+        for r in range(9):
+            for c in range(9):
+                if given[r][c] and grid[r][c] != sol[r][c]:
+                    return False
+        return True
+    return False
+
+
+def _challenge_solve_debug(board: list[list[dict]] | None, game: dict) -> str:
+    """Short mismatch summary for logs when challenge win is rejected."""
+    from bot import cell_value, filled_count, find_conflicts, normalize_solution, values_grid
+
+    if board is None:
+        return "board=None"
+    sol = normalize_solution(game.get("solution"))
+    filled = filled_count(board)
+    conflicts = len(find_conflicts(board))
+    if not sol:
+        return f"filled={filled} conflicts={conflicts} solution=missing"
+    mism = 0
+    clue_bad = 0
+    given = game.get("given")
+    for r in range(9):
+        for c in range(9):
+            val = cell_value(board, r, c)
+            if val != sol[r][c]:
+                mism += 1
+            if given and given[r][c] and val != sol[r][c]:
+                clue_bad += 1
+    return (
+        f"filled={filled} conflicts={conflicts} mismatches={mism} "
+        f"clue_mismatches={clue_bad} valid={_is_valid_complete_sudoku(values_grid(board))}"
+    )
 
 
 def _is_valid_complete_sudoku(grid: list[list[int]]) -> bool:

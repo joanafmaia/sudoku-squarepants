@@ -264,7 +264,7 @@ export function isSolved(board, solution) {
   if (!solution) return true;
   for (let r = 0; r < 9; r++) {
     for (let c = 0; c < 9; c++) {
-      if (cellValue(board, r, c) !== solution[r][c]) return false;
+      if (cellValue(board, r, c) !== Number(solution[r][c])) return false;
     }
   }
   return true;

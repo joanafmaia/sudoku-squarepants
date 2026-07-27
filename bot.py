@@ -224,7 +224,7 @@ SHOP_TITLES = {
     "drea_mom": {"label": "🫶 Mama Drea", "cost": 1400, "pin": "Mama", "emoji": "🫶"},
     "hulk_r5": {"label": "🧌 Hulk Command", "cost": 1650, "pin": "Hulk", "emoji": "🧌"},
     "apex_whale": {"label": "🐋 Apex Whale", "cost": 2500, "pin": "Apex", "emoji": "🐋"},
-    "fuzzy": {"label": "🌸 Fuzzy Softie", "cost": 1750, "pin": "Fuzzy", "emoji": "🌸"},
+    "fuzzy": {"label": "🌸 Fuzzy Wuzzy", "cost": 1750, "pin": "Fuzzy", "emoji": "🌸"},
 }
 
 # Pins = border stickers only. One free; paid pins scale up so cosmetics stay a chase.
@@ -261,11 +261,11 @@ SHOP_PINS = {
     "whirl": {"label": "🌀 Whirlpool Pin", "pin": "Whirlpool", "emoji": "🌀", "cost": 850, "theme": "ocean"},
     # Crew tribute pins
     "pin_goof": {"label": "🦹 Thief Pin", "pin": "Thief", "emoji": "🦹", "cost": 250, "theme": "crew"},
-    "pin_shadow": {"label": "👀 Behind You Pin", "pin": "Behind You", "emoji": "👀", "cost": 380, "theme": "crew"},
+    "pin_shadow": {"label": "👀 BehindYou Pin", "pin": "Behind You", "emoji": "👀", "cost": 380, "theme": "crew"},
     "pin_sheets": {"label": "📊 Sheets Pin", "pin": "Sheets", "emoji": "📊", "cost": 460, "theme": "crew"},
     "pin_book": {"label": "📚 Book Pin", "pin": "Book", "emoji": "📚", "cost": 540, "theme": "crew"},
     "pin_smooth": {"label": "😎 Stacked Pin", "pin": "Stacked", "emoji": "😎", "cost": 620, "theme": "crew"},
-    "pin_mama": {"label": "🫶 Mama Pin", "pin": "Mama", "emoji": "🫶", "cost": 700, "theme": "crew"},
+    "pin_mama": {"label": "🫶 Drea Pin", "pin": "Mama", "emoji": "🫶", "cost": 700, "theme": "crew"},
     "pin_hulk": {"label": "🧌 Hulk Pin", "pin": "Hulk", "emoji": "🧌", "cost": 820, "theme": "crew"},
     "pin_apex": {"label": "🐋 Apex Pin", "pin": "Apex", "emoji": "🐋", "cost": 1000, "theme": "crew"},
     "pin_fuzzy": {"label": "🌸 Fuzzy Pin", "pin": "Fuzzy", "emoji": "🌸", "cost": 880, "theme": "crew"},
@@ -1709,7 +1709,26 @@ def normalize_solution(solution: list | None) -> list[list[int]]:
     """Ensure solution is a 9×9 int grid (Mongo/JSON can coerce types)."""
     if not solution:
         return []
-    return [[int(cell) for cell in row] for row in solution]
+    out: list[list[int]] = []
+    for row in solution:
+        if not isinstance(row, (list, tuple)) or len(row) != 9:
+            return []
+        out_row: list[int] = []
+        for cell in row:
+            if isinstance(cell, dict):
+                out_row.append(int(cell.get("value") or 0))
+            else:
+                try:
+                    out_row.append(int(cell))
+                except (TypeError, ValueError):
+                    return []
+        out.append(out_row)
+    if len(out) != 9:
+        return []
+    # A real solution is a full grid — reject sparse/puzzle grids stored by mistake.
+    if any(v < 1 or v > 9 for row in out for v in row):
+        return []
+    return out
 
 
 def is_complete(board: list[list[dict]], solution: list[list[int]]) -> bool:
@@ -1727,7 +1746,8 @@ def is_solved(board: list[list[dict]], solution: list[list[int]] | None = None) 
         return True
     sol = normalize_solution(solution)
     if not sol:
-        return True
+        # Solution was provided but corrupt/sparse — do not accept blindly.
+        return False
     return values_grid(board) == sol
 
 

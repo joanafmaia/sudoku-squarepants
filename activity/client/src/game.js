@@ -478,8 +478,9 @@ export function startThcokuGame(canvas, options = {}) {
     ctx.fillText(String(state.status).slice(0, 42), 36, 58);
   }
 
-  function getSnapshot() {
-    if (!state.board?.length || state.won || state.reportingWin) return null;
+  function getSnapshot({ allowReporting = false } = {}) {
+    if (!state.board?.length || state.won) return null;
+    if (state.reportingWin && !allowReporting) return null;
     let userMoves = 0;
     for (let r = 0; r < 9; r++) {
       for (let c = 0; c < 9; c++) {
@@ -493,9 +494,10 @@ export function startThcokuGame(canvas, options = {}) {
     return snapshotPayload();
   }
 
-  function getStartSnapshot() {
+  function getStartSnapshot({ allowReporting = false } = {}) {
     /** Board state for watch notify as soon as /play opens (before any moves). */
-    if (!state.board?.length || state.won || state.reportingWin) return null;
+    if (!state.board?.length || state.won) return null;
+    if (state.reportingWin && !allowReporting) return null;
     return snapshotPayload();
   }
 
@@ -560,6 +562,8 @@ export function startThcokuGame(canvas, options = {}) {
     state.status = `${hello}Continuing · ${filledCount(state.board)}/81`;
     syncControls();
     draw();
+    // Remount with a full board (common in Discord Activities) must still POST /win.
+    maybeCelebrateAfterMove();
     return true;
   }
 

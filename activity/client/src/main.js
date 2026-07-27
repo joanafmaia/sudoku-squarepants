@@ -474,7 +474,8 @@ async function clearSavedSession() {
 }
 
 function currentSessionSnap() {
-  return gameApi?.getStartSnapshot?.() || gameApi?.getSnapshot?.() || null;
+  // Prefer live progress; getStartSnapshot also works before any moves (watch notify).
+  return gameApi?.getSnapshot?.() || gameApi?.getStartSnapshot?.() || null;
 }
 
 async function saveSessionNow({ keepalive = false, force = false, snap = null } = {}) {
@@ -496,6 +497,18 @@ async function saveSessionNow({ keepalive = false, force = false, snap = null } 
     if (!res?.ok) {
       const data = await res.json().catch(() => ({}));
       console.warn("[Thcoku] session save failed", res?.status, data.error || data);
+      if (data.error === "invalid_board" && (data.challenge || snap.session_kind === "challenge")) {
+        showWinToast("Challenge board mismatch — reloading race puzzle…");
+        try {
+          clearLocalSession();
+          const session = await loadSavedSession();
+          if (session?.board && session.session_kind === "challenge") {
+            await beginPlay({ resumeSession: session });
+          }
+        } catch (reloadErr) {
+          console.warn("[Thcoku] challenge reload after invalid_board failed", reloadErr);
+        }
+      }
     }
   } catch (err) {
     console.warn("[Thcoku] session save failed", err);
@@ -813,6 +826,16 @@ async function beginPlay({ resumeSession = null, initialDiffIndex = null } = {})
   if (resumeSession) {
     startGameOnce(null, { autoStart: false, ...sessionMeta });
     if (!gameApi?.loadSnapshot?.(resumeSession)) {
+      // Never invent a random puzzle for challenge/daily — that board would
+      // fail server grading against the real race solution.
+      if (sessionKind === "challenge" || sessionKind === "daily") {
+        showWinToast(
+          sessionKind === "challenge"
+            ? "Could not load race puzzle — reopen Activity from the Play button."
+            : "Could not load daily puzzle — try again."
+        );
+        return;
+      }
       gameApi?.newGame?.();
     }
   } else {
@@ -871,6 +894,12 @@ async function showGame() {
 
   const session = await loadSavedSession();
   if (session && (Number(session.filled) >= 81 || session.won)) {
+    // Challenge/daily full boards still need /win — never replace with a fresh /play
+    // puzzle while the race (or daily) is active (that caused not_solved toasts).
+    if (session.session_kind === "challenge" || session.session_kind === "daily") {
+      await beginPlay({ resumeSession: session });
+      return;
+    }
     await clearSavedSession();
     await beginPlay({ resumeSession: null });
     return;
@@ -964,8 +993,22 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boa
     return { ok: true, local: true, elapsed };
   }
   try {
-    // Persist the solved board before /win — server rejects wins without a session doc.
-    await saveSessionNow({ force: true });
+    // Persist the solved board before /win — pass snap explicitly because
+    // getSnapshot is blocked while reportingWin is true.
+    const meta =
+      gameApi?.getStartSnapshot?.({ allowReporting: true }) ||
+      gameApi?.getSnapshot?.({ allowReporting: true }) ||
+      {};
+    await saveSessionNow({
+      force: true,
+      snap: {
+        ...meta,
+        board: boardPayload?.board ?? meta.board,
+        given: boardPayload?.given ?? meta.given,
+        solution: boardPayload?.solution ?? meta.solution,
+        filled: 81,
+      },
+    });
     // resolveGuildId waits up to 8s for the SDK to populate guildId — avoids sending "0".
     const resolvedGuildId = await resolveGuildId();
     const sdk = window.__DISCORD_SDK__;
@@ -1014,6 +1057,19 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boa
         return { ok: true, already_won: true, elapsed: data.elapsed };
       }
       if (data.error === "not_solved") {
+        if (data.challenge || gameApi?.getStartSnapshot?.()?.session_kind === "challenge") {
+          showWinToast("Challenge board mismatch — reloading race puzzle…");
+          try {
+            clearLocalSession();
+            const session = await loadSavedSession();
+            if (session?.board && session.session_kind === "challenge") {
+              await beginPlay({ resumeSession: session });
+            }
+          } catch (reloadErr) {
+            console.warn("[Thcoku] challenge reload failed", reloadErr);
+          }
+          return null;
+        }
         showWinToast("Board looks full but isn't solved yet — keep going.");
         return null;
       }
