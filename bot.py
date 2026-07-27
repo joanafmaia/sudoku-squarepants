@@ -250,7 +250,7 @@ SHOP_PINS = {
     "crab": {"label": "🦀 Crab Pin", "pin": "Crab", "emoji": "🦀", "cost": 80},
     "bubble": {"label": "🫧 Bubble Pin", "pin": "Bubble", "emoji": "🫧", "cost": 110},
     "shell": {"label": "🐚 Shell Pin", "pin": "Shell", "emoji": "🐚", "cost": 150},
-    "squid": {"label": "🦑 Squid Pin", "pin": "Squid", "emoji": "Squid", "cost": 200},
+    "squid": {"label": "🦑 Squid Pin", "pin": "Squid", "emoji": "🦑", "cost": 200},
     "sandy": {"label": "🐿️ Dome Pin", "pin": "Dome", "emoji": "🐿️", "cost": 260},
     "pearl": {"label": "💎 Pearl Pin", "pin": "Pearl", "emoji": "💎", "cost": 330},
     "anchor": {"label": "⚓ Anchor Pin", "pin": "Anchor", "emoji": "⚓", "cost": 410},
@@ -6073,6 +6073,19 @@ def shop_item_price_text(item: dict) -> str:
     return "FREE" if cost <= 0 else format_sponges(cost)
 
 
+def shop_select_emoji(raw: Any) -> str | None:
+    """Discord SelectOption emoji must be a unicode emoji or PartialEmoji — never plain text."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    # Reject ASCII/word labels that are not emoji (e.g. legacy typo "Squid").
+    if text.isascii() and text.isalpha():
+        return None
+    return text
+
+
 def shop_item_can_buy(stats: dict, item: dict) -> bool:
     if item["kind"] != "boost" and shop_item_owned(stats, item):
         return False
@@ -6493,7 +6506,7 @@ class KrustyShopView(discord.ui.View):
                         label=label,
                         value=it["id"],
                         description=desc,
-                        emoji=it.get("emoji") or None,
+                        emoji=shop_select_emoji(it.get("emoji")),
                         default=(it["id"] == (selected or {}).get("id")),
                     )
                 )
@@ -6596,8 +6609,26 @@ class KrustyShopView(discord.ui.View):
             await interaction.edit_original_response(
                 embed=self.build_embed(), view=self, attachments=[]
             )
-        except discord.HTTPException:
-            pass
+        except discord.HTTPException as exc:
+            print(f"KrustyShopView refresh failed: {type(exc).__name__}: {exc}")
+            # Keep the in-memory view usable — try a minimal rebuild without select emojis.
+            try:
+                for child in list(self.children):
+                    if isinstance(child, discord.ui.Select):
+                        for opt in child.options:
+                            opt.emoji = None
+                await interaction.edit_original_response(
+                    embed=self.build_embed(), view=self, attachments=[]
+                )
+            except discord.HTTPException as exc2:
+                print(f"KrustyShopView refresh retry failed: {type(exc2).__name__}: {exc2}")
+                try:
+                    await interaction.followup.send(
+                        "Couldn't refresh the shop — run `/shop` again.",
+                        ephemeral=True,
+                    )
+                except discord.HTTPException:
+                    pass
 
     async def on_boosts(self, interaction: discord.Interaction) -> None:
         self.kind = "boosts"
