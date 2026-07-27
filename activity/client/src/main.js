@@ -36,7 +36,7 @@ let spectatorPollTimer = null;
 let watcherPollTimer = null;
 const SPECTATOR_POLL_MS = 3500;
 const WATCHERS_POLL_MS = 5000;
-const HIDE_END_WATCH_DELAY_MS = 120000;
+const HIDE_END_WATCH_DELAY_MS = 5000;
 
 function setStatus(message) {
   if (statusEl) statusEl.textContent = message;
@@ -641,8 +641,8 @@ function scheduleEndWatchOnHide() {
   hideEndWatchTimer = setTimeout(() => {
     hideEndWatchTimer = null;
     if (document.visibilityState === "hidden") {
-      // Clear "is playing" after a long hide — never auto-forfeit the race.
-      // Forfeit only via Quit / explicit challenge_forfeit.
+      // Remove the "is playing" chat post when the Activity closes.
+      // Short delay avoids Discord remount flicker right after open.
       endWatchOnExit({ force: true, challengeForfeit: false });
     }
   }, HIDE_END_WATCH_DELAY_MS);
@@ -720,6 +720,8 @@ function startAutosave() {
 }
 
 export function closeDiscordActivity() {
+  // Drop the channel "X is playing Sudoku!" post when the window closes.
+  endWatchOnExit({ force: true, challengeForfeit: false });
   try {
     const sdk = window.__DISCORD_SDK__;
     if (sdk && typeof sdk.close === "function") {
