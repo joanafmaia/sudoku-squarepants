@@ -161,6 +161,12 @@ class MatchStore:
         """Return the newest activity session with a live watch announcement."""
         raise NotImplementedError
 
+    async def list_idle_activity_watch_sessions(
+        self, idle_sec: int
+    ) -> list[dict]:
+        """Sessions with a live watch post and no moves for idle_sec seconds."""
+        raise NotImplementedError
+
     async def set_spectate_intent(
         self,
         viewer_id: int,
@@ -373,6 +379,24 @@ class MemoryMatchStore(MatchStore):
                 best_with_board = doc
         chosen = best_with_board or best
         return _clone(chosen) if chosen else None
+
+    async def list_idle_activity_watch_sessions(
+        self, idle_sec: int
+    ) -> list[dict]:
+        cutoff = time.time() - idle_sec
+        out: list[dict] = []
+        for doc in self._activity.values():
+            if not doc.get("watch_message_id"):
+                continue
+            last = float(
+                doc.get("last_move_at")
+                or doc.get("updated_at")
+                or doc.get("watch_posted_at")
+                or 0
+            )
+            if last > 0 and last < cutoff:
+                out.append(_clone(doc))
+        return out
 
     async def find_activity_watch_session(
         self, user_id: str | int, *, guild_id: str | int | None = None
@@ -725,6 +749,30 @@ class MongoMatchStore(MatchStore):
         if doc:
             return doc
         return await self._activity.find_one(query, sort=sort)
+
+    async def list_idle_activity_watch_sessions(
+        self, idle_sec: int
+    ) -> list[dict]:
+        if self._activity is None:
+            await self.connect()
+        cutoff = time.time() - idle_sec
+        cursor = self._activity.find(
+            {
+                "watch_message_id": {"$exists": True, "$ne": None},
+                "$or": [
+                    {"last_move_at": {"$lt": cutoff}},
+                    {
+                        "last_move_at": {"$exists": False},
+                        "updated_at": {"$lt": cutoff},
+                    },
+                    {
+                        "last_move_at": None,
+                        "updated_at": {"$lt": cutoff},
+                    },
+                ],
+            }
+        )
+        return await cursor.to_list(length=100)
 
     async def find_activity_watch_session(
         self, user_id: str | int, *, guild_id: str | int | None = None

@@ -1393,9 +1393,16 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
             print(f"activity clear stale once-flag failed: {exc}")
     if not watch_live and not already_notified_once:
         try:
-            from bot import notify_activity_play_started
+            from bot import activity_session_spectatable, notify_activity_play_started
 
-            await notify_activity_play_started(bot, session_id)
+            notify_doc = current or doc
+            if activity_session_spectatable(notify_doc):
+                await notify_activity_play_started(bot, session_id)
+            else:
+                print(
+                    f"activity watch notify deferred user={uid} guild={guild_id}: "
+                    "no spectatable board yet"
+                )
         except Exception as exc:  # noqa: BLE001
             print(f"activity play notify failed: {exc}")
     return {"ok": True, "filled": filled, "elapsed": elapsed}

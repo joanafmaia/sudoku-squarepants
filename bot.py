@@ -528,7 +528,6 @@ _daily_finish_locks: dict[str, asyncio.Lock] = {}
 _challenge_match_locks: dict[str, asyncio.Lock] = {}
 WATCH_ACTIVE_SEC = 45
 CHALLENGE_LIVE_DEBOUNCE_SEC = 4.0
-ACTIVITY_WATCH_MAX_AGE_SEC = 180
 ACTIVITY_WATCH_END_GRACE_SEC = 20
 ACTIVITY_BLOCKING_MAX_AGE_SEC = 7200  # 2h — abandoned /play shouldn't block challenge all day
 WATCH_LIST_MAX_AGE_SEC = 7200
@@ -4558,56 +4557,6 @@ async def sync_daily_watch_session(key: tuple, game: dict) -> None:
     await match_store.upsert_activity_session(doc)
 
 
-async def notify_daily_play_started(
-    bot_ref: "SudokuBot",
-    interaction: discord.Interaction,
-) -> None:
-    if interaction.guild is None:
-        return
-    session_id = daily_watch_session_id(interaction.guild.id, interaction.user.id)
-    watch_channel_id = ACTIVITY_WATCH_CHANNEL_ID
-    if not watch_channel_id and isinstance(interaction.channel, discord.abc.GuildChannel):
-        watch_channel_id = int(interaction.channel.id)
-    print(
-        f"daily watch notify for {session_id} channel={watch_channel_id or 'unset'}"
-    )
-    existing = await match_store.get_activity_session(session_id)
-    if existing and await activity_watch_is_live(bot_ref, existing):
-        print(f"daily watch notify skipped for {session_id}: announcement already live")
-        return
-    if existing and existing.get("watch_once_notified"):
-        await match_store.merge_activity_session(
-            session_id,
-            {
-                "watch_once_notified": False,
-                "watch_notified": False,
-                "watch_message_id": None,
-            },
-        )
-        print(f"daily watch notify: cleared stale once-flag for {session_id}")
-    day = utc_today()
-    await notify_activity_play_started(
-        bot_ref,
-        session_id,
-        fallback_user=interaction.user,
-        force=False,
-        watch_channel_id=watch_channel_id or None,
-        announcement=(
-            f"{interaction.user.mention} is playing today's **Daily Sudoku** (`{day}`)!"
-        ),
-    )
-
-
-async def _notify_daily_play_started_safe(
-    bot_ref: "SudokuBot",
-    interaction: discord.Interaction,
-) -> None:
-    try:
-        await notify_daily_play_started(bot_ref, interaction)
-    except Exception as exc:  # noqa: BLE001
-        print(f"notify_daily_play_started failed: {type(exc).__name__}: {exc}")
-
-
 async def activity_watch_is_live(
     bot_ref: "SudokuBot",
     session: dict | None,
@@ -4638,7 +4587,7 @@ async def notify_activity_play_started(
     watch_channel_id: int | None = None,
     announcement: str | None = None,
 ) -> None:
-    """Post a one-time watch invite when someone starts /play or /daily."""
+    """Post a one-time watch invite once a spectatable board is saved."""
     channel_id = int(watch_channel_id or ACTIVITY_WATCH_CHANNEL_ID or 0)
     if not channel_id:
         print(f"activity watch notify skipped for {session_id}: no watch channel configured")
@@ -4650,6 +4599,12 @@ async def notify_activity_play_started(
     _activity_notify_inflight.add(session_id)
     try:
         session = await match_store.get_activity_session(session_id)
+        if not activity_session_spectatable(session):
+            print(
+                f"activity watch notify skipped for {session_id}: "
+                "no spectatable board yet"
+            )
+            return
         posted_at = float((session or {}).get("watch_posted_at") or 0)
         # Skip duplicate post if posted within last 60s or announcement is live
         if not force and session and session.get("watch_notified") and (time.time() - posted_at < 60):
@@ -4719,64 +4674,6 @@ async def notify_activity_play_started(
         print(f"notify_activity_play_started error for {session_id}: {exc}")
     finally:
         _activity_notify_inflight.discard(session_id)
-
-
-async def notify_activity_play_from_launch(
-    bot_ref: "SudokuBot",
-    interaction: discord.Interaction,
-) -> None:
-    if interaction.guild is None:
-        return
-    if find_challenge_game_for_user(interaction.user.id):
-        print(
-            f"activity watch launch notify skipped for user={interaction.user.id}: "
-            "active challenge"
-        )
-        return
-    session_id = f"activity:{interaction.guild.id}:{interaction.user.id}"
-    watch_channel_id = ACTIVITY_WATCH_CHANNEL_ID
-    if not watch_channel_id and isinstance(interaction.channel, discord.abc.GuildChannel):
-        watch_channel_id = int(interaction.channel.id)
-    print(
-        f"activity watch launch notify for {session_id} "
-        f"channel={watch_channel_id or 'unset'}"
-    )
-    # Only post if the announcement is not already live in the channel.
-    # Do NOT clear watch_notified here — that creates a race with the session-save
-    # path in activity_http.py which also calls notify_activity_play_started, causing
-    # duplicate "X is playing" messages. Both paths are guarded by _activity_notify_inflight.
-    existing = await match_store.get_activity_session(session_id)
-    if existing and await activity_watch_is_live(bot_ref, existing):
-        print(f"activity watch launch notify skipped for {session_id}: announcement already live")
-        return
-    # Stale once-flag after end_watch / deleted message — allow a fresh "is playing" post.
-    if existing and existing.get("watch_once_notified"):
-        await match_store.merge_activity_session(
-            session_id,
-            {
-                "watch_once_notified": False,
-                "watch_notified": False,
-                "watch_message_id": None,
-            },
-        )
-        print(f"activity watch launch notify: cleared stale once-flag for {session_id}")
-    await notify_activity_play_started(
-        bot_ref,
-        session_id,
-        fallback_user=interaction.user,
-        force=False,
-        watch_channel_id=watch_channel_id or None,
-    )
-
-
-async def _notify_activity_play_from_launch_safe(
-    bot_ref: "SudokuBot",
-    interaction: discord.Interaction,
-) -> None:
-    try:
-        await notify_activity_play_from_launch(bot_ref, interaction)
-    except Exception as exc:  # noqa: BLE001
-        print(f"notify_activity_play_from_launch failed: {type(exc).__name__}: {exc}")
 
 
 async def delete_activity_watch_message(
@@ -6120,7 +6017,7 @@ class ChallengeLaunchActivityView(discord.ui.View):
                 ephemeral=True,
             )
             return
-        await _launch_activity_window(interaction, skip_watch_notify=True)
+        await _launch_activity_window(interaction)
 
 
 # ---------------------------------------------------------------------------
@@ -8219,6 +8116,32 @@ async def broadcast_daily_announcement(target_channel_id: int | None = None) -> 
     return sent_count
 
 
+@tasks.loop(minutes=3)
+async def prune_idle_activity_watch_announcements():
+    """Remove channel 'is playing' posts when the board has been idle too long."""
+    try:
+        stale = await match_store.list_idle_activity_watch_sessions(
+            WATCH_IDLE_HIDE_SEC
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"prune_idle_activity_watch list failed: {exc}")
+        return
+    for session in stale:
+        sid = str(session.get("_id") or "")
+        if not sid:
+            continue
+        try:
+            await end_activity_watch(bot, sid, force=True)
+            print(f"pruned idle activity watch announcement for {sid}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"prune_idle_activity_watch end failed for {sid}: {exc}")
+
+
+@prune_idle_activity_watch_announcements.before_loop
+async def _wait_prune_idle_watch_ready():
+    await bot.wait_until_ready()
+
+
 @tasks.loop(minutes=2)
 async def check_daily_announcement():
     global _last_announced_daily_date
@@ -8669,6 +8592,8 @@ async def on_ready():
         rotate_status.start()
     if not check_daily_announcement.is_running():
         check_daily_announcement.start()
+    if not prune_idle_activity_watch_announcements.is_running():
+        prune_idle_activity_watch_announcements.start()
     await bot.change_presence(activity=STATUS_ROTATION[0])
     await restore_persisted_sessions(bot)
     await restore_challenge_watch_views(bot)
@@ -8775,7 +8700,6 @@ async def _launch_activity_window(
     interaction: discord.Interaction,
     *,
     preferred_diff_index: int | None = None,
-    skip_watch_notify: bool = False,
 ) -> None:
     """Open the Embedded App Activity (Wordle-style game window).
 
@@ -8812,8 +8736,6 @@ async def _launch_activity_window(
             f"guild={getattr(interaction.guild, 'id', None)} "
             f"channel={getattr(interaction.channel, 'id', None)}"
         )
-        if interaction.guild is not None and not skip_watch_notify:
-            asyncio.create_task(_notify_activity_play_from_launch_safe(bot, interaction))
         return
     except Exception as exc:  # noqa: BLE001 — always acknowledge the interaction
         print(f"launch_activity failed: {type(exc).__name__}: {exc}")
@@ -9404,7 +9326,6 @@ async def daily_cmd(interaction: discord.Interaction):
     }
     try:
         await match_store.upsert_activity_session(doc)
-        asyncio.create_task(_notify_daily_play_started_safe(bot, interaction))
         await _launch_activity_window(interaction)
     except Exception as exc:
         daily["results"].pop(str(user_id), None)
@@ -9959,7 +9880,7 @@ async def recover_cmd(interaction: discord.Interaction):
         f"/recover user={uid} guild={guild_id} kind={kind} "
         f"filled={filled}/81 elapsed={elapsed}s"
     )
-    await _launch_activity_window(interaction, skip_watch_notify=True)
+    await _launch_activity_window(interaction)
 
 
 @bot.tree.command(
