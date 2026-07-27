@@ -903,6 +903,12 @@ async def _load_activity_watchers(
     resolved_guild = await _resolve_activity_guild_id(guild_id, uid)
     session_id = _activity_session_id(resolved_guild, uid)
     session = await match_store.get_activity_session(session_id)
+    if not session:
+        session = await match_store.find_activity_session_by_user_id(
+            uid, guild_id=resolved_guild
+        )
+    if session:
+        session_id = str(session.get("_id") or session_id)
     watchers = _prune_watchers((session or {}).get("watchers"))
     if session and watchers != (session.get("watchers") or {}):
         await match_store.merge_activity_session(session_id, {"watchers": watchers})
@@ -963,8 +969,9 @@ async def _load_activity_spectate(
         or "Player"
     )
     try:
+        presence_id = str(session.get("_id") or session_id)
         await _touch_spectator_presence(
-            session_id=session_id,
+            session_id=presence_id,
             viewer_id=viewer_id,
             viewer_name=str(viewer_name),
         )

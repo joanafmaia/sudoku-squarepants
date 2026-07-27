@@ -3,7 +3,7 @@
  * Initializes Discord session, then starts the Canvas puzzle (no leaderboard UI).
  * Saves in-progress boards to Mongo and offers Resume / New puzzle on next /play.
  */
-import { DiscordSDK } from "@discord/embedded-app-sdk";
+import { DiscordSDK, RPCCloseCodes } from "@discord/embedded-app-sdk";
 import { startThcokuGame } from "./game.js";
 import { difficultyLabel } from "./sudoku-core.js";
 
@@ -672,13 +672,12 @@ function startAutosave() {
 
 export function closeDiscordActivity() {
   try {
-    if (window.discordSdk && typeof window.discordSdk.close === "function") {
-      window.discordSdk.close();
-    } else if (window.discordSdk?.commands && typeof window.discordSdk.commands.closeActivity === "function") {
-      window.discordSdk.commands.closeActivity().catch(() => {});
-    } else {
-      window.close();
+    const sdk = window.__DISCORD_SDK__;
+    if (sdk && typeof sdk.close === "function") {
+      sdk.close(RPCCloseCodes.CLOSE_NORMAL, "Quit");
+      return;
     }
+    window.close();
   } catch (err) {
     console.warn("closeDiscordActivity error:", err);
     try { window.close(); } catch {}
@@ -686,31 +685,40 @@ export function closeDiscordActivity() {
 }
 
 async function quitAndClose() {
-  try {
-    const snap = currentSessionSnap();
-    const isChallenge = snap?.session_kind === "challenge";
-    clearLocalSession();
-    if (window.__DISCORD_ACCESS_TOKEN__) {
-      const gid = await resolveGuildId();
-      if (isChallenge) {
-        await apiFetch("/api/activity/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            challenge_forfeit: true,
-            end_watch: true,
-            force: true,
-            guild_id: gid,
-          }),
-        });
-      } else {
-        await apiFetch("/api/activity/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "clear", guild_id: gid }),
-        });
-      }
+  const snap = currentSessionSnap();
+  const isChallenge = snap?.session_kind === "challenge";
+  clearLocalSession();
+
+  const notifyServer = async () => {
+    if (!window.__DISCORD_ACCESS_TOKEN__) return;
+    const immediate = cachedGuildId || guildId();
+    const gid =
+      immediate && immediate !== "0" ? immediate : await resolveGuildId(2000);
+    if (isChallenge) {
+      await apiFetch("/api/activity/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          challenge_forfeit: true,
+          end_watch: true,
+          force: true,
+          guild_id: gid,
+        }),
+      });
+      return;
     }
+    await apiFetch("/api/activity/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "clear", guild_id: gid }),
+    });
+  };
+
+  try {
+    await Promise.race([
+      notifyServer(),
+      new Promise((resolve) => setTimeout(resolve, 2500)),
+    ]);
   } catch (err) {
     console.warn("quitAndClose failed:", err);
   } finally {
