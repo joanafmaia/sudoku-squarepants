@@ -1222,11 +1222,7 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boa
     const xp = data.xp ?? 0;
     const coins = data.coins ?? 0;
     const streak = data.streak ?? "?";
-    const boostNote = data.xp_boost_used
-      ? ` · 🔮 2× boost${
-          data.xp_boost_remaining != null ? ` (${data.xp_boost_remaining} left)` : ""
-        }`
-      : "";
+    const boostNote = formatWinBoostNote(data);
     showWinToast(
       `Order up! +${xp} XP · +${coins} sponges · streak ${streak} · ${shown}${boostNote}${chatNote}`
     );
@@ -1237,6 +1233,28 @@ window.thcokuReportWin = async function thcokuReportWin(difficulty, elapsed, boa
     return null;
   }
 };
+
+function formatWinBoostNote(data) {
+  const parts = [];
+  if (data.xp_boost_used) {
+    const left =
+      data.xp_boost_remaining != null ? ` (${data.xp_boost_remaining} left)` : "";
+    parts.push(`🔮 2×${left}`);
+  }
+  if (data.krabby_snack_used) {
+    const left =
+      data.krabby_snack_remaining != null ? ` (${data.krabby_snack_remaining} left)` : "";
+    parts.push(`🍟 +25% sponges${left}`);
+  }
+  if (data.golden_spatula_used) {
+    const left =
+      data.golden_spatula_remaining != null
+        ? ` (${data.golden_spatula_remaining} left)`
+        : "";
+    parts.push(`🥇 +50% XP${left}`);
+  }
+  return parts.length ? ` · ${parts.join(" · ")}` : "";
+}
 
 function finishBoot(auth, accessToken, { inDiscord }) {
   window.__DISCORD_AUTH__ = auth;

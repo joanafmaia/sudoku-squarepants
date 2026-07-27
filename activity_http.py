@@ -394,6 +394,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
     from bot import (
         board_to_file,
         build_activity_win_embed,
+        win_boost_caption_kwargs,
         equipped_title_id,
         guild_stats,
         owned_pin_emojis,
@@ -627,8 +628,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                             streak=int(stats.get("streak") or 0),
                             is_daily=True,
                             user_stats_dict=stats,
-                            xp_boost_used=bool(outcome.xp_boost_used),
-                            xp_boost_remaining=int(outcome.xp_boost_remaining),
+                            **win_boost_caption_kwargs(outcome),
                         )
                         await channel.send(
                             embed=announce_embed,
@@ -667,8 +667,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                 "elapsed": elapsed,
                 "posted": posted,
                 "post_error": post_error,
-                "xp_boost_used": bool(outcome.xp_boost_used),
-                "xp_boost_remaining": int(outcome.xp_boost_remaining),
+                **win_boost_caption_kwargs(outcome),
             }
 
         from bot import award_play_win
@@ -763,8 +762,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                         xp=xp,
                         streak=int(stats["streak"]),
                         user_stats_dict=stats,
-                        xp_boost_used=bool(outcome.xp_boost_used),
-                        xp_boost_remaining=int(outcome.xp_boost_remaining),
+                        **win_boost_caption_kwargs(outcome),
                     )
                     await channel.send(embed=embed, file=file)
                     posted = True
@@ -796,8 +794,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
             "guild_id": guild_id,
             "user_id": str(uid),
             "posted": posted,
-            "xp_boost_used": bool(outcome.xp_boost_used),
-            "xp_boost_remaining": int(outcome.xp_boost_remaining),
+            **win_boost_caption_kwargs(outcome),
         }
         if post_error and not posted:
             result["post_error"] = post_error
@@ -820,8 +817,10 @@ def _play_puzzle_fingerprint(
     return play_puzzle_fingerprint(given, board=board, solution=solution)
 
 
-def _hints_max_for_session(session_kind: str | None) -> int:
-    return MAX_HINTS_DAILY if session_kind == "daily" else MAX_HINTS_PLAY
+def _hints_max_for_session(session_kind: str | None, doc: dict | None = None) -> int:
+    base = MAX_HINTS_DAILY if session_kind == "daily" else MAX_HINTS_PLAY
+    bonus = int((doc or {}).get("gary_wisdom_bonus") or 0)
+    return base + bonus
 
 
 def _client_activity_session(doc: dict, *, strip_solution: bool = True) -> dict:
@@ -846,7 +845,8 @@ def _client_activity_session(doc: dict, *, strip_solution: bool = True) -> dict:
         "daily_date": doc.get("daily_date"),
         "won_at": doc.get("won_at"),
         "hints_used": int(doc.get("hints_used") or 0),
-        "hints_max": _hints_max_for_session(session_kind),
+        "hints_max": _hints_max_for_session(session_kind, doc),
+        "gary_wisdom_bonus": int(doc.get("gary_wisdom_bonus") or 0),
     }
     if started > 0:
         payload["started_at"] = started
@@ -1236,6 +1236,7 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
     daily_date = None
     started_at = time.time()
     accepting_client_puzzle = True
+    same_puzzle = False
     if existing:
         session_kind = existing.get("session_kind") or "play"
         daily_date = existing.get("daily_date")
@@ -1313,6 +1314,19 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         "last_move_at": time.time(),
         "hints_used": hints_used,
     }
+    try:
+        gid_int = int(guild_id) if str(guild_id) not in ("", "0") else 0
+    except ValueError:
+        gid_int = 0
+    if gid_int:
+        from bot import attach_gary_wisdom_to_session, guild_stats, save_data, user_stats
+
+        gstats = guild_stats(bot.data, gid_int)
+        pstats = user_stats(gstats, uid)
+        attach_gary_wisdom_to_session(
+            pstats, doc, existing=existing, same_puzzle=same_puzzle
+        )
+        save_data(bot.data)
     # Keep a known channel_id — never wipe it with null from a save without SDK channel.
     if channel_id_raw:
         doc["channel_id"] = str(channel_id_raw)
@@ -1460,7 +1474,7 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
         given = _normalize_activity_given(game.get("given"), board)
         session_kind = "challenge"
         hints_used = int(game.get("hints_used") or 0)
-        max_hints = MAX_HINTS_PLAY
+        max_hints = MAX_HINTS_PLAY + int(game.get("gary_wisdom_bonus") or 0)
         persist_hint = None
     else:
         session, persist_hint = await _lookup_activity_session(bot, guild_id, uid)
@@ -1474,7 +1488,7 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
             return {"ok": False, "error": "no_session"}
         session_kind = session.get("session_kind") or "play"
         hints_used = int(session.get("hints_used") or 0)
-        max_hints = _hints_max_for_session(session_kind)
+        max_hints = _hints_max_for_session(session_kind, session)
 
     async with _activity_win_lock(persist_hint or f"hint:{uid}"):
         # Re-check hint budget under lock (TOCTOU).
