@@ -986,7 +986,34 @@ async def _resolve_win_announce_channel(
     session: dict | None,
     channel_id_raw: Any,
 ) -> Any | None:
-    """Resolve a win-announce channel that belongs to the puzzle's guild."""
+    """Always announce wins in the fixed Sudoku channel when configured."""
+    from bot import ACTIVITY_WATCH_CHANNEL_ID, DAILY_ANNOUNCE_CHANNEL_ID
+
+    # Primary: dedicated Sudoku channel (watch + daily announce share this id).
+    preferred: list[int] = []
+    for raw in (ACTIVITY_WATCH_CHANNEL_ID, DAILY_ANNOUNCE_CHANNEL_ID):
+        try:
+            cid = int(raw or 0)
+        except (TypeError, ValueError):
+            cid = 0
+        if cid and cid not in preferred:
+            preferred.append(cid)
+
+    async def _fetch(cid: int):
+        channel = bot.get_channel(cid)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(cid)
+            except Exception:  # noqa: BLE001
+                channel = None
+        return channel
+
+    for cid in preferred:
+        channel = await _fetch(cid)
+        if channel is not None:
+            return channel
+
+    # Fallback only if the fixed channel is unset / unreachable.
     candidates: list[int] = []
 
     def _push(raw: Any) -> None:
@@ -996,19 +1023,12 @@ async def _resolve_win_announce_channel(
             cid = int(raw)
         except (TypeError, ValueError):
             return
-        if cid and cid not in candidates:
+        if cid and cid not in candidates and cid not in preferred:
             candidates.append(cid)
 
-    # Prefer the channel from the win POST (freshest), then session, then guild defaults.
     _push(channel_id_raw)
     _push((session or {}).get("channel_id"))
     _push((session or {}).get("watch_channel_id"))
-    try:
-        from bot import ACTIVITY_WATCH_CHANNEL_ID
-
-        _push(ACTIVITY_WATCH_CHANNEL_ID)
-    except Exception:  # noqa: BLE001
-        pass
     try:
         from bot import guild_stats
 
@@ -1018,17 +1038,14 @@ async def _resolve_win_announce_channel(
         pass
 
     for cid in candidates:
-        channel = bot.get_channel(cid)
-        if channel is None:
-            try:
-                channel = await bot.fetch_channel(cid)
-            except Exception:  # noqa: BLE001
-                channel = None
+        channel = await _fetch(cid)
         if channel is not None and _channel_belongs_to_guild(channel, guild_id):
             return channel
+
     print(
         f"activity win announce channel unresolved guild={guild_id} "
-        f"candidates={candidates} session_channel={(session or {}).get('channel_id')}"
+        f"preferred={preferred} candidates={candidates} "
+        f"session_channel={(session or {}).get('channel_id')}"
     )
     return None
 
