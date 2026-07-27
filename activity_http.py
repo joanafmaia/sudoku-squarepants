@@ -1288,10 +1288,25 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         f"activity session save user={uid} guild={guild_id} filled={filled} "
         f"notify={'skip' if watch_live else 'yes'}"
     )
-    # Skip re-notification if the player already got one for this game session.
-    # watch_once_notified is set by notify_activity_play_started and only cleared when
-    # the session doc itself is deleted (new game, win, or quit).
+    # Skip re-notification if this continuous watch period already announced.
+    # watch_once_notified is cleared when the watch ends (leave Activity) or a new puzzle starts.
     already_notified_once = bool(current and current.get("watch_once_notified"))
+    if already_notified_once and current and not (
+        current.get("watch_notified") and current.get("watch_message_id")
+    ):
+        # Stale flag after end_watch / deleted message — allow a fresh post.
+        already_notified_once = False
+        try:
+            await match_store.merge_activity_session(
+                session_id,
+                {
+                    "watch_once_notified": False,
+                    "watch_notified": False,
+                    "watch_message_id": None,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"activity clear stale once-flag failed: {exc}")
     if not watch_live and not already_notified_once:
         try:
             from bot import notify_activity_play_started

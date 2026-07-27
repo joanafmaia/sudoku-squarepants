@@ -4053,8 +4053,15 @@ async def notify_daily_play_started(
         print(f"daily watch notify skipped for {session_id}: announcement already live")
         return
     if existing and existing.get("watch_once_notified"):
-        print(f"daily watch notify skipped for {session_id}: already notified this session")
-        return
+        await match_store.merge_activity_session(
+            session_id,
+            {
+                "watch_once_notified": False,
+                "watch_notified": False,
+                "watch_message_id": None,
+            },
+        )
+        print(f"daily watch notify: cleared stale once-flag for {session_id}")
     day = utc_today()
     await notify_activity_play_started(
         bot_ref,
@@ -4177,8 +4184,8 @@ async def notify_activity_play_started(
                 "watch_message_id": msg.id,
                 "watch_channel_id": str(channel_id),
                 "watch_posted_at": time.time(),
-                # Persist across end_watch so re-opening the same game doesn't spam.
-                # Cleared only when the whole session doc is deleted (new game / win / quit).
+                # Blocks duplicate posts while the watch announcement is live.
+                # Cleared when watch ends (leave Activity) or the puzzle is replaced.
                 "watch_once_notified": True,
             },
         )
@@ -4219,11 +4226,17 @@ async def notify_activity_play_from_launch(
     if existing and await activity_watch_is_live(bot_ref, existing):
         print(f"activity watch launch notify skipped for {session_id}: announcement already live")
         return
-    # If the player already received a notification for this game session (they closed and
-    # reopened), don't spam the channel again. The flag is only cleared on a new game/win.
+    # Stale once-flag after end_watch / deleted message — allow a fresh "is playing" post.
     if existing and existing.get("watch_once_notified"):
-        print(f"activity watch launch notify skipped for {session_id}: already notified this session")
-        return
+        await match_store.merge_activity_session(
+            session_id,
+            {
+                "watch_once_notified": False,
+                "watch_notified": False,
+                "watch_message_id": None,
+            },
+        )
+        print(f"activity watch launch notify: cleared stale once-flag for {session_id}")
     await notify_activity_play_started(
         bot_ref,
         session_id,
@@ -4269,6 +4282,7 @@ async def delete_activity_watch_message(
                 {
                     "watch_message_id": None,
                     "watch_notified": False,
+                    "watch_once_notified": False,
                 },
             )
             print(f"cleared stale activity watch message id for {sid}")
@@ -4318,6 +4332,8 @@ async def end_activity_watch(
         {
             "watch_notified": False,
             "watch_message_id": None,
+            # Allow a fresh "is playing" post when they reopen after leaving.
+            "watch_once_notified": False,
         },
     )
     print(f"activity watch ended for {session_id}")
