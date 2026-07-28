@@ -547,3 +547,303 @@ body.theme-dark #game-controls .ctrl-actions button {
   color: #ffffff;
 }
 
+body.theme-dark #game-hint {
+  background: rgba(15, 23, 42, 0.92);
+  border-color: #38bdf8;
+  color: #7dd3fc;
+}
+
+body.theme-dark #resume {
+  background: rgba(2, 6, 23, 0.65);
+}
+
+body.theme-dark #resume-copy,
+body.theme-dark .resume-actions button {
+  background: #1e293b;
+  border-color: #38bdf8;
+  color: #7dd3fc;
+}
+
+body.theme-dark #resume-continue {
+  background: #0284c7;
+  color: #fff;
+}
+
+body.theme-dark #win-toast {
+  background: #0f172a;
+  color: #7dd3fc;
+  border: 2px solid #38bdf8;
+}
+
+@media (min-width: 860px) {
+  body.theme-dark #game-controls {
+    background: rgba(15, 23, 42, 0.88);
+    border-color: rgba(56, 189, 248, 0.4);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  }
+}
+
+body.theme-jellyfish {
+  background:
+    radial-gradient(circle at 18% 12%, #6b21a8 0%, transparent 42%),
+    radial-gradient(circle at 88% 88%, #4c1d95 0%, transparent 38%),
+    linear-gradient(160deg, #581c87, #2e1065 55%, #0f0a2e);
+  color: #f472b6;
+}
+
+body.theme-jellyfish #boot {
+  background:
+    radial-gradient(circle at 18% 12%, #6b21a8 0%, transparent 42%),
+    radial-gradient(circle at 88% 88%, #4c1d95 0%, transparent 38%),
+    linear-gradient(160deg, #581c87, #2e1065 55%, #0f0a2e);
+  color: #f9a8d4;
+}
+
+body.theme-jellyfish #canvas {
+  background: #1e1b4b;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45), 0 0 0 3px rgba(244, 114, 182, 0.4);
+}
+
+body.theme-jellyfish #app-toolbar button {
+  background: rgba(49, 46, 129, 0.92);
+  border-color: #f472b6;
+  color: #fce7f3;
+}
+
+body.theme-jellyfish #game-controls {
+  background: rgba(30, 27, 75, 0.88);
+  border-color: rgba(244, 114, 182, 0.4);
+}
+
+body.theme-jellyfish #game-controls button {
+  background: linear-gradient(180deg, #4c1d95 0%, #312e81 100%);
+  border-color: #7e22ce;
+  color: #f9a8d4;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.35);
+}
+
+body.theme-jellyfish #game-controls .ctrl-digit {
+  background: linear-gradient(180deg, #581c87 0%, #3b0764 100%);
+  border-color: #c084fc;
+  color: #fce7f3;
+}
+
+body.theme-jellyfish #game-controls .ctrl-clear,
+body.theme-jellyfish #game-controls .ctrl-actions button {
+  background: linear-gradient(180deg, #db2777 0%, #be185d 100%);
+  border-color: #831843;
+  color: #fff;
+}
+
+body.theme-jellyfish #game-hint {
+  background: rgba(30, 27, 75, 0.92);
+  border-color: #f472b6;
+  color: #f9a8d4;
+}
+
+body.theme-jellyfish #resume {
+  background: rgba(15, 10, 46, 0.65);
+}
+
+body.theme-jellyfish #resume-copy,
+body.theme-jellyfish .resume-actions button {
+  background: #312e81;
+  border-color: #f472b6;
+  color: #fce7f3;
+}
+
+body.theme-jellyfish #resume-continue {
+  background: #db2777;
+  color: #fff;
+}
+
+body.theme-jellyfish #win-toast {
+  background: #312e81;
+  color: #fce7f3;
+  border: 2px solid #f472b6;
+}
+
+@media (min-width: 860px) {
+  body.theme-jellyfish #game-controls {
+    background: rgba(30, 27, 75, 0.88);
+    border-color: rgba(244, 114, 182, 0.4);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  }
+}
+
+body.theme-krabs {
+  background:
+    radial-gradient(circle at 18% 12%, #0369a1 0%, transparent 42%),
+    radial-gradient(circle at 88% 88%, #b45309 0%, transparent 38%),
+    linear-gradient(160deg, #0c4a6e, #082f49 55%, #042f44);
+  color: #fbbf24;
+}
+
+body.theme-krabs #boot {
+  background:
+    radial-gradient(circle at 18% 12%, #0369a1 0%, transparent 42%),
+    radial-gradient(circle at 88% 88%, #b45309 0%, transparent 38%),
+    linear-gradient(160deg, #0c4a6e, #082f49 55%, #042f44);
+  color: #fde68a;
+}
+
+body.theme-krabs #canvas {
+  background: #082f49;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45), 0 0 0 3px rgba(251, 191, 36, 0.4);
+}
+
+body.theme-krabs #app-toolbar button {
+  background: rgba(8, 47, 73, 0.92);
+  border-color: #fbbf24;
+  color: #fef08a;
+}
+
+body.theme-krabs #game-controls {
+  background: rgba(8, 47, 73, 0.88);
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+body.theme-krabs #game-controls button {
+  background: linear-gradient(180deg, #075985 0%, #0c4a6e 100%);
+  border-color: #0369a1;
+  color: #fef08a;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.35);
+}
+
+body.theme-krabs #game-controls .ctrl-digit {
+  background: linear-gradient(180deg, #0c4a6e 0%, #082f49 100%);
+  border-color: #fbbf24;
+  color: #fff;
+}
+
+body.theme-krabs #game-controls .ctrl-clear,
+body.theme-krabs #game-controls .ctrl-actions button {
+  background: linear-gradient(180deg, #ea580c 0%, #c2410c 100%);
+  border-color: #9a3412;
+  color: #fff;
+}
+
+body.theme-krabs #game-hint {
+  background: rgba(8, 47, 73, 0.92);
+  border-color: #fbbf24;
+  color: #fef08a;
+}
+
+body.theme-krabs #resume {
+  background: rgba(4, 47, 68, 0.65);
+}
+
+body.theme-krabs #resume-copy,
+body.theme-krabs .resume-actions button {
+  background: #0c4a6e;
+  border-color: #fbbf24;
+  color: #fef08a;
+}
+
+body.theme-krabs #resume-continue {
+  background: #ea580c;
+  color: #fff;
+}
+
+body.theme-krabs #win-toast {
+  background: #0c4a6e;
+  color: #fef08a;
+  border: 2px solid #fbbf24;
+}
+
+@media (min-width: 860px) {
+  body.theme-krabs #game-controls {
+    background: rgba(8, 47, 73, 0.88);
+    border-color: rgba(251, 191, 36, 0.45);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  }
+}
+
+body.theme-rockbottom {
+  background:
+    radial-gradient(circle at 18% 12%, #164e63 0%, transparent 42%),
+    radial-gradient(circle at 88% 88%, #312e81 0%, transparent 38%),
+    linear-gradient(160deg, #0f172a, #090d16 55%, #020617);
+  color: #22d3ee;
+}
+
+body.theme-rockbottom #boot {
+  background:
+    radial-gradient(circle at 18% 12%, #164e63 0%, transparent 42%),
+    radial-gradient(circle at 88% 88%, #312e81 0%, transparent 38%),
+    linear-gradient(160deg, #0f172a, #090d16 55%, #020617);
+  color: #67e8f9;
+}
+
+body.theme-rockbottom #canvas {
+  background: #090d16;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55), 0 0 0 3px rgba(34, 211, 238, 0.35);
+}
+
+body.theme-rockbottom #app-toolbar button {
+  background: rgba(15, 23, 42, 0.92);
+  border-color: #22d3ee;
+  color: #e0e7ff;
+}
+
+body.theme-rockbottom #game-controls {
+  background: rgba(9, 13, 22, 0.9);
+  border-color: rgba(34, 211, 238, 0.35);
+}
+
+body.theme-rockbottom #game-controls button {
+  background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+  border-color: #334155;
+  color: #67e8f9;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.4);
+}
+
+body.theme-rockbottom #game-controls .ctrl-digit {
+  background: linear-gradient(180deg, #312e81 0%, #1e1b4b 100%);
+  border-color: #22d3ee;
+  color: #e0e7ff;
+}
+
+body.theme-rockbottom #game-controls .ctrl-clear,
+body.theme-rockbottom #game-controls .ctrl-actions button {
+  background: linear-gradient(180deg, #0891b2 0%, #0e7490 100%);
+  border-color: #155e75;
+  color: #fff;
+}
+
+body.theme-rockbottom #game-hint {
+  background: rgba(9, 13, 22, 0.92);
+  border-color: #22d3ee;
+  color: #a5f3fc;
+}
+
+body.theme-rockbottom #resume {
+  background: rgba(2, 6, 23, 0.7);
+}
+
+body.theme-rockbottom #resume-copy,
+body.theme-rockbottom .resume-actions button {
+  background: #0f172a;
+  border-color: #22d3ee;
+  color: #a5f3fc;
+}
+
+body.theme-rockbottom #resume-continue {
+  background: #0891b2;
+  color: #fff;
+}
+
+body.theme-rockbottom #win-toast {
+  background: #0f172a;
+  color: #a5f3fc;
+  border: 2px solid #22d3ee;
+}
+
+@media (min-width: 860px) {
+  body.theme-rockbottom #game-controls {
+    background: rgba(9, 13, 22, 0.9);
+    border-color: rgba(34, 211, 238, 0.35);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  }
+}
+

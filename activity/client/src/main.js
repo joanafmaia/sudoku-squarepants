@@ -8,12 +8,11 @@ import {
   startThcokuGame,
   isMusicEnabled,
   isSfxEnabled,
-  cycleMusicPreset,
   getMusicPresetMeta,
   setMusicEnabled,
   setSfxEnabled,
 } from "./game.js";
-import { pauseProceduralBgm, resumeProceduralBgm } from "./procedural-bgm.js";
+import { pauseTrackBgm, resumeTrackBgm } from "./track-bgm.js";
 import { difficultyLabel } from "./sudoku-core.js";
 
 const CLIENT_ID = import.meta.env.VITE_DISCORD_CLIENT_ID;
@@ -261,17 +260,16 @@ function applyTheme(theme) {
     /* localStorage disabled */
   }
   document.body.className = `theme-${theme}`;
+  document.body.dataset.theme = theme;
   if (gameApi?.setTheme) {
     gameApi.setTheme(theme);
   }
   const btn = document.getElementById("theme-toggle");
   if (btn) {
     btn.textContent = THEME_ICONS[theme] || "🌙";
-    btn.title = `Theme: ${theme.toUpperCase()} (Click to change)`;
+    btn.title = `Tema: ${theme} (clica para mudar)`;
   }
 }
-
-const MUSIC_PRESET_HOLD_MS = 500;
 
 function applyMusicUi() {
   const btn = document.getElementById("music-toggle");
@@ -280,14 +278,14 @@ function applyMusicUi() {
   const meta = getMusicPresetMeta();
   if (!enabled) {
     btn.textContent = "🔕";
-    btn.title = "Música desligada — clica para ligar";
+    btn.title = "Música desligada — clica para ligar (Clownfish Capers)";
     btn.setAttribute("aria-pressed", "true");
     btn.setAttribute("aria-label", "Música desligada");
     btn.classList.add("is-muted");
     return;
   }
-  btn.textContent = meta?.emoji || "🌊";
-  btn.title = `Música ligada (${meta?.label || "oceano"}) — clica para desligar · duplo clique para mudar ambiência`;
+  btn.textContent = meta?.emoji || "🎵";
+  btn.title = `Música ligada (${meta?.label || "Clownfish Capers"}) — clica para desligar`;
   btn.setAttribute("aria-pressed", "false");
   btn.setAttribute("aria-label", "Música ligada");
   btn.classList.remove("is-muted");
@@ -308,70 +306,24 @@ function applySfxUi(enabled) {
 function bindMusicToggle() {
   const btn = document.getElementById("music-toggle");
   if (!btn) return;
-  let holdTimer = null;
-  let longPress = false;
-  let muteClickTimer = null;
-  const MUTE_CLICK_DELAY_MS = 280;
-
-  const clearHold = () => {
-    if (holdTimer) {
-      clearTimeout(holdTimer);
-      holdTimer = null;
-    }
-  };
-
-  const cyclePresetIfOn = () => {
-    if (!isMusicEnabled()) return false;
-    cycleMusicPreset();
-    applyMusicUi();
-    return true;
-  };
-
-  btn.addEventListener("pointerdown", (e) => {
-    longPress = false;
-    clearHold();
-    holdTimer = setTimeout(() => {
-      longPress = true;
-      cyclePresetIfOn();
-    }, MUSIC_PRESET_HOLD_MS);
-  });
-
-  btn.addEventListener("pointerup", clearHold);
-  btn.addEventListener("pointercancel", clearHold);
-  btn.addEventListener("pointerleave", clearHold);
-
-  btn.addEventListener("dblclick", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (muteClickTimer) {
-      clearTimeout(muteClickTimer);
-      muteClickTimer = null;
-    }
-    cyclePresetIfOn();
-  });
 
   btn.addEventListener("click", (e) => {
     e.preventDefault();
     e.stopPropagation();
-    if (longPress) {
-      longPress = false;
-      return;
-    }
-    if (muteClickTimer) {
-      clearTimeout(muteClickTimer);
-      muteClickTimer = null;
-      cyclePresetIfOn();
-      return;
-    }
-    muteClickTimer = setTimeout(() => {
-      muteClickTimer = null;
-      setMusicEnabled(!isMusicEnabled());
-      applyMusicUi();
-    }, MUTE_CLICK_DELAY_MS);
+    setMusicEnabled(!isMusicEnabled());
+    applyMusicUi();
   });
 }
 
 bindMusicToggle();
+
+document.addEventListener(
+  "pointerdown",
+  () => {
+    if (isMusicEnabled()) setMusicEnabled(true);
+  },
+  { once: true, capture: true },
+);
 
 document.getElementById("sfx-toggle")?.addEventListener("click", (e) => {
   e.preventDefault();
@@ -383,11 +335,12 @@ document.getElementById("sfx-toggle")?.addEventListener("click", (e) => {
 
 applyMusicUi();
 applySfxUi(isSfxEnabled());
+applyTheme(currentTheme);
 
 document.addEventListener("visibilitychange", () => {
   if (!isMusicEnabled()) return;
-  if (document.visibilityState === "hidden") pauseProceduralBgm();
-  else resumeProceduralBgm();
+  if (document.visibilityState === "hidden") pauseTrackBgm();
+  else resumeTrackBgm();
 });
 
 document.getElementById("theme-toggle")?.addEventListener("click", () => {

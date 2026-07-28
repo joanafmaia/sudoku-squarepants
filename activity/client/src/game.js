@@ -19,6 +19,8 @@ import {
 const LIGHT_PALETTE = {
   empty: "#fffef5",
   given: "#facc15",
+  givenHl: "#fde047",
+  matchHl: "#bbf7d0",
   select: "#fde047",
   boxHl: "#a5f3fc",
   conflict: "#fda4af",
@@ -38,17 +40,31 @@ const LIGHT_PALETTE = {
   sandDeep: "#fbbf24",
   leaf: "#16a34a",
   leafDark: "#15803d",
+  cardInner: "#fffbeb",
+  bg0: "#7dd3fc",
+  bg1: "#38bdf8",
+  bg2: "#0ea5e9",
+  bg3: "#0284c7",
+  sunGlow: "rgba(254, 243, 199, 0.4)",
+  bubbleStroke: "rgba(186, 230, 253, 0.75)",
+  bubbleFill: "rgba(255, 255, 255, 0.25)",
+  pinFill: "rgba(255, 248, 220, 0.98)",
+  pinShine: "rgba(255, 255, 255, 0.5)",
+  headerStroke: "rgba(245, 158, 11, 0.45)",
+  spongePore: "rgba(146, 64, 14, 0.14)",
 };
 
 const DARK_PALETTE = {
   empty: "#1e293b",
-  given: "#854d0e",
-  select: "#b45309",
+  given: "#b45309",
+  givenHl: "#ca8a04",
+  matchHl: "#164e63",
+  select: "#d97706",
   boxHl: "#0e7490",
   conflict: "#9f1239",
   line: "#475569",
   thick: "#38bdf8",
-  text: "#38bdf8",
+  text: "#7dd3fc",
   textGiven: "#fef08a",
   textConflict: "#fecdd3",
   pencil: "#94a3b8",
@@ -62,20 +78,34 @@ const DARK_PALETTE = {
   sandDeep: "#1e293b",
   leaf: "#38bdf8",
   leafDark: "#0284c7",
+  cardInner: "#1e293b",
+  bg0: "#1e293b",
+  bg1: "#0f172a",
+  bg2: "#0c1222",
+  bg3: "#020617",
+  sunGlow: "rgba(56, 189, 248, 0.12)",
+  bubbleStroke: "rgba(56, 189, 248, 0.45)",
+  bubbleFill: "rgba(125, 211, 252, 0.12)",
+  pinFill: "rgba(30, 41, 59, 0.95)",
+  pinShine: "rgba(125, 211, 252, 0.35)",
+  headerStroke: "rgba(56, 189, 248, 0.35)",
+  spongePore: "rgba(254, 240, 138, 0.12)",
 };
 
 const JELLYFISH_PALETTE = {
   empty: "#2e1065",
-  given: "#7e22ce",
-  select: "#a855f7",
+  given: "#9333ea",
+  givenHl: "#a855f7",
+  matchHl: "#581c87",
+  select: "#c084fc",
   boxHl: "#581c87",
   conflict: "#be123c",
   line: "#6b21a8",
   thick: "#f472b6",
-  text: "#f472b6",
+  text: "#f9a8d4",
   textGiven: "#fef08a",
   textConflict: "#fecdd3",
-  pencil: "#c084fc",
+  pencil: "#d8b4fe",
   header: "#f472b6",
   panel: "#1e1b4b",
   win: "#ec4899",
@@ -86,11 +116,25 @@ const JELLYFISH_PALETTE = {
   sandDeep: "#581c87",
   leaf: "#f472b6",
   leafDark: "#db2777",
+  cardInner: "#312e81",
+  bg0: "#4c1d95",
+  bg1: "#2e1065",
+  bg2: "#1e1b4b",
+  bg3: "#0f0a2e",
+  sunGlow: "rgba(244, 114, 182, 0.18)",
+  bubbleStroke: "rgba(232, 121, 249, 0.55)",
+  bubbleFill: "rgba(250, 232, 255, 0.15)",
+  pinFill: "rgba(49, 46, 129, 0.95)",
+  pinShine: "rgba(249, 168, 212, 0.35)",
+  headerStroke: "rgba(244, 114, 182, 0.4)",
+  spongePore: "rgba(254, 240, 138, 0.1)",
 };
 
 const KRABS_PALETTE = {
   empty: "#0c4a6e",
-  given: "#b45309",
+  given: "#ea580c",
+  givenHl: "#fbbf24",
+  matchHl: "#075985",
   select: "#f59e0b",
   boxHl: "#0284c7",
   conflict: "#9f1239",
@@ -110,18 +154,32 @@ const KRABS_PALETTE = {
   sandDeep: "#0369a1",
   leaf: "#fbbf24",
   leafDark: "#d97706",
+  cardInner: "#0c4a6e",
+  bg0: "#0e7490",
+  bg1: "#0c4a6e",
+  bg2: "#082f49",
+  bg3: "#042f44",
+  sunGlow: "rgba(251, 191, 36, 0.2)",
+  bubbleStroke: "rgba(56, 189, 248, 0.55)",
+  bubbleFill: "rgba(254, 243, 199, 0.12)",
+  pinFill: "rgba(8, 47, 73, 0.95)",
+  pinShine: "rgba(254, 243, 199, 0.35)",
+  headerStroke: "rgba(251, 191, 36, 0.45)",
+  spongePore: "rgba(255, 255, 255, 0.1)",
 };
 
 const ROCKBOTTOM_PALETTE = {
   empty: "#020617",
-  given: "#1e1b4b",
-  select: "#4338ca",
+  given: "#4338ca",
+  givenHl: "#6366f1",
+  matchHl: "#1e293b",
+  select: "#4f46e5",
   boxHl: "#1e293b",
   conflict: "#881337",
   line: "#334155",
   thick: "#22d3ee",
-  text: "#22d3ee",
-  textGiven: "#a5f3fc",
+  text: "#67e8f9",
+  textGiven: "#e0e7ff",
   textConflict: "#fecdd3",
   pencil: "#94a3b8",
   header: "#22d3ee",
@@ -130,12 +188,26 @@ const ROCKBOTTOM_PALETTE = {
   bubble: "#0891b2",
   gold: "#38bdf8",
   goldDeep: "#0284c7",
-  sandDeep: "#0f172a",
+  sand: "#0f172a",
+  sandDeep: "#1e293b",
   leaf: "#22d3ee",
   leafDark: "#0891b2",
+  cardInner: "#0f172a",
+  bg0: "#0f172a",
+  bg1: "#090d16",
+  bg2: "#050810",
+  bg3: "#020617",
+  sunGlow: "rgba(34, 211, 238, 0.1)",
+  bubbleStroke: "rgba(34, 211, 238, 0.4)",
+  bubbleFill: "rgba(125, 211, 252, 0.1)",
+  pinFill: "rgba(15, 23, 42, 0.95)",
+  pinShine: "rgba(34, 211, 238, 0.3)",
+  headerStroke: "rgba(34, 211, 238, 0.35)",
+  spongePore: "rgba(224, 231, 255, 0.1)",
 };
 
 const RGB = { ...LIGHT_PALETTE };
+let activeTheme = "light";
 
 const WIDTH = 720;
 const HEIGHT = 780;
@@ -202,20 +274,16 @@ function roundRect(ctx, x, y, w, h, r) {
 }
 
 import {
-  armProceduralBgm,
-  configureProceduralBgm,
-  getOceanPresetCount,
-  getOceanPresetMeta,
-  pauseProceduralBgm,
-  resumeProceduralBgm,
-  setOceanPreset,
-  stopProceduralBgm,
-  syncProceduralBgmEnabled,
-} from "./procedural-bgm.js";
+  armTrackBgm,
+  configureTrackBgm,
+  getTrackMeta,
+  pauseTrackBgm,
+  resumeTrackBgm,
+  syncTrackBgmEnabled,
+} from "./track-bgm.js";
 
 let audioCtx = null;
 const MUSIC_ENABLED_KEY = "thcoku_music_on";
-const MUSIC_PRESET_KEY = "thcoku_music_preset";
 const MUSIC_STORAGE_KEY = "thcoku_music";
 const SFX_STORAGE_KEY = "thcoku_sfx";
 const LEGACY_SOUND_KEY = "thcoku_sound";
@@ -231,16 +299,10 @@ function readStoredBool(key, fallback) {
   return fallback;
 }
 
-function clampMusicPreset(index) {
-  const count = getOceanPresetCount();
-  return Math.max(0, Math.min(count - 1, Number(index) || 0));
-}
-
 function persistMusicPrefs() {
   try {
     localStorage.setItem(MUSIC_ENABLED_KEY, musicEnabled ? "on" : "off");
-    localStorage.setItem(MUSIC_PRESET_KEY, String(musicPreset));
-    localStorage.setItem(MUSIC_STORAGE_KEY, musicEnabled ? String(musicPreset) : "off");
+    localStorage.setItem(MUSIC_STORAGE_KEY, musicEnabled ? "on" : "off");
   } catch {
     /* localStorage disabled */
   }
@@ -249,86 +311,51 @@ function persistMusicPrefs() {
 function readInitialMusicPrefs() {
   try {
     const enabledStored = localStorage.getItem(MUSIC_ENABLED_KEY);
-    const presetStored = localStorage.getItem(MUSIC_PRESET_KEY);
     if (enabledStored === "on" || enabledStored === "off") {
-      return {
-        enabled: enabledStored === "on",
-        preset: clampMusicPreset(presetStored ?? "0"),
-      };
+      return { enabled: enabledStored === "on" };
     }
 
     const legacy = localStorage.getItem(MUSIC_STORAGE_KEY);
-    if (legacy === "off" || legacy === "false") {
-      return { enabled: false, preset: clampMusicPreset(presetStored ?? "0") };
-    }
-    if (legacy === "on" || legacy === "true") return { enabled: true, preset: 0 };
+    if (legacy === "off" || legacy === "false") return { enabled: false };
+    if (legacy === "on" || legacy === "true") return { enabled: true };
     const legacySound = localStorage.getItem(LEGACY_SOUND_KEY);
-    if (legacySound === "off" || legacySound === "0") {
-      return { enabled: false, preset: clampMusicPreset(presetStored ?? "0") };
-    }
-    if (legacy == null || legacy === "") {
-      return { enabled: false, preset: clampMusicPreset(presetStored ?? "0") };
-    }
-    const n = Number.parseInt(String(legacy), 10);
-    if (Number.isFinite(n) && n >= 0) {
-      return { enabled: true, preset: clampMusicPreset(n) };
-    }
+    if (legacySound === "off" || legacySound === "0") return { enabled: false };
   } catch {
     /* localStorage disabled */
   }
-  return { enabled: false, preset: 0 };
+  return { enabled: true };
 }
 
 function readInitialAudioPrefs() {
   const music = readInitialMusicPrefs();
   return {
     musicEnabled: music.enabled,
-    musicPreset: music.preset,
     sfx: readStoredBool(SFX_STORAGE_KEY, true),
   };
 }
 
 const initialAudio = readInitialAudioPrefs();
 let musicEnabled = initialAudio.musicEnabled;
-let musicPreset = initialAudio.musicPreset;
 let sfxEnabled = initialAudio.sfx;
 
 export function isMusicEnabled() {
   return musicEnabled;
 }
 
-export function getMusicPreset() {
-  return musicPreset;
-}
-
 export function getMusicPresetMeta() {
-  return getOceanPresetMeta(musicPreset);
-}
-
-export function cycleMusicPreset() {
-  if (!musicEnabled) return;
-  const count = getOceanPresetCount();
-  musicPreset = (musicPreset + 1) % count;
-  persistMusicPrefs();
-  setOceanPreset(musicPreset);
-  getAudioCtx();
-  syncProceduralBgmEnabled(true);
-  ensureBgmStarted();
-  resumeProceduralBgm();
+  return getTrackMeta();
 }
 
 function applyMusicPlayback() {
   if (!musicEnabled) {
-    syncProceduralBgmEnabled(false);
-    pauseProceduralBgm();
+    syncTrackBgmEnabled(false);
+    pauseTrackBgm();
     maybeSuspendAudioCtx();
     return;
   }
-  setOceanPreset(musicPreset);
-  getAudioCtx();
-  syncProceduralBgmEnabled(true);
+  syncTrackBgmEnabled(true);
   ensureBgmStarted();
-  resumeProceduralBgm();
+  resumeTrackBgm();
 }
 
 export function setMusicEnabled(enabled) {
@@ -370,15 +397,15 @@ function getAudioCtx() {
   return audioCtx;
 }
 
-configureProceduralBgm({
-  getCtx: getAudioCtx,
+configureTrackBgm({
   isEnabled: () => musicEnabled,
-  initialPreset: musicPreset,
 });
 
 function ensureBgmStarted() {
-  armProceduralBgm();
+  armTrackBgm();
 }
+
+applyMusicPlayback();
 
 export function playFx(type) {
   if (!sfxEnabled) return;
@@ -616,14 +643,14 @@ export function startThcokuGame(canvas, options = {}) {
       const slot = slots[i];
       ctx.beginPath();
       ctx.arc(slot.x, slot.y, PIN_RADIUS, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(255, 248, 220, 0.98)";
+      ctx.fillStyle = RGB.pinFill;
       ctx.fill();
       ctx.lineWidth = 3;
       ctx.strokeStyle = RGB.gold;
       ctx.stroke();
       ctx.beginPath();
       ctx.arc(slot.x - 5, slot.y - 6, 6, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
+      ctx.fillStyle = RGB.pinShine;
       ctx.fill();
       ctx.font = "32px Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol, sans-serif";
       ctx.textAlign = "center";
@@ -636,7 +663,7 @@ export function startThcokuGame(canvas, options = {}) {
     ctx.fillStyle = RGB.panel;
     roundRect(ctx, 20, 14, WIDTH - 40, 64, 14);
     ctx.fill();
-    ctx.strokeStyle = "rgba(245, 158, 11, 0.45)";
+    ctx.strokeStyle = RGB.headerStroke;
     ctx.lineWidth = 2;
     roundRect(ctx, 20, 14, WIDTH - 40, 64, 14);
     ctx.stroke();
@@ -1275,15 +1302,14 @@ export function startThcokuGame(canvas, options = {}) {
 
   function drawLagoon(now) {
     const grad = ctx.createLinearGradient(0, 0, 0, HEIGHT);
-    grad.addColorStop(0, "#7dd3fc");
-    grad.addColorStop(0.55, "#38bdf8");
-    grad.addColorStop(0.82, "#0ea5e9");
-    grad.addColorStop(1, "#0284c7");
+    grad.addColorStop(0, RGB.bg0);
+    grad.addColorStop(0.55, RGB.bg1);
+    grad.addColorStop(0.82, RGB.bg2);
+    grad.addColorStop(1, RGB.bg3);
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
-    // Soft sunlight
-    ctx.fillStyle = "rgba(254, 243, 199, 0.4)";
+    ctx.fillStyle = RGB.sunGlow;
     ctx.beginPath();
     ctx.arc(640, 36, 78, 0, Math.PI * 2);
     ctx.fill();
@@ -1319,12 +1345,12 @@ export function startThcokuGame(canvas, options = {}) {
       const y = ((b.y - t * b.speed) % (HEIGHT + 40) + HEIGHT + 40) % (HEIGHT + 40);
       const x = b.x + Math.sin(t * b.wobble + b.phase) * 10;
       const yy = HEIGHT - y;
-      ctx.strokeStyle = "rgba(186, 230, 253, 0.75)";
+      ctx.strokeStyle = RGB.bubbleStroke;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.arc(x, yy, b.r, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.fillStyle = "rgba(255, 255, 255, 0.25)";
+      ctx.fillStyle = RGB.bubbleFill;
       ctx.beginPath();
       ctx.arc(x - b.r * 0.3, yy - b.r * 0.3, b.r * 0.25, 0, Math.PI * 2);
       ctx.fill();
@@ -1387,14 +1413,14 @@ export function startThcokuGame(canvas, options = {}) {
     ctx.fillStyle = RGB.goldDeep;
     roundRect(ctx, x, y, w, h, 14);
     ctx.fill();
-    ctx.fillStyle = "#fffbeb";
+    ctx.fillStyle = RGB.cardInner;
     roundRect(ctx, x + 5, y + 5, w - 10, h - 10, 10);
     ctx.fill();
   }
 
   function drawSpongePores(x, y, r, c) {
     const rng = mulberry32((r + 1) * 97 + (c + 1) * 13);
-    ctx.fillStyle = "rgba(146, 64, 14, 0.14)";
+    ctx.fillStyle = RGB.spongePore;
     for (let i = 0; i < 5; i++) {
       const px = x + 10 + rng() * (CELL - 20);
       const py = y + 10 + rng() * (CELL - 20);
@@ -1455,8 +1481,8 @@ export function startThcokuGame(canvas, options = {}) {
         const isMatch = selectedVal !== 0 && cellVal === selectedVal;
 
         let fill = isGiven ? RGB.given : RGB.empty;
-        if (sameBox || sameLine) fill = isGiven ? "#fde047" : RGB.boxHl;
-        if (isMatch) fill = "#bbf7d0";
+        if (sameBox || sameLine) fill = isGiven ? RGB.givenHl : RGB.boxHl;
+        if (isMatch) fill = RGB.matchHl;
         if (isSel || flash) fill = RGB.select;
         if (conflict) fill = RGB.conflict;
 
@@ -1687,6 +1713,8 @@ export function startThcokuGame(canvas, options = {}) {
     }
   });
 
+  if (musicEnabled) ensureBgmStarted();
+
   if (options.autoStart !== false && !options.spectatorMode) {
     newGame();
     if (typeof options.onBoardReady === "function") {
@@ -1702,6 +1730,7 @@ export function startThcokuGame(canvas, options = {}) {
     draw();
   }
   function setTheme(themeName) {
+    activeTheme = themeName;
     if (themeName === "dark") {
       Object.assign(RGB, DARK_PALETTE);
     } else if (themeName === "jellyfish") {
