@@ -899,7 +899,27 @@ def _client_activity_session(doc: dict, *, strip_solution: bool = True) -> dict:
         except ValueError:
             diff_index = 0
     else:
-        diff_index = int(doc.get("diff_index") or 0)
+        from bot import DIFF_KEYS_LIST, difficulty_key_from_label
+
+        # /play stores diff_index from the slash command — keep label in sync.
+        # Missing difficulty used to default to "medium" while diff_index was 0
+        # (Very Easy), which made the Activity UI lie about the chosen tier.
+        if doc.get("diff_index") is not None:
+            try:
+                diff_index = int(doc.get("diff_index"))
+            except (TypeError, ValueError):
+                diff_index = DIFF_KEYS_LIST.index("medium") if "medium" in DIFF_KEYS_LIST else 0
+            if 0 <= diff_index < len(DIFF_KEYS_LIST):
+                difficulty = DIFF_KEYS_LIST[diff_index]
+            else:
+                diff_index = DIFF_KEYS_LIST.index("medium") if "medium" in DIFF_KEYS_LIST else 0
+                difficulty = DIFF_KEYS_LIST[diff_index]
+        else:
+            difficulty = difficulty_key_from_label(str(difficulty))
+            try:
+                diff_index = DIFF_KEYS_LIST.index(difficulty)
+            except ValueError:
+                diff_index = DIFF_KEYS_LIST.index("medium") if "medium" in DIFF_KEYS_LIST else 0
     payload: dict = {
         "difficulty": difficulty,
         "diff_index": diff_index,

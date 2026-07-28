@@ -13,7 +13,7 @@ import {
   setSfxEnabled,
 } from "./game.js";
 import { pauseTrackBgm, resumeTrackBgm } from "./track-bgm.js";
-import { difficultyLabel } from "./sudoku-core.js";
+import { difficultyLabel, DIFF_KEYS } from "./sudoku-core.js";
 
 const CLIENT_ID = import.meta.env.VITE_DISCORD_CLIENT_ID;
 const bootEl = document.getElementById("boot");
@@ -539,7 +539,13 @@ async function loadSavedSession() {
     clearLocalSession();
     return remote;
   }
-  // Prefer the freshest full-board progress for /play; ignore board-less pref when local exists.
+  // /play preference-only remote (diff from slash command, no board yet):
+  // drop stale local boards so a prior Medium game cannot override Very Easy.
+  if (remote && !remote.board && remote.diff_index != null && local?.board) {
+    clearLocalSession();
+    return remote;
+  }
+  // Prefer the freshest full-board progress for /play.
   if (remote?.board && local && !remote?.won_at) {
     if (!sessionsCompatible(remote, local)) {
       clearLocalSession();
@@ -823,7 +829,12 @@ function askResume(session) {
       return;
     }
     const filled = session.filled ?? "?";
-    const diff = difficultyLabel(session.difficulty || "medium");
+    let diffKey = session.difficulty || "medium";
+    if (session.diff_index != null) {
+      const idx = Number(session.diff_index);
+      if (Number.isFinite(idx) && DIFF_KEYS[idx]) diffKey = DIFF_KEYS[idx];
+    }
+    const diff = difficultyLabel(diffKey);
     const t = formatTime(session.elapsed);
     if (resumeCopyEl) {
       resumeCopyEl.textContent = `Krabby Patty mid-cook (${diff}) · ${filled}/81 · ${t}. Resume or start a new order?`;

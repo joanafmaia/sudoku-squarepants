@@ -62,10 +62,29 @@ DIFF_KEYS_LIST: list[str] = list(DIFFICULTY_TIERS.keys())
 
 def difficulty_index(key: str) -> int:
     """Return the 0-based index of a difficulty key for the Activity client."""
+    # Accept keys ("very_easy") or labels ("Very Easy"); unknown → medium.
+    canonical = difficulty_key_from_label(key) if key else DEFAULT_DIFFICULTY
     try:
-        return DIFF_KEYS_LIST.index(key)
+        return DIFF_KEYS_LIST.index(canonical)
     except ValueError:
         return DIFF_KEYS_LIST.index(DEFAULT_DIFFICULTY)
+
+
+def session_difficulty_key(session: dict | None) -> str | None:
+    """Canonical difficulty key from an activity session doc, if any."""
+    if not session:
+        return None
+    if session.get("diff_index") is not None:
+        try:
+            idx = int(session["diff_index"])
+            if 0 <= idx < len(DIFF_KEYS_LIST):
+                return DIFF_KEYS_LIST[idx]
+        except (TypeError, ValueError):
+            pass
+    raw = session.get("difficulty")
+    if raw:
+        return difficulty_key_from_label(str(raw))
+    return None
 
 CHALLENGE_WIN_MULT = 2.0  # extra multiplier for speedrun winners
 MAX_CHALLENGE_PLAYERS = 5  # challenger + up to 4 opponents
@@ -8883,34 +8902,86 @@ async def _launch_activity_window(
 ) -> None:
     """Open the Embedded App Activity (Wordle-style game window).
 
-    If preferred_diff_index is given and the user has no active board saved, a
-    minimal session preference doc is written so the Activity starts at the
-    requested difficulty level.
+    If preferred_diff_index is given, persist it so the Activity starts at that
+    tier. An in-progress /play board is kept only when it already matches the
+    chosen difficulty; otherwise the old board (including activity:0 orphans)
+    is cleared so Medium leftovers cannot shadow Very Easy, etc.
     """
     # Write diff preference before launching so the Activity picks it up on load.
     if preferred_diff_index is not None and interaction.guild is not None:
-        session_id = f"activity:{interaction.guild.id}:{interaction.user.id}"
-        existing, _sid = await lookup_user_activity_session(
-            interaction.guild.id, interaction.user.id
+        guild_id = interaction.guild.id
+        user_id = interaction.user.id
+        session_id = f"activity:{guild_id}:{user_id}"
+        try:
+            idx = max(0, min(len(DIFF_KEYS_LIST) - 1, int(preferred_diff_index)))
+        except (TypeError, ValueError):
+            idx = DIFF_KEYS_LIST.index(DEFAULT_DIFFICULTY)
+        diff_key = DIFF_KEYS_LIST[idx]
+        existing, existing_sid = await lookup_user_activity_session(guild_id, user_id)
+        has_board = bool(
+            existing and (existing.get("board") or existing.get("solution"))
         )
-        # Never write a preference stub over an orphan/primary board in progress.
-        if existing and (existing.get("board") or existing.get("solution")):
+        existing_kind = (existing or {}).get("session_kind") or "play"
+        same_play_board = (
+            has_board
+            and existing_kind == "play"
+            and session_difficulty_key(existing) == diff_key
+        )
+        if same_play_board:
+            # Resume the matching in-progress /play puzzle.
             pass
         else:
-            # Preference-only doc — never touch watch flags here. Clearing them
-            # without deleting the Discord message orphans "is playing" posts.
+            # Preference / fresh start — never touch watch flags here. Clearing
+            # them without deleting the Discord message orphans "is playing" posts.
             pref: dict = {
-                "diff_index": preferred_diff_index,
-                "guild_id": str(interaction.guild.id),
-                "user_id": str(interaction.user.id),
+                "diff_index": idx,
+                "difficulty": diff_key,
+                "guild_id": str(guild_id),
+                "user_id": str(user_id),
                 "session_kind": "play",
                 "board": None,
                 "given": None,
                 "solution": None,
                 "won_at": None,
                 "filled": 0,
+                "elapsed": 0,
+                "hints_used": 0,
+                "hints_gary_used": 0,
             }
             await match_store.merge_activity_session(session_id, pref)
+            # Orphan activity:0 boards win over preference-only primary in lookup —
+            # drop stale play orphans so the new /play choice is not shadowed.
+            orphan_id = f"activity:0:{user_id}"
+            if orphan_id != session_id:
+                try:
+                    orphan = await match_store.get_activity_session(orphan_id)
+                    if orphan and (orphan.get("session_kind") or "play") == "play":
+                        await match_store.delete_activity_session(orphan_id)
+                except Exception as orphan_exc:  # noqa: BLE001
+                    print(f"clear play orphan after /play pref failed: {orphan_exc}")
+            # If lookup pointed at a non-canonical play doc with a board, clear it too.
+            if (
+                existing_sid
+                and existing_sid not in (session_id, orphan_id)
+                and existing_kind == "play"
+                and has_board
+            ):
+                try:
+                    await match_store.merge_activity_session(
+                        existing_sid,
+                        {
+                            "board": None,
+                            "given": None,
+                            "solution": None,
+                            "won_at": None,
+                            "filled": 0,
+                            "diff_index": idx,
+                            "difficulty": diff_key,
+                            "session_kind": "play",
+                        },
+                    )
+                except Exception as alt_exc:  # noqa: BLE001
+                    print(f"clear alt play session after /play pref failed: {alt_exc}")
     try:
         await interaction.response.launch_activity()
         print(
