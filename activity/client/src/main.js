@@ -287,7 +287,7 @@ function applyMusicUi() {
     return;
   }
   btn.textContent = meta?.emoji || "🌊";
-  btn.title = `Música ligada (${meta?.label || "oceano"}) — clica para desligar · mantém premido para mudar ambiência`;
+  btn.title = `Música ligada (${meta?.label || "oceano"}) — clica para desligar · duplo clique para mudar ambiência`;
   btn.setAttribute("aria-pressed", "false");
   btn.setAttribute("aria-label", "Música ligada");
   btn.classList.remove("is-muted");
@@ -310,6 +310,8 @@ function bindMusicToggle() {
   if (!btn) return;
   let holdTimer = null;
   let longPress = false;
+  let muteClickTimer = null;
+  const MUTE_CLICK_DELAY_MS = 280;
 
   const clearHold = () => {
     if (holdTimer) {
@@ -318,22 +320,35 @@ function bindMusicToggle() {
     }
   };
 
+  const cyclePresetIfOn = () => {
+    if (!isMusicEnabled()) return false;
+    cycleMusicPreset();
+    applyMusicUi();
+    return true;
+  };
+
   btn.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
     longPress = false;
     clearHold();
     holdTimer = setTimeout(() => {
       longPress = true;
-      if (isMusicEnabled()) {
-        cycleMusicPreset();
-        applyMusicUi();
-      }
+      cyclePresetIfOn();
     }, MUSIC_PRESET_HOLD_MS);
   });
 
   btn.addEventListener("pointerup", clearHold);
   btn.addEventListener("pointercancel", clearHold);
   btn.addEventListener("pointerleave", clearHold);
+
+  btn.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (muteClickTimer) {
+      clearTimeout(muteClickTimer);
+      muteClickTimer = null;
+    }
+    cyclePresetIfOn();
+  });
 
   btn.addEventListener("click", (e) => {
     e.preventDefault();
@@ -342,8 +357,17 @@ function bindMusicToggle() {
       longPress = false;
       return;
     }
-    setMusicEnabled(!isMusicEnabled());
-    applyMusicUi();
+    if (muteClickTimer) {
+      clearTimeout(muteClickTimer);
+      muteClickTimer = null;
+      cyclePresetIfOn();
+      return;
+    }
+    muteClickTimer = setTimeout(() => {
+      muteClickTimer = null;
+      setMusicEnabled(!isMusicEnabled());
+      applyMusicUi();
+    }, MUTE_CLICK_DELAY_MS);
   });
 }
 
