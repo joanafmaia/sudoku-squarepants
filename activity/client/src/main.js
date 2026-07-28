@@ -386,9 +386,11 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
         setTimeout(() => closeDiscordActivity(), 2500);
       },
       onNewGame: () => {
+        const keepDiff = gameApi?.getSnapshot?.()?.diff_index ?? gameOptions.initialDiffIndex ?? null;
         clearLocalSession();
-        // Drop remote session so the next save can authorize a fresh puzzle.
-        clearSavedSession();
+        // Drop remote session so the next save can authorize a fresh puzzle,
+        // but re-write the /play difficulty preference for remounts.
+        clearSavedSession({ preserveDiffIndex: keepDiff });
       },
       onBoardReady: () => {
         saveSessionNow({ force: true });
@@ -482,13 +484,23 @@ async function loadSavedSession() {
           if (session.won_at) {
             clearLocalSession();
             if (session.diff_index != null) {
-              remote = { diff_index: Number(session.diff_index), board: null };
+              remote = {
+                diff_index: Number(session.diff_index),
+                difficulty: session.difficulty || null,
+                session_kind: "play",
+                board: null,
+              };
             }
           } else if (session.board && session.given) {
             remote = session;
           } else if (session.diff_index != null) {
             // Preference-only session (no board): used to start at the requested difficulty.
-            remote = { diff_index: Number(session.diff_index), board: null };
+            remote = {
+              diff_index: Number(session.diff_index),
+              difficulty: session.difficulty || null,
+              session_kind: session.session_kind || "play",
+              board: null,
+            };
           }
         }
       }
@@ -562,7 +574,30 @@ async function loadSavedSession() {
   return remote || local;
 }
 
-async function clearSavedSession() {
+async function writeDiffPreference(diffIndex) {
+  if (diffIndex == null || !window.__DISCORD_ACCESS_TOKEN__) return;
+  const idx = Number(diffIndex);
+  if (!Number.isFinite(idx) || !DIFF_KEYS[idx]) return;
+  try {
+    const gid = await resolveGuildId(3000);
+    cachedGuildId = gid;
+    await apiFetch("/api/activity/session", {
+      method: "POST",
+      body: JSON.stringify({
+        preference_only: true,
+        guild_id: gid,
+        channel_id: channelId(),
+        name: playerName(),
+        difficulty: DIFF_KEYS[idx],
+        diff_index: idx,
+      }),
+    });
+  } catch (err) {
+    console.warn("[Thcoku] preference save failed", err);
+  }
+}
+
+async function clearSavedSession({ preserveDiffIndex = null } = {}) {
   clearLocalSession();
   if (!window.__DISCORD_ACCESS_TOKEN__) return;
   const gid = await resolveGuildId(3000);
@@ -572,13 +607,19 @@ async function clearSavedSession() {
     let res = await apiFetch(`/api/activity/session?guild_id=${encoded}`, { method: "DELETE" });
     if (res?.ok) {
       const data = await res.json().catch(() => ({}));
-      if (data.cleared !== false) return;
+      if (data.cleared !== false) {
+        if (preserveDiffIndex != null) await writeDiffPreference(preserveDiffIndex);
+        return;
+      }
       if (data.reason === "active_challenge") {
         console.info("[Thcoku] session kept — challenge race in progress");
         return;
       }
     }
-    if (res && (res.ok || res.status === 401 || res.status === 404)) return;
+    if (res && (res.ok || res.status === 401 || res.status === 404)) {
+      if (preserveDiffIndex != null) await writeDiffPreference(preserveDiffIndex);
+      return;
+    }
     res = await apiFetch("/api/activity/session", {
       method: "POST",
       body: JSON.stringify({ clear: true, guild_id: gid }),
@@ -587,8 +628,10 @@ async function clearSavedSession() {
       const data = await res.json().catch(() => ({}));
       if (data.cleared === false && data.reason === "active_challenge") {
         console.info("[Thcoku] session kept — challenge race in progress");
+        return;
       }
     }
+    if (preserveDiffIndex != null) await writeDiffPreference(preserveDiffIndex);
   } catch (err) {
     console.warn("[Thcoku] session clear failed", err);
   }
@@ -1077,8 +1120,14 @@ async function prefetchSessionBoard(session) {
   const { saved_at: _saved, ...rest } = session;
   const snap = {
     ...rest,
-    difficulty: session.difficulty || "medium",
-    diff_index: session.diff_index ?? 0,
+    difficulty:
+      session.diff_index != null && DIFF_KEYS[Number(session.diff_index)]
+        ? DIFF_KEYS[Number(session.diff_index)]
+        : session.difficulty || "medium",
+    diff_index:
+      session.diff_index != null
+        ? Number(session.diff_index)
+        : Math.max(0, DIFF_KEYS.indexOf(session.difficulty || "medium")),
     elapsed: session.elapsed ?? 0,
     board: session.board,
     given: session.given,
@@ -1116,8 +1165,9 @@ async function showGame() {
       await beginPlay({ resumeSession: session });
       return;
     }
-    await clearSavedSession();
-    await beginPlay({ resumeSession: null });
+    const keepDiff = session.diff_index ?? null;
+    await clearSavedSession({ preserveDiffIndex: keepDiff });
+    await beginPlay({ resumeSession: null, initialDiffIndex: keepDiff });
     return;
   }
 
@@ -1132,9 +1182,10 @@ async function showGame() {
     if (resume) {
       await beginPlay({ resumeSession: session });
     } else {
-      await clearSavedSession();
+      const keepDiff = session.diff_index ?? null;
+      await clearSavedSession({ preserveDiffIndex: keepDiff });
       // Preserve the difficulty preference when starting fresh after declining resume.
-      await beginPlay({ resumeSession: null, initialDiffIndex: session.diff_index ?? null });
+      await beginPlay({ resumeSession: null, initialDiffIndex: keepDiff });
     }
     return;
   }

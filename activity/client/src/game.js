@@ -756,8 +756,14 @@ export function startThcokuGame(canvas, options = {}) {
     const lockedKind = snap.session_kind || state.sessionKind;
     if (lockedKind === "daily" || lockedKind === "challenge") {
       state.diffIndex = idx >= 0 ? idx : 0;
+      // Keep reported win difficulty aligned with the displayed tier.
+      if (DIFF_KEYS[state.diffIndex]) state.difficulty = DIFF_KEYS[state.diffIndex];
+    } else if (snap.diff_index != null && DIFF_KEYS[Number(snap.diff_index)]) {
+      state.diffIndex = Number(snap.diff_index);
+      state.difficulty = DIFF_KEYS[state.diffIndex];
     } else {
-      state.diffIndex = snap.diff_index != null ? Number(snap.diff_index) : idx >= 0 ? idx : 0;
+      state.diffIndex = idx >= 0 ? idx : Math.max(0, DIFF_KEYS.indexOf(DEFAULT_DIFFICULTY));
+      if (DIFF_KEYS[state.diffIndex]) state.difficulty = DIFF_KEYS[state.diffIndex];
     }
     state.selected = [0, 0];
     state.won = false;

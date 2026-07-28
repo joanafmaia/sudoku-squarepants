@@ -571,8 +571,18 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
         board = _normalize_activity_board(body.get("board"))
         given = _normalize_activity_given(session.get("given"), board)
         solution = session.get("solution")
-        # Prefer server-stored difficulty over client-supplied (anti-spoof).
-        difficulty = session.get("difficulty") or difficulty
+        # Prefer server-stored difficulty over client-supplied (anti-spoof),
+        # and keep difficulty in sync with diff_index (Very Easy is index 0).
+        from bot import (
+            daily_difficulty_for_date,
+            resolve_session_difficulty,
+            utc_today,
+        )
+
+        difficulty, _diff_idx = resolve_session_difficulty(session)
+        if session.get("session_kind") == "daily":
+            day = str(session.get("daily_date") or utc_today())
+            difficulty = daily_difficulty_for_date(day)
 
         if not _verify_activity_solve(board, solution=solution, given=given):
             print(f"activity win rejected user={uid} guild={guild_id}: not_solved")
@@ -897,29 +907,18 @@ def _client_activity_session(doc: dict, *, strip_solution: bool = True) -> dict:
         try:
             diff_index = DIFF_KEYS_LIST.index(difficulty)
         except ValueError:
-            diff_index = 0
-    else:
-        from bot import DIFF_KEYS_LIST, difficulty_key_from_label
+            from bot import DEFAULT_DIFFICULTY
 
-        # /play stores diff_index from the slash command — keep label in sync.
-        # Missing difficulty used to default to "medium" while diff_index was 0
-        # (Very Easy), which made the Activity UI lie about the chosen tier.
-        if doc.get("diff_index") is not None:
-            try:
-                diff_index = int(doc.get("diff_index"))
-            except (TypeError, ValueError):
-                diff_index = DIFF_KEYS_LIST.index("medium") if "medium" in DIFF_KEYS_LIST else 0
-            if 0 <= diff_index < len(DIFF_KEYS_LIST):
-                difficulty = DIFF_KEYS_LIST[diff_index]
-            else:
-                diff_index = DIFF_KEYS_LIST.index("medium") if "medium" in DIFF_KEYS_LIST else 0
-                difficulty = DIFF_KEYS_LIST[diff_index]
-        else:
-            difficulty = difficulty_key_from_label(str(difficulty))
-            try:
-                diff_index = DIFF_KEYS_LIST.index(difficulty)
-            except ValueError:
-                diff_index = DIFF_KEYS_LIST.index("medium") if "medium" in DIFF_KEYS_LIST else 0
+            diff_index = (
+                DIFF_KEYS_LIST.index(DEFAULT_DIFFICULTY)
+                if DEFAULT_DIFFICULTY in DIFF_KEYS_LIST
+                else 0
+            )
+    else:
+        from bot import resolve_session_difficulty
+
+        # Keep difficulty + diff_index in sync (diff_index wins when present).
+        difficulty, diff_index = resolve_session_difficulty(doc)
     payload: dict = {
         "difficulty": difficulty,
         "diff_index": diff_index,
@@ -1299,6 +1298,39 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
     if pending:
         return pending
 
+    # Preference-only stub from Activity after "new order" / remount — no board yet.
+    if body.get("preference_only"):
+        from bot import resolve_session_difficulty
+
+        diff_key, diff_index = resolve_session_difficulty(body)
+        session_id = _activity_session_id(guild_id, uid)
+        if str(guild_id) in ("", "0"):
+            existing, looked_up_id = await _lookup_activity_session(bot, guild_id, uid)
+            if existing:
+                session_id = looked_up_id
+        await match_store.merge_activity_session(
+            session_id,
+            {
+                "diff_index": diff_index,
+                "difficulty": diff_key,
+                "guild_id": str(guild_id),
+                "user_id": str(uid),
+                "session_kind": "play",
+                "board": None,
+                "given": None,
+                "solution": None,
+                "won_at": None,
+                "filled": 0,
+                "elapsed": 0,
+            },
+        )
+        return {
+            "ok": True,
+            "preference": True,
+            "difficulty": diff_key,
+            "diff_index": diff_index,
+        }
+
     solution = body.get("solution")
     if board is None or given is None:
         print(
@@ -1334,8 +1366,16 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         )
         return {"ok": False, "error": "invalid_solution"}
 
-    difficulty = body.get("difficulty") or "medium"
-    diff_index = int(body.get("diff_index") or 0)
+    # Reconcile difficulty + diff_index from one source of truth.
+    # Never independently default to medium + 0 (that pair disagrees: Very Easy is 0).
+    from bot import resolve_session_difficulty
+
+    difficulty, diff_index = resolve_session_difficulty(
+        {
+            "difficulty": body.get("difficulty"),
+            "diff_index": body.get("diff_index"),
+        }
+    )
     elapsed = max(0, int(body.get("elapsed") or 0))
     channel_id_raw = body.get("channel_id")
     filled = sum(1 for r in range(9) for c in range(9) if board[r][c]["value"])
@@ -1362,9 +1402,7 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
             if session_kind == "daily" or same_puzzle:
                 given = existing_given or given
                 solution = existing.get("solution")
-                difficulty = existing.get("difficulty") or difficulty
-                if existing.get("diff_index") is not None:
-                    diff_index = int(existing.get("diff_index") or 0)
+                difficulty, diff_index = resolve_session_difficulty(existing)
                 accepting_client_puzzle = False
             elif session_kind == "play":
                 # New play puzzle — reset the session clock and any stale win claim.
@@ -1379,7 +1417,13 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         try:
             diff_index = DIFF_KEYS_LIST.index(difficulty)
         except ValueError:
-            diff_index = 0
+            from bot import DEFAULT_DIFFICULTY
+
+            diff_index = (
+                DIFF_KEYS_LIST.index(DEFAULT_DIFFICULTY)
+                if DEFAULT_DIFFICULTY in DIFF_KEYS_LIST
+                else 0
+            )
 
     # First save / new play puzzle: refuse forged or trivial client grids.
     if accepting_client_puzzle and session_kind == "play":
@@ -1886,6 +1930,16 @@ async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> di
         solved = bool(
             board and solution and is_solved(board, solution)
         )
+        from bot import (
+            daily_difficulty_for_date,
+            resolve_session_difficulty,
+            utc_today,
+        )
+
+        difficulty, _diff_idx = resolve_session_difficulty(session)
+        if kind == "daily":
+            day = str(session.get("daily_date") or utc_today())
+            difficulty = daily_difficulty_for_date(day)
 
         if kind == "daily" and gid:
             if solved:
@@ -1895,7 +1949,7 @@ async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> di
                     "mode": "daily",
                     "daily_date": session.get("daily_date"),
                     "started_at": float(session.get("started_at") or time.time()),
-                    "difficulty": session.get("difficulty"),
+                    "difficulty": difficulty,
                     "board": board,
                     "given": given,
                     "solution": solution,
@@ -1921,7 +1975,7 @@ async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> di
                         "mode": "daily",
                         "daily_date": session.get("daily_date"),
                         "started_at": float(session.get("started_at") or time.time()),
-                        "difficulty": session.get("difficulty"),
+                        "difficulty": difficulty,
                     },
                 )
         elif kind == "play" and gid:
@@ -1940,7 +1994,7 @@ async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> di
                 game_state = {
                     "mode": "play",
                     "started_at": float(session.get("started_at") or time.time()),
-                    "difficulty": session.get("difficulty"),
+                    "difficulty": difficulty,
                 }
                 from bot import award_play_win
 
@@ -1970,7 +2024,7 @@ async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> di
                     {
                         "mode": "play",
                         "started_at": float(session.get("started_at") or time.time()),
-                        "difficulty": session.get("difficulty"),
+                        "difficulty": difficulty,
                     },
                 )
 
