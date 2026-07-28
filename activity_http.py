@@ -852,9 +852,21 @@ def _client_activity_session(doc: dict, *, strip_solution: bool = True) -> dict:
         elapsed_display = max(0, int(time.time() - started))
     else:
         elapsed_display = int(doc.get("elapsed") or 0)
+    difficulty = doc.get("difficulty") or "medium"
+    if session_kind == "daily":
+        from bot import DIFF_KEYS_LIST, daily_difficulty_for_date, utc_today
+
+        day = str(doc.get("daily_date") or utc_today())
+        difficulty = daily_difficulty_for_date(day)
+        try:
+            diff_index = DIFF_KEYS_LIST.index(difficulty)
+        except ValueError:
+            diff_index = 0
+    else:
+        diff_index = int(doc.get("diff_index") or 0)
     payload: dict = {
-        "difficulty": doc.get("difficulty") or "medium",
-        "diff_index": int(doc.get("diff_index") or 0),
+        "difficulty": difficulty,
+        "diff_index": diff_index,
         "elapsed": elapsed_display,
         "board": doc.get("board"),
         "given": doc.get("given"),
@@ -1279,6 +1291,17 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
             elif session_kind == "play":
                 # New play puzzle — reset the session clock and any stale win claim.
                 started_at = time.time()
+
+    if session_kind == "daily":
+        from bot import DIFF_KEYS_LIST, daily_difficulty_for_date, utc_today
+
+        day = str(daily_date or (existing or {}).get("daily_date") or utc_today())
+        daily_date = day
+        difficulty = daily_difficulty_for_date(day)
+        try:
+            diff_index = DIFF_KEYS_LIST.index(difficulty)
+        except ValueError:
+            diff_index = 0
 
     # First save / new play puzzle: refuse forged or trivial client grids.
     if accepting_client_puzzle and session_kind == "play":

@@ -9321,11 +9321,16 @@ async def daily_cmd(interaction: discord.Interaction):
         return
 
     board, given, solution, diff_key = make_daily_puzzle(guild_id, daily["date"], user_id)
+    try:
+        diff_index = DIFF_KEYS_LIST.index(diff_key)
+    except ValueError:
+        diff_index = difficulty_index(diff_key)
     doc = {
         "_id": session_id,
         "guild_id": str(guild_id),
         "user_id": str(user_id),
         "difficulty": diff_key,
+        "diff_index": diff_index,
         "elapsed": 0,
         "board": board,
         "given": given,
