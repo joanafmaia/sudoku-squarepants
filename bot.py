@@ -403,6 +403,66 @@ def next_level_threshold(xp: int) -> int | None:
     return None
 
 
+def format_rank_compact(xp: int) -> str:
+    """Short rank line for mobile-friendly embeds (no long progress sentence)."""
+    try:
+        xp_n = int(xp or 0)
+    except (TypeError, ValueError):
+        xp_n = 0
+    lvl, title = evaluate_user_level(xp_n)
+    nxt = next_level_threshold(xp_n)
+    if nxt is None:
+        return f"L{lvl} {title}"
+    return f"L{lvl} {title} · {xp_n}/{nxt}"
+
+
+def build_stats_embed(stats: dict, *, avatar_url: str | None = None) -> discord.Embed:
+    """Compact player card — description-only so Discord mobile stays short."""
+    _ = avatar_url  # intentionally unused (thumbnail eats phone width)
+    best = (
+        format_time(stats["best_time"])
+        if stats.get("best_time") is not None
+        else "—"
+    )
+    title = (
+        SHOP_TITLES[stats["title"]]["label"]
+        if stats.get("title") in SHOP_TITLES
+        else "Civilian"
+    )
+    streak = int(stats.get("streak", 0) or 0)
+    best_streak = int(stats.get("best_streak", 0) or 0)
+    wins = int(stats.get("wins", 0) or 0)
+    losses = int(stats.get("losses", 0) or 0)
+    games_n = int(stats.get("games", 0) or 0) or (wins + losses)
+    win_rate = f"{(100 * wins / games_n):.0f}%" if games_n else "—"
+    shields = int(stats.get("streak_shields") or 0)
+    badge_ids = [b for b in (stats.get("badges") or []) if b in ACHIEVEMENTS]
+    have = len(badge_ids)
+    total = len(ACHIEVEMENTS)
+    badge_emojis: list[str] = []
+    for bid in badge_ids[:5]:
+        label = ACHIEVEMENTS[bid]["label"]
+        emoji = label.split(" ", 1)[0] if label else ""
+        if emoji:
+            badge_emojis.append(emoji)
+    badge_preview = " ".join(badge_emojis) if badge_emojis else "—"
+
+    embed = paper_embed(f"{SPONGE} {display_name(stats)}")
+    embed.description = (
+        f"**{format_rank_compact(stats.get('xp', 0))}**\n"
+        f"{title} · {STAR} **{streak}** (best {best_streak})\n"
+        f"{format_sponges(stats.get('coins', 0))} · "
+        f"spent {int(stats.get('sponges_spent', 0) or 0)} · "
+        f"{format_xp(stats.get('xp', 0))}\n"
+        f"**{wins}**W–**{losses}**L ({win_rate}) · best **{best}**\n"
+        f"{PINEAPPLE} **{int(stats.get('daily_wins', 0) or 0)}** · "
+        f"{JELLY} **{int(stats.get('challenge_wins', 0) or 0)}** · "
+        f"**{games_n}** boards · 🛡️ **{shields}**\n"
+        f"🏆 **{have}/{total}** {badge_preview} · `/achievements`"
+    )
+    return embed
+
+
 def format_rank_line(xp: int) -> str:
     """Single-line rank + progress toward the next level."""
     try:
@@ -10584,52 +10644,7 @@ async def stats_cmd(interaction: discord.Interaction, member: discord.Member | N
         s["name"] = target.display_name
         evaluate_user_achievements(s)
         save_data(bot.data)
-        best = format_time(s["best_time"]) if s.get("best_time") is not None else "— not yet!"
-        title = SHOP_TITLES[s["title"]]["label"] if s.get("title") in SHOP_TITLES else "Civilian"
-        streak = int(s.get("streak", 0) or 0)
-        best_streak = int(s.get("best_streak", 0) or 0)
-        wins = int(s.get("wins", 0) or 0)
-        losses = int(s.get("losses", 0) or 0)
-        games_n = int(s.get("games", 0) or 0) or (wins + losses)
-        win_rate = f"{(100 * wins / games_n):.0f}%" if games_n else "—"
-
-        shields = int(s.get("streak_shields") or 0)
-        unlocked_badges = [ACHIEVEMENTS[b]["label"] for b in s.get("badges", []) if b in ACHIEVEMENTS]
-        badge_str = " · ".join(unlocked_badges) if unlocked_badges else "None yet — keep playing!"
-        have = len(unlocked_badges)
-        total = len(ACHIEVEMENTS)
-
-        embed = paper_embed(f"{SPONGE} {display_name(s)}")
-        embed.description = (
-            f"{WAVE} **Rank:** {format_rank_line(s.get('xp', 0))}\n"
-            f"**Title:** {title} · **Form:** {streak_flavor(streak)}"
-        )
-        try:
-            embed.set_thumbnail(url=target.display_avatar.url)
-        except Exception:
-            pass
-
-        embed.add_field(name=f"Career XP {XP}", value=f"**{format_xp(s.get('xp', 0))}**", inline=True)
-        embed.add_field(name=f"Pocket {SPONGE}", value=f"**{format_sponges(s.get('coins', 0))}**", inline=True)
-        embed.add_field(
-            name=f"Spent {SPONGE}",
-            value=f"**{format_sponges(s.get('sponges_spent', 0))}**",
-            inline=True,
-        )
-        embed.add_field(name=f"Daily streak {STAR}", value=f"**{streak}** (best {best_streak})", inline=True)
-        embed.add_field(name="Shields 🛡️", value=f"**{shields}**", inline=True)
-        embed.add_field(name="Win rate", value=f"**{win_rate}**", inline=True)
-        embed.add_field(name="Wins", value=f"**{wins}**", inline=True)
-        embed.add_field(name="Losses", value=f"**{losses}**", inline=True)
-        embed.add_field(name="Best time", value=f"**{best}**", inline=True)
-        embed.add_field(name=f"Daily {PINEAPPLE}", value=f"**{int(s.get('daily_wins', 0) or 0)}** clears", inline=True)
-        embed.add_field(name=f"Challenge {JELLY}", value=f"**{int(s.get('challenge_wins', 0) or 0)}** wins", inline=True)
-        embed.add_field(name="Boards played", value=f"**{games_n}**", inline=True)
-        embed.add_field(
-            name=f"Badges 🏆 ({have}/{total})",
-            value=f"**{badge_str}**\n_Full list + how to unlock: `/achievements`_",
-            inline=False,
-        )
+        embed = build_stats_embed(s)
         await interaction.response.send_message(embed=embed, silent=True)
     except Exception as exc:  # noqa: BLE001
         import traceback
