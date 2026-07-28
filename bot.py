@@ -62,10 +62,48 @@ DIFF_KEYS_LIST: list[str] = list(DIFFICULTY_TIERS.keys())
 
 def difficulty_index(key: str) -> int:
     """Return the 0-based index of a difficulty key for the Activity client."""
+    # Accept keys ("very_easy") or labels ("Very Easy"); unknown → medium.
+    canonical = difficulty_key_from_label(key) if key else DEFAULT_DIFFICULTY
     try:
-        return DIFF_KEYS_LIST.index(key)
+        return DIFF_KEYS_LIST.index(canonical)
     except ValueError:
         return DIFF_KEYS_LIST.index(DEFAULT_DIFFICULTY)
+
+
+def resolve_session_difficulty(session: dict | None) -> tuple[str, int]:
+    """Return (canonical_key, diff_index), keeping both fields in sync.
+
+    Prefer diff_index when present (/play slash-command source of truth).
+    Otherwise derive from difficulty label/key. Falls back to medium.
+    """
+    medium_idx = DIFF_KEYS_LIST.index(DEFAULT_DIFFICULTY)
+    if not session:
+        return DEFAULT_DIFFICULTY, medium_idx
+    if session.get("diff_index") is not None:
+        try:
+            idx = int(session["diff_index"])
+            if 0 <= idx < len(DIFF_KEYS_LIST):
+                return DIFF_KEYS_LIST[idx], idx
+        except (TypeError, ValueError):
+            pass
+    raw = session.get("difficulty")
+    if raw:
+        key = difficulty_key_from_label(str(raw))
+        try:
+            return key, DIFF_KEYS_LIST.index(key)
+        except ValueError:
+            return DEFAULT_DIFFICULTY, medium_idx
+    return DEFAULT_DIFFICULTY, medium_idx
+
+
+def session_difficulty_key(session: dict | None) -> str | None:
+    """Canonical difficulty key from an activity session doc, or None if unset."""
+    if not session:
+        return None
+    if session.get("diff_index") is None and not session.get("difficulty"):
+        return None
+    key, _idx = resolve_session_difficulty(session)
+    return key
 
 CHALLENGE_WIN_MULT = 2.0  # extra multiplier for speedrun winners
 MAX_CHALLENGE_PLAYERS = 5  # challenger + up to 4 opponents
@@ -4318,7 +4356,7 @@ def build_activity_live_embed(
         mention = activity_session_mention(guild, session)
         filled = int(session.get("filled") or 0)
         elapsed = activity_session_elapsed(session)
-        tier = difficulty_label(session.get("difficulty"))
+        tier = difficulty_label(resolve_session_difficulty(session)[0])
         marker = "🎮 " if str(session.get("user_id")) == active_uid else "▶ "
         lines.append(
             f"{marker}{mention} — **{tier}** · {filled}/{CHALLENGE_BOARD_CELLS} · "
@@ -4553,12 +4591,19 @@ async def sync_daily_watch_session(key: tuple, game: dict) -> None:
         prev_filled = int(existing.get("filled") or 0)
         if new_filled <= prev_filled and existing.get("last_move_at"):
             last_move_at = float(existing["last_move_at"])
+    day = str(game.get("daily_date") or utc_today())
+    diff_key = daily_difficulty_for_date(day)
+    try:
+        diff_index = DIFF_KEYS_LIST.index(diff_key)
+    except ValueError:
+        diff_index = difficulty_index(diff_key)
     doc = {
         "_id": session_id,
         "session_kind": "daily",
         "guild_id": str(guild_id),
         "user_id": str(user_id),
-        "difficulty": game.get("difficulty") or "medium",
+        "difficulty": diff_key,
+        "diff_index": diff_index,
         "elapsed": game_elapsed_sec(game),
         "board": board,
         "given": given,
@@ -5990,11 +6035,12 @@ class ConfirmQuitActivityDailyView(discord.ui.View):
 
         if board and solution and is_solved(board, solution):
             day = session.get("daily_date") or utc_today()
+            diff_key = daily_difficulty_for_date(day)
             game_state = {
                 "mode": "daily",
                 "daily_date": day,
                 "started_at": float(session.get("started_at") or time.time()),
-                "difficulty": session.get("difficulty"),
+                "difficulty": diff_key,
                 "board": board,
                 "given": given_raw,
                 "solution": solution,
@@ -6015,11 +6061,12 @@ class ConfirmQuitActivityDailyView(discord.ui.View):
                     f"streak preserved!"
                 )
         else:
+            day = session.get("daily_date") or utc_today()
             game = {
                 "mode": "daily",
                 "daily_date": session.get("daily_date"),
                 "started_at": session.get("started_at") or time.time(),
-                "difficulty": session.get("difficulty"),
+                "difficulty": daily_difficulty_for_date(day),
             }
             finish_forfeit(self.bot.data, guild_id, interaction.user, game)
             msg = "Forfeited today's daily. Streak wiped."
@@ -6098,10 +6145,11 @@ class ConfirmQuitActivityPlayView(discord.ui.View):
             elif already_paid:
                 msg = "Solved puzzle closed (rewards were already recorded)."
             else:
+                diff_key, _ = resolve_session_difficulty(session)
                 game_state = {
                     "mode": "play",
                     "started_at": started_at,
-                    "difficulty": session.get("difficulty"),
+                    "difficulty": diff_key,
                 }
                 try:
                     outcome = await award_play_win(
@@ -6123,10 +6171,11 @@ class ConfirmQuitActivityPlayView(discord.ui.View):
                     else:
                         msg = "Solved puzzle recovered — rewards applied!"
         else:
+            diff_key, _ = resolve_session_difficulty(session)
             game = {
                 "mode": "play",
                 "started_at": session.get("started_at") or time.time(),
-                "difficulty": session.get("difficulty"),
+                "difficulty": diff_key,
             }
             finish_forfeit(self.bot.data, guild_id, interaction.user, game)
             msg = "Quit. Your daily streak is unchanged."
@@ -8883,34 +8932,88 @@ async def _launch_activity_window(
 ) -> None:
     """Open the Embedded App Activity (Wordle-style game window).
 
-    If preferred_diff_index is given and the user has no active board saved, a
-    minimal session preference doc is written so the Activity starts at the
-    requested difficulty level.
+    If preferred_diff_index is given, persist it so the Activity starts at that
+    tier. An in-progress /play board is kept only when it already matches the
+    chosen difficulty; otherwise the old board (including activity:0 orphans)
+    is cleared so Medium leftovers cannot shadow Very Easy, etc.
     """
     # Write diff preference before launching so the Activity picks it up on load.
     if preferred_diff_index is not None and interaction.guild is not None:
-        session_id = f"activity:{interaction.guild.id}:{interaction.user.id}"
-        existing, _sid = await lookup_user_activity_session(
-            interaction.guild.id, interaction.user.id
+        guild_id = interaction.guild.id
+        user_id = interaction.user.id
+        session_id = f"activity:{guild_id}:{user_id}"
+        try:
+            idx = max(0, min(len(DIFF_KEYS_LIST) - 1, int(preferred_diff_index)))
+        except (TypeError, ValueError):
+            idx = DIFF_KEYS_LIST.index(DEFAULT_DIFFICULTY)
+        diff_key = DIFF_KEYS_LIST[idx]
+        existing, existing_sid = await lookup_user_activity_session(guild_id, user_id)
+        has_board = bool(
+            existing and (existing.get("board") or existing.get("solution"))
         )
-        # Never write a preference stub over an orphan/primary board in progress.
-        if existing and (existing.get("board") or existing.get("solution")):
+        existing_kind = (existing or {}).get("session_kind") or "play"
+        # Old sessions may lack difficulty fields — treat as medium (historical default).
+        existing_key = session_difficulty_key(existing) or DEFAULT_DIFFICULTY
+        same_play_board = (
+            has_board
+            and existing_kind == "play"
+            and existing_key == diff_key
+        )
+        if same_play_board:
+            # Resume the matching in-progress /play puzzle.
             pass
         else:
-            # Preference-only doc — never touch watch flags here. Clearing them
-            # without deleting the Discord message orphans "is playing" posts.
+            # Preference / fresh start — never touch watch flags here. Clearing
+            # them without deleting the Discord message orphans "is playing" posts.
             pref: dict = {
-                "diff_index": preferred_diff_index,
-                "guild_id": str(interaction.guild.id),
-                "user_id": str(interaction.user.id),
+                "diff_index": idx,
+                "difficulty": diff_key,
+                "guild_id": str(guild_id),
+                "user_id": str(user_id),
                 "session_kind": "play",
                 "board": None,
                 "given": None,
                 "solution": None,
                 "won_at": None,
                 "filled": 0,
+                "elapsed": 0,
+                "hints_used": 0,
+                "hints_gary_used": 0,
             }
             await match_store.merge_activity_session(session_id, pref)
+            # Orphan activity:0 boards win over preference-only primary in lookup —
+            # drop stale play orphans so the new /play choice is not shadowed.
+            orphan_id = f"activity:0:{user_id}"
+            if orphan_id != session_id:
+                try:
+                    orphan = await match_store.get_activity_session(orphan_id)
+                    if orphan and (orphan.get("session_kind") or "play") == "play":
+                        await match_store.delete_activity_session(orphan_id)
+                except Exception as orphan_exc:  # noqa: BLE001
+                    print(f"clear play orphan after /play pref failed: {orphan_exc}")
+            # If lookup pointed at a non-canonical play doc with a board, clear it too.
+            if (
+                existing_sid
+                and existing_sid not in (session_id, orphan_id)
+                and existing_kind == "play"
+                and has_board
+            ):
+                try:
+                    await match_store.merge_activity_session(
+                        existing_sid,
+                        {
+                            "board": None,
+                            "given": None,
+                            "solution": None,
+                            "won_at": None,
+                            "filled": 0,
+                            "diff_index": idx,
+                            "difficulty": diff_key,
+                            "session_kind": "play",
+                        },
+                    )
+                except Exception as alt_exc:  # noqa: BLE001
+                    print(f"clear alt play session after /play pref failed: {alt_exc}")
     try:
         await interaction.response.launch_activity()
         print(
@@ -9358,11 +9461,18 @@ async def daily_cmd(interaction: discord.Interaction):
         elif existing.get("mode") == "daily":
             # Migrate old chat-based daily to Activity!
             session_id = f"activity:{guild_id}:{user_id}"
+            day_key = existing.get("daily_date") or day
+            diff_key = daily_difficulty_for_date(str(day_key))
+            try:
+                diff_index = DIFF_KEYS_LIST.index(diff_key)
+            except ValueError:
+                diff_index = difficulty_index(diff_key)
             doc = {
                 "_id": session_id,
                 "guild_id": str(guild_id),
                 "user_id": str(user_id),
-                "difficulty": existing.get("difficulty") or "medium",
+                "difficulty": diff_key,
+                "diff_index": diff_index,
                 "elapsed": int(time.time() - float(existing.get("started_at") or time.time())),
                 "board": existing.get("board"),
                 "given": existing.get("given"),
@@ -9371,7 +9481,7 @@ async def daily_cmd(interaction: discord.Interaction):
                 "name": interaction.user.display_name,
                 "channel_id": str(interaction.channel_id),
                 "session_kind": "daily",
-                "daily_date": existing.get("daily_date") or day,
+                "daily_date": day_key,
                 "started_at": existing.get("started_at") or time.time(),
                 "last_move_at": time.time(),
             }
@@ -9523,6 +9633,15 @@ async def daily_cmd(interaction: discord.Interaction):
     }
     try:
         await match_store.upsert_activity_session(doc)
+        # Drop stale play orphans so they cannot shadow this daily on Activity load.
+        orphan_id = f"activity:0:{user_id}"
+        if orphan_id != session_id:
+            try:
+                orphan = await match_store.get_activity_session(orphan_id)
+                if orphan and (orphan.get("session_kind") or "play") == "play":
+                    await match_store.delete_activity_session(orphan_id)
+            except Exception as orphan_exc:  # noqa: BLE001
+                print(f"clear play orphan after /daily failed: {orphan_exc}")
         await _launch_activity_window(interaction)
     except Exception as exc:
         daily["results"].pop(str(user_id), None)
@@ -10142,7 +10261,11 @@ async def recover_cmd(interaction: discord.Interaction):
 
     filled = int(session.get("filled") or 0)
     kind = session.get("session_kind") or "play"
-    tier = difficulty_label(session.get("difficulty"))
+    if kind == "daily":
+        day = str(session.get("daily_date") or utc_today())
+        tier = difficulty_label(daily_difficulty_for_date(day))
+    else:
+        tier = difficulty_label(resolve_session_difficulty(session)[0])
     elapsed = activity_session_elapsed(session)
     print(
         f"/recover user={uid} guild={guild_id} kind={kind} "
