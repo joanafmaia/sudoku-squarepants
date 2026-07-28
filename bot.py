@@ -555,7 +555,7 @@ def save_data(data: dict) -> None:
     except OSError as exc:
         # Don't lose the in-memory award if the disk write fails (e.g. ephemeral FS hiccup)
         print(f"save_data failed: {exc}")
-    # Mirror to Mongo so Fly.io restarts keep sponges / stats
+    # Mirror to Mongo so Render restarts keep sponges / stats
     try:
         loop = asyncio.get_running_loop()
         snapshot = deepcopy(data)
@@ -1216,14 +1216,8 @@ async def sync_cosmetics_to_activity_sessions(
     pin_emojis: list[str],
 ) -> None:
     """Mirror equipped shop cosmetics into the player's open Activity session."""
-    session_id = f"activity:{guild_id}:{user_id}"
-    session = await match_store.get_activity_session(session_id)
-    if not session:
-        alt = await match_store.find_activity_session_by_user_id(user_id)
-        if alt:
-            session = alt
-            session_id = str(alt.get("_id") or session_id)
-    if not session:
+    session, session_id = await lookup_user_activity_session(guild_id, user_id)
+    if not session or not session_id:
         return
     await match_store.merge_activity_session(
         session_id,
@@ -2615,8 +2609,10 @@ async def challenge_blocks_user(user_id: int) -> str | None:
     try:
         active = await match_store.list_matches(status="active")
     except Exception as exc:  # noqa: BLE001
-        print(f"challenge_blocks_user list failed: {exc}")
-        return None
+        print(f"challenge_blocks_user list failed (fail-closed): {exc}")
+        return (
+            "Couldn't verify challenge status right now — try again in a moment."
+        )
     uid = int(user_id)
     for match in active:
         for _slot, player in match_player_entries(match):
@@ -2934,7 +2930,7 @@ async def finish_win_and_announce(
             difficulty=game.get("difficulty"),
         )
 
-        claimed: bool | None = None
+        # Fail-closed like award_play_win: never pay if the durable claim store is down.
         try:
             claimed = await match_store.try_claim_daily_win(
                 guild_id=guild_id,
@@ -2947,26 +2943,8 @@ async def finish_win_and_announce(
                 player_name=getattr(user, "display_name", None) or getattr(user, "name", None),
             )
         except Exception as exc:  # noqa: BLE001
-            print(f"try_claim_daily_win failed (proceeding with local award): {exc}")
-            claimed = None
-
-        if claimed is None:
-            try:
-                mongo_won = await match_store.has_daily_claim(guild_id, user.id, day)
-            except Exception as check_exc:  # noqa: BLE001
-                print(f"has_daily_claim after try_claim failure: {check_exc}")
-                mongo_won = bool(prior.get("won"))
-            else:
-                mongo_won = mongo_won or bool(prior.get("won"))
-            if mongo_won:
-                quiet = finish_win(bot.data, guild_id, user, game, award=False)
-                return WinOutcome(
-                    embed=quiet.embed,
-                    coins=int(prior.get("coins") or preview_coins),
-                    xp=int(prior.get("xp") or prior.get("coins") or preview_coins),
-                    rank=quiet.rank,
-                    quiet=True,
-                )
+            print(f"try_claim_daily_win failed (fail-closed): {exc}")
+            raise
 
         if claimed is False:
             try:
@@ -2997,6 +2975,19 @@ async def finish_win_and_announce(
                     rank=quiet.rank,
                     quiet=True,
                 )
+            # Claim miss without claim/forfeit doc — refuse local award (fail-closed).
+            print(
+                f"try_claim_daily_win returned False without claim/forfeit "
+                f"guild={guild_id} user={user.id} day={day}; refusing award"
+            )
+            quiet = finish_win(bot.data, guild_id, user, game, award=False)
+            return WinOutcome(
+                embed=quiet.embed,
+                coins=0,
+                xp=0,
+                rank=quiet.rank,
+                quiet=True,
+            )
 
         outcome = finish_win(bot.data, guild_id, user, game)
         return outcome
@@ -3293,7 +3284,16 @@ async def settle_challenge_match(
                 except discord.HTTPException:
                     winner_user = None
             if winner_user is None:
-                return
+                pname = None
+                for _, p in entries:
+                    if int(p.get("user_id") or 0) == int(wid):
+                        pname = p.get("name") or p.get("username")
+                        break
+                print(
+                    f"settle_challenge_match: fetch_user failed for winner {wid}; "
+                    "awarding via stub user"
+                )
+                winner_user = _stub_discord_user(wid, pname)
             wname = getattr(winner_user, "display_name", None) or winner_user.name
             gstats_w = guild_stats(bot.data, guild_id)
             wstats = user_stats(gstats_w, wid)
@@ -3338,49 +3338,59 @@ async def settle_challenge_match(
                     winner_user = await bot.fetch_user(winner_id)
                 except discord.HTTPException:
                     winner_user = None
+            if winner_user is None:
+                pname = None
+                for _, p in entries:
+                    if int(p.get("user_id") or 0) == int(winner_id):
+                        pname = p.get("name") or p.get("username")
+                        break
+                print(
+                    f"settle_challenge_match: fetch_user failed for winner {winner_id}; "
+                    "awarding via stub user"
+                )
+                winner_user = _stub_discord_user(winner_id, pname)
 
-            if winner_user is not None:
-                wname = getattr(winner_user, "display_name", None) or winner_user.name
-                if wname and wname != winner_name:
-                    winner_name = wname
-                    await match_store.update_match(match["_id"], {"winner_name": wname})
-                gstats_w = guild_stats(bot.data, guild_id)
-                wstats = user_stats(gstats_w, winner_id)
-                wstats["name"] = wname or wstats.get("name") or "Unknown"
-                if winner_solved:
-                    # Real solve — full challenge win payout + best_time.
-                    winner_game = {
-                        "mode": "challenge",
-                        "started_at": time.time() - winner_elapsed,
-                        "difficulty": match.get("difficulty"),
-                        "hints_used": 0,
-                    }
-                    reward_embeds.append(
-                        finish_win(
-                            bot.data,
-                            guild_id,
-                            winner_user,
-                            winner_game,
-                            challenge_winner=True,
-                        ).embed
+            wname = getattr(winner_user, "display_name", None) or winner_user.name
+            if wname and wname != winner_name:
+                winner_name = wname
+                await match_store.update_match(match["_id"], {"winner_name": wname})
+            gstats_w = guild_stats(bot.data, guild_id)
+            wstats = user_stats(gstats_w, winner_id)
+            wstats["name"] = wname or wstats.get("name") or "Unknown"
+            if winner_solved:
+                # Real solve — full challenge win payout + best_time.
+                winner_game = {
+                    "mode": "challenge",
+                    "started_at": time.time() - winner_elapsed,
+                    "difficulty": match.get("difficulty"),
+                    "hints_used": 0,
+                }
+                reward_embeds.append(
+                    finish_win(
+                        bot.data,
+                        guild_id,
+                        winner_user,
+                        winner_game,
+                        challenge_winner=True,
+                    ).embed
+                )
+            else:
+                # Last standing after opponents forfeit — no board solve.
+                # Sponges + challenge_wins only; never best_time / full XP win.
+                coins = CHALLENGE_FORFEIT_WIN_COINS
+                wstats["coins"] = int(wstats.get("coins") or 0) + coins
+                reward_embeds.append(
+                    paper_embed(
+                        "Challenge win",
+                        description=(
+                            f"Last standing — opponents forfeited.\n"
+                            f"**{format_sponges(coins, signed=True)}** "
+                            f"(no solve time recorded)."
+                        ),
                     )
-                else:
-                    # Last standing after opponents forfeit — no board solve.
-                    # Sponges + challenge_wins only; never best_time / full XP win.
-                    coins = CHALLENGE_FORFEIT_WIN_COINS
-                    wstats["coins"] = int(wstats.get("coins") or 0) + coins
-                    reward_embeds.append(
-                        paper_embed(
-                            "Challenge win",
-                            description=(
-                                f"Last standing — opponents forfeited.\n"
-                                f"**{format_sponges(coins, signed=True)}** "
-                                f"(no solve time recorded)."
-                            ),
-                        )
-                    )
-                wstats["challenge_wins"] = int(wstats.get("challenge_wins", 0) or 0) + 1
-                save_data(bot.data)
+                )
+            wstats["challenge_wins"] = int(wstats.get("challenge_wins", 0) or 0) + 1
+            save_data(bot.data)
 
         gstats = guild_stats(bot.data, guild_id)
         for _slot, player in entries:
@@ -4247,13 +4257,7 @@ async def activity_sessions_for_challenge(match: dict) -> dict[str, dict]:
         uid = player.get("user_id")
         if uid is None:
             continue
-        session = await match_store.get_activity_session(
-            daily_watch_session_id(guild_id, int(uid))
-        )
-        if not session:
-            session = await match_store.find_activity_session_by_user_id(
-                uid, guild_id=guild_id
-            )
+        session, _sid = await lookup_user_activity_session(guild_id, int(uid))
         if session:
             out[str(uid)] = session
     return out
@@ -4367,9 +4371,7 @@ async def get_blocking_activity_session(
     kinds: set[str] | None = None,
 ) -> dict | None:
     """Return an open Activity session that should block starting another mode."""
-    session = await match_store.get_activity_session(
-        daily_watch_session_id(guild_id, user_id)
-    )
+    session, _sid = await lookup_user_activity_session(guild_id, user_id)
     if not session:
         return None
     kind = session.get("session_kind") or "play"
@@ -4457,17 +4459,30 @@ async def lookup_user_activity_session(
     guild_id: int,
     user_id: int,
 ) -> tuple[dict | None, str | None]:
-    """Primary activity session for a user, including orphan fallback."""
+    """Primary activity session for a user, including orphan fallback.
+
+    Preference-only primary docs do not shadow an orphan board.
+    """
     session_id = daily_watch_session_id(guild_id, user_id)
     session = await match_store.get_activity_session(session_id)
-    if session:
-        return session, session_id
+    primary_has_board = bool(session and (session.get("board") or session.get("solution")))
+
     orphan_id = daily_watch_session_id(0, user_id)
     orphan = await match_store.get_activity_session(orphan_id)
     if orphan:
         orphan_gid = str(orphan.get("guild_id") or "0")
-        if orphan_gid in ("", "0", str(guild_id)):
-            return orphan, orphan_id
+        if orphan_gid not in ("", "0", str(guild_id)):
+            orphan = None
+    orphan_has_board = bool(orphan and (orphan.get("board") or orphan.get("solution")))
+
+    if primary_has_board:
+        return session, session_id
+    if orphan_has_board:
+        return orphan, orphan_id
+    if session:
+        return session, session_id
+    if orphan:
+        return orphan, orphan_id
     alt = await match_store.find_activity_session_by_user_id(user_id, guild_id=guild_id)
     if alt:
         return alt, str(alt.get("_id") or session_id)
@@ -4626,18 +4641,55 @@ async def notify_activity_play_started(
                 "no spectatable board yet"
             )
             return
+        # Already announced this open-session — never post a second "is playing".
+        if not force and session and session.get("watch_once_notified"):
+            if await activity_watch_is_live(bot_ref, session):
+                print(f"activity watch notify skipped for {session_id}: already live")
+                return
+            # Flag set but message id missing / deleted — still skip to avoid orphans.
+            print(
+                f"activity watch notify skipped for {session_id}: "
+                "already notified this session"
+            )
+            return
         posted_at = float((session or {}).get("watch_posted_at") or 0)
-        # Skip duplicate post if posted within last 60s or announcement is live
-        if not force and session and session.get("watch_notified") and (time.time() - posted_at < 60):
+        if not force and session and session.get("watch_notified") and (time.time() - posted_at < 120):
             print(f"activity watch notify skipped for {session_id}: announcement posted recently")
             return
         if not force and await activity_watch_is_live(bot_ref, session):
             print(f"activity watch notify skipped for {session_id}: announcement already live")
             return
 
+        # Claim the once-flag before Discord I/O so concurrent saves cannot double-post.
+        await match_store.merge_activity_session(
+            session_id,
+            {
+                "watch_once_notified": True,
+                "watch_notified": True,
+                "watch_posted_at": time.time(),
+            },
+        )
+
+        # Drop any stale announcement id before posting a replacement.
+        if session and session.get("watch_message_id"):
+            try:
+                await delete_activity_watch_message(
+                    bot_ref, session, session_id=session_id
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"activity watch pre-delete failed for {session_id}: {exc}")
+
         channel = await resolve_channel(bot_ref, channel_id)
         if channel is None:
             print(f"activity watch channel {channel_id} not found for {session_id}")
+            await match_store.merge_activity_session(
+                session_id,
+                {
+                    "watch_once_notified": False,
+                    "watch_notified": False,
+                    "watch_message_id": None,
+                },
+            )
             return
 
         parts = str(session_id).split(":")
@@ -4654,6 +4706,13 @@ async def notify_activity_play_started(
             mention = f"<@{user_id}>"
             player_name = "Player"
         else:
+            await match_store.merge_activity_session(
+                session_id,
+                {
+                    "watch_once_notified": False,
+                    "watch_notified": False,
+                },
+            )
             return
 
         if announcement is None:
@@ -4666,26 +4725,65 @@ async def notify_activity_play_started(
         )
         watch_view.message = msg
         bot_ref.add_view(watch_view)
-        await match_store.merge_activity_session(
-            session_id,
-            {
-                "guild_id": str(guild_id),
-                "user_id": str(user_id),
-                "name": player_name,
-                "watch_notified": True,
-                "watch_message_id": msg.id,
-                "watch_channel_id": str(channel_id),
-                "watch_posted_at": time.time(),
-                # Blocks duplicate posts while the watch announcement is live.
-                # Cleared when watch ends (leave Activity) or the puzzle is replaced.
-                "watch_once_notified": True,
-            },
-        )
+        try:
+            await match_store.merge_activity_session(
+                session_id,
+                {
+                    "guild_id": str(guild_id),
+                    "user_id": str(user_id),
+                    "name": player_name,
+                    "watch_notified": True,
+                    "watch_message_id": msg.id,
+                    "watch_channel_id": str(channel_id),
+                    "watch_posted_at": time.time(),
+                    "watch_once_notified": True,
+                },
+            )
+        except Exception as store_exc:  # noqa: BLE001
+            # Message is live but untracked — delete it so we don't orphan.
+            print(
+                f"activity watch store message_id failed for {session_id}: {store_exc}"
+            )
+            try:
+                await msg.delete()
+            except Exception as del_exc:  # noqa: BLE001
+                print(f"activity watch rollback delete failed for {session_id}: {del_exc}")
+            await match_store.merge_activity_session(
+                session_id,
+                {
+                    "watch_once_notified": False,
+                    "watch_notified": False,
+                    "watch_message_id": None,
+                },
+            )
+            return
         print(f"activity watch posted for {session_id} in {channel_id}")
     except discord.HTTPException as exc:
         print(f"notify_activity_play_started failed for {session_id}: {exc}")
+        try:
+            await match_store.merge_activity_session(
+                session_id,
+                {
+                    "watch_once_notified": False,
+                    "watch_notified": False,
+                    "watch_message_id": None,
+                },
+            )
+        except Exception:
+            pass
     except Exception as exc:  # noqa: BLE001
         print(f"notify_activity_play_started error for {session_id}: {exc}")
+        try:
+            await match_store.merge_activity_session(
+                session_id,
+                {
+                    "watch_once_notified": False,
+                    "watch_notified": False,
+                    "watch_message_id": None,
+                },
+            )
+        except Exception:
+            pass
     finally:
         _activity_notify_inflight.discard(session_id)
 
@@ -4801,17 +4899,21 @@ async def end_activity_watch(
     session_id: str,
     *,
     force: bool = False,
-) -> None:
-    """Remove the watch announcement but keep the in-progress board for resume."""
+) -> bool:
+    """Remove the watch announcement but keep the in-progress board for resume.
+
+    Returns True when there is no live announcement left (safe to drop the
+    session doc). Returns False when the Discord message is still up.
+    """
     session, session_id = await _resolve_watch_session_for_end(session_id)
     if not session or not session.get("watch_message_id"):
         print(f"activity watch end skipped (no message) for {session_id}")
-        return
+        return True
     if not force:
         posted_at = float(session.get("watch_posted_at") or 0)
         if posted_at and (time.time() - posted_at) < ACTIVITY_WATCH_END_GRACE_SEC:
             print(f"activity watch end ignored (grace) for {session_id}")
-            return
+            return False
     deleted = await delete_activity_watch_message(bot_ref, session, session_id=session_id)
     if deleted:
         await match_store.merge_activity_session(
@@ -4824,19 +4926,43 @@ async def end_activity_watch(
             },
         )
         print(f"activity watch ended for {session_id}")
-    else:
-        print(f"activity watch end failed (message still live) for {session_id}")
+        return True
+    print(f"activity watch end failed (message still live) for {session_id}")
+    return False
 
 
-async def clear_activity_session(bot_ref: "SudokuBot", session_id: str) -> None:
-    """Drop the persisted session and remove any live watch announcement."""
+async def clear_activity_session(bot_ref: "SudokuBot", session_id: str) -> bool:
+    """Drop the persisted session after removing any live watch announcement.
+
+    Refuses to delete the session doc while a watch message is still live so
+    we never orphan an \"is playing\" announcement.
+    """
     try:
         session = await match_store.get_activity_session(session_id)
         if session and session.get("watch_message_id"):
-            await end_activity_watch(bot_ref, session_id, force=True)
+            ended = await end_activity_watch(bot_ref, session_id, force=True)
+            if not ended:
+                refreshed = await match_store.get_activity_session(session_id)
+                if refreshed and refreshed.get("watch_message_id"):
+                    print(
+                        f"clear_activity_session refused for {session_id}: "
+                        "watch message still live"
+                    )
+                    return False
     except Exception as exc:  # noqa: BLE001
         print(f"clear_activity_session end_watch failed: {exc}")
+        try:
+            session = await match_store.get_activity_session(session_id)
+            if session and session.get("watch_message_id"):
+                print(
+                    f"clear_activity_session refused for {session_id}: "
+                    f"end_watch error with live message ({exc})"
+                )
+                return False
+        except Exception:
+            return False
     await match_store.delete_activity_session(session_id)
+    return True
 
 
 async def restore_activity_play_watch_views(bot_ref: "SudokuBot") -> None:
@@ -4903,12 +5029,32 @@ async def get_watch_session_for_spectator(session_id: str) -> dict | None:
         return session
     parts = str(session_id).split(":")
     if len(parts) >= 3:
+        uid = parts[2]
+        gid = parts[1]
         alt = await match_store.find_activity_session_by_user_id(
-            parts[2], guild_id=parts[1]
+            uid, guild_id=gid if gid not in ("", "0") else None
         )
         if alt and activity_session_spectatable(alt):
             return alt
+        if gid not in ("", "0"):
+            # Orphan boards keyed activity:0:{uid} with guild_id "0".
+            alt = await match_store.find_activity_session_by_user_id(uid)
+            if alt and activity_session_spectatable(alt):
+                return alt
     return session
+
+
+def _stub_discord_user(user_id: int, name: str | None = None) -> Any:
+    """Minimal user stand-in when guild cache / fetch_user fails."""
+
+    class StubUser:
+        def __init__(self) -> None:
+            self.id = int(user_id)
+            self.name = name or "Player"
+            self.display_name = self.name
+            self.mention = f"<@{self.id}>"
+
+    return StubUser()
 
 
 async def open_activity_spectator_in_activity(
@@ -4918,7 +5064,7 @@ async def open_activity_spectator_in_activity(
 ) -> None:
     """Open the Embedded App in read-only spectator mode for another player's session."""
     guild_id, target_user_id = parse_watch_session_ids(session_id)
-    if not guild_id or not target_user_id:
+    if not target_user_id:
         await interaction.response.send_message("Invalid session.", ephemeral=True)
         return
     if interaction.user.id == target_user_id:
@@ -4931,9 +5077,25 @@ async def open_activity_spectator_in_activity(
     if not session:
         await interaction.response.send_message("This game has ended.", ephemeral=True)
         return
+    # Resolve real guild — orphan ids use activity:0:{uid}.
+    resolved_guild = guild_id
+    try:
+        sg = int(session.get("guild_id") or 0)
+        if sg:
+            resolved_guild = sg
+    except (TypeError, ValueError):
+        pass
+    if not resolved_guild and interaction.guild is not None:
+        resolved_guild = interaction.guild.id
+    if not resolved_guild:
+        await interaction.response.send_message(
+            "Couldn't resolve which server this game belongs to.",
+            ephemeral=True,
+        )
+        return
     await match_store.set_spectate_intent(
         interaction.user.id,
-        guild_id=guild_id,
+        guild_id=resolved_guild,
         target_user_id=target_user_id,
     )
     try:
@@ -8132,7 +8294,11 @@ async def broadcast_daily_announcement(target_channel_id: int | None = None) -> 
 
 @tasks.loop(minutes=3)
 async def prune_idle_activity_watch_announcements():
-    """Remove channel 'is playing' posts when the board has been idle too long."""
+    """Remove channel 'is playing' posts when the board has been idle too long.
+
+    Keeps the Activity session/board so the player can still resume with `/play`.
+    For admin wipe of idle sessions (no resume), use `/z-admin clearstale`.
+    """
     try:
         stale = await match_store.list_idle_activity_watch_sessions(
             WATCH_IDLE_HIDE_SEC
@@ -8724,25 +8890,27 @@ async def _launch_activity_window(
     # Write diff preference before launching so the Activity picks it up on load.
     if preferred_diff_index is not None and interaction.guild is not None:
         session_id = f"activity:{interaction.guild.id}:{interaction.user.id}"
-        existing = await match_store.get_activity_session(session_id)
-        if not existing or not existing.get("board"):
-            await match_store.merge_activity_session(
-                session_id,
-                {
-                    "diff_index": preferred_diff_index,
-                    "guild_id": str(interaction.guild.id),
-                    "user_id": str(interaction.user.id),
-                    "session_kind": "play",
-                    "board": None,
-                    "given": None,
-                    "solution": None,
-                    "won_at": None,
-                    "filled": 0,
-                    "watch_once_notified": False,
-                    "watch_notified": False,
-                    "watch_message_id": None,
-                },
-            )
+        existing, _sid = await lookup_user_activity_session(
+            interaction.guild.id, interaction.user.id
+        )
+        # Never write a preference stub over an orphan/primary board in progress.
+        if existing and (existing.get("board") or existing.get("solution")):
+            pass
+        else:
+            # Preference-only doc — never touch watch flags here. Clearing them
+            # without deleting the Discord message orphans "is playing" posts.
+            pref: dict = {
+                "diff_index": preferred_diff_index,
+                "guild_id": str(interaction.guild.id),
+                "user_id": str(interaction.user.id),
+                "session_kind": "play",
+                "board": None,
+                "given": None,
+                "solution": None,
+                "won_at": None,
+                "filled": 0,
+            }
+            await match_store.merge_activity_session(session_id, pref)
     try:
         await interaction.response.launch_activity()
         print(
@@ -9228,8 +9396,7 @@ async def daily_cmd(interaction: discord.Interaction):
     if uid in daily["results"]:
         r = daily["results"][uid]
         if r.get("in_progress"):
-            session_id = f"activity:{guild_id}:{user_id}"
-            existing = await match_store.get_activity_session(session_id)
+            existing, _sid = await lookup_user_activity_session(guild_id, user_id)
             if existing and existing.get("session_kind") == "daily":
                 await _launch_activity_window(interaction)
                 return
@@ -9256,7 +9423,7 @@ async def daily_cmd(interaction: discord.Interaction):
             await _deny_already_done(detail)
             return
 
-    # Durable Mongo claim (survives local wipe / redeploy)
+    # Durable Mongo claim (survives local wipe / redeploy) — fail-closed on store errors.
     try:
         if await match_store.has_daily_forfeit(guild_id, user_id, day):
             daily["results"][uid] = {
@@ -9268,7 +9435,12 @@ async def daily_cmd(interaction: discord.Interaction):
             await _deny_already_done("used (quit)")
             return
     except Exception as exc:  # noqa: BLE001
-        print(f"has_daily_forfeit failed: {exc}")
+        print(f"has_daily_forfeit failed (fail-closed): {exc}")
+        await reply_ephemeral(
+            interaction,
+            "Couldn't verify today's daily status right now — try again in a moment.",
+        )
+        return
 
     try:
         if await match_store.has_daily_claim(guild_id, user_id, day):
@@ -9280,10 +9452,16 @@ async def daily_cmd(interaction: discord.Interaction):
             await _deny_already_done("cleared")
             return
     except Exception as exc:  # noqa: BLE001
-        print(f"has_daily_claim failed: {exc}")
+        print(f"has_daily_claim failed (fail-closed): {exc}")
+        await reply_ephemeral(
+            interaction,
+            "Couldn't verify today's daily status right now — try again in a moment.",
+        )
+        return
 
-    session_id = f"activity:{guild_id}:{user_id}"
-    existing_session = await match_store.get_activity_session(session_id)
+    existing_session, _existing_sid = await lookup_user_activity_session(
+        guild_id, user_id
+    )
     if (
         existing_session
         and existing_session.get("session_kind") == "daily"
@@ -9390,6 +9568,7 @@ async def resetdaily_cmd(interaction: discord.Interaction):
         print(f"resetdaily clear_daily_completions failed: {exc}")
 
     sessions_cleared = 0
+    seen_sids: set[str] = set()
     try:
         sessions = await match_store.list_activity_sessions(
             guild_id, max_age_sec=86400 * 2
@@ -9397,24 +9576,54 @@ async def resetdaily_cmd(interaction: discord.Interaction):
     except Exception as exc:  # noqa: BLE001
         print(f"resetdaily list_activity_sessions failed: {exc}")
         sessions = []
-    for session in sessions:
-        if (session.get("session_kind") or "") != "daily":
-            continue
-        session_day = str(session.get("daily_date") or "")
+
+    async def _clear_daily_session(sid: str, session: dict | None = None) -> None:
+        nonlocal sessions_cleared
+        if sid in seen_sids:
+            return
+        seen_sids.add(sid)
+        doc = session
+        if doc is None:
+            try:
+                doc = await match_store.get_activity_session(sid)
+            except Exception as exc:  # noqa: BLE001
+                print(f"resetdaily get session failed for {sid}: {exc}")
+                return
+        if not doc:
+            return
+        if (doc.get("session_kind") or "") != "daily":
+            return
+        session_day = str(doc.get("daily_date") or "")
         if session_day and session_day != day:
-            continue
-        sid = str(session.get("_id") or "")
-        if not sid:
-            continue
+            return
         try:
             await end_activity_watch(bot, sid, force=True)
         except Exception as exc:  # noqa: BLE001
             print(f"resetdaily end_watch failed for {sid}: {exc}")
         try:
-            await clear_activity_session(bot, sid)
-            sessions_cleared += 1
+            if await clear_activity_session(bot, sid):
+                sessions_cleared += 1
         except Exception as exc:  # noqa: BLE001
             print(f"resetdaily clear session failed for {sid}: {exc}")
+
+    for session in sessions:
+        sid = str(session.get("_id") or "")
+        if sid:
+            await _clear_daily_session(sid, session)
+
+    # Orphan keys activity:0:{uid} are missed by guild-scoped list_activity_sessions.
+    orphan_uids = {str(uid) for uid in prior_results}
+    for session in sessions:
+        uid = session.get("user_id")
+        if uid is not None:
+            orphan_uids.add(str(uid))
+    for uid_str in orphan_uids:
+        try:
+            uid_int = int(uid_str)
+        except (TypeError, ValueError):
+            continue
+        for sid in (f"activity:{guild_id}:{uid_int}", f"activity:0:{uid_int}"):
+            await _clear_daily_session(sid)
 
     games_cleared = 0
     for key, game in list(games.items()):
@@ -9441,7 +9650,7 @@ async def resetdaily_cmd(interaction: discord.Interaction):
 
 @admin_group.command(
     name="clearstale",
-    description="Remove idle Activity sessions from /watch (this server)",
+    description="Delete idle Activity sessions (ends watch + no resume)",
 )
 async def clearstale_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -9462,36 +9671,74 @@ async def clearstale_cmd(interaction: discord.Interaction):
         sessions = []
 
     cleared = 0
+    skipped_live_watch = 0
+    seen_sids: set[str] = set()
     now = time.time()
-    for session in sessions:
-        sid = str(session.get("_id") or "")
-        if not sid:
-            continue
-        if session.get("won_at"):
-            continue
-        last = float(session.get("last_move_at") or session.get("updated_at") or 0)
+
+    async def _clear_idle(sid: str, session: dict | None = None) -> None:
+        nonlocal cleared, skipped_live_watch
+        if sid in seen_sids:
+            return
+        seen_sids.add(sid)
+        doc = session
+        if doc is None:
+            try:
+                doc = await match_store.get_activity_session(sid)
+            except Exception as exc:  # noqa: BLE001
+                print(f"clearstale get session failed for {sid}: {exc}")
+                return
+        if not doc or doc.get("won_at"):
+            return
+        last = float(doc.get("last_move_at") or doc.get("updated_at") or 0)
         if last > 0 and now - last <= WATCH_IDLE_HIDE_SEC:
-            continue
+            return
         try:
             await end_activity_watch(bot, sid, force=True)
         except Exception as exc:  # noqa: BLE001
             print(f"clearstale end_watch failed for {sid}: {exc}")
         try:
-            await clear_activity_session(bot, sid)
-            cleared += 1
+            if await clear_activity_session(bot, sid):
+                cleared += 1
+            else:
+                skipped_live_watch += 1
         except Exception as exc:  # noqa: BLE001
             print(f"clearstale clear session failed for {sid}: {exc}")
 
-    await interaction.followup.send(
-        f"{BUBBLE} Cleared **{cleared}** idle Activity session(s) from `/watch` "
-        f"(no moves for {WATCH_IDLE_HIDE_SEC // 60}+ min).",
-        ephemeral=True,
+    for session in sessions:
+        sid = str(session.get("_id") or "")
+        if sid:
+            await _clear_idle(sid, session)
+
+    # Orphan keys activity:0:{uid} missed by guild-scoped list.
+    orphan_uids = {str(s.get("user_id")) for s in sessions if s.get("user_id") is not None}
+    for uid_str in orphan_uids:
+        try:
+            uid_int = int(uid_str)
+        except (TypeError, ValueError):
+            continue
+        orphan_id = f"activity:0:{uid_int}"
+        orphan = await match_store.get_activity_session(orphan_id)
+        if not orphan:
+            continue
+        orphan_gid = str(orphan.get("guild_id") or "0")
+        if orphan_gid not in ("", "0", str(guild_id)):
+            continue
+        await _clear_idle(orphan_id, orphan)
+
+    note = (
+        f"{BUBBLE} Deleted **{cleared}** idle Activity session(s) "
+        f"(watch ended + board removed — cannot resume).\n"
+        f"Idle = no moves for {WATCH_IDLE_HIDE_SEC // 60}+ min.\n"
+        f"Auto-prune only removes the “is playing” post and keeps the board."
     )
+    if skipped_live_watch:
+        note += f"\nSkipped **{skipped_live_watch}** (watch message still live)."
+    await interaction.followup.send(note, ephemeral=True)
 
 
 @admin_group.command(
     name="resetchallenge",
-    description="Zero challenge wins and wipe matches for this server",
+    description="Zero challenge_wins; wipe matches + live boards (not sponges/XP)",
 )
 async def resetchallenge_cmd(interaction: discord.Interaction):
     """Wipe challenge career counters + match history after buggy races."""
@@ -9578,9 +9825,11 @@ async def resetchallenge_cmd(interaction: discord.Interaction):
 
 @admin_group.command(
     name="claimdaily",
-    description="Recover/claim today's completed daily win announcement",
+    description="Re-announce a daily already won (admin; does not invent wins)",
 )
-@app_commands.describe(member="Optional player to recover announcement for (defaults to you)")
+@app_commands.describe(
+    member="Player whose completed daily announcement to recover (defaults to you)"
+)
 async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Member | None = None):
     if interaction.guild is None:
         await interaction.response.send_message("Server only.", ephemeral=True)

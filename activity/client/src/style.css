@@ -426,10 +426,41 @@ body {
 #app-toolbar {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   gap: 6px;
   width: 100%;
   flex-shrink: 0;
   margin-bottom: 4px;
+}
+
+#watchers-chip {
+  margin-right: auto;
+  max-width: min(58vw, 220px);
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: "Fredoka", "Segoe UI", sans-serif;
+  color: var(--header);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#watchers-chip[hidden] {
+  display: none !important;
+}
+
+#watchers-chip.is-open {
+  white-space: pre-line;
+  max-width: min(78vw, 280px);
+  border-radius: 14px;
+  text-align: left;
+  line-height: 1.35;
+  padding: 8px 12px;
+}
+
+#watchers-chip-label {
+  display: block;
+  pointer-events: none;
 }
 
 #app-toolbar button {
@@ -445,6 +476,14 @@ body {
   -webkit-tap-highlight-color: transparent;
   box-shadow: 0 4px 12px rgba(15, 118, 110, 0.2);
   transition: transform 0.15s ease, background 0.2s ease;
+}
+
+@media (max-width: 859px) {
+  #watchers-chip {
+    font-size: 0.9rem;
+    padding: 8px 12px;
+    min-height: 40px;
+  }
 }
 
 #app-toolbar button:active {

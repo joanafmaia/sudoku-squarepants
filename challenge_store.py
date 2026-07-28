@@ -355,7 +355,11 @@ class MemoryMatchStore(MatchStore):
         self, user_id: str | int, *, guild_id: str | int | None = None
     ) -> dict | None:
         uid = str(user_id)
-        gid = str(guild_id) if guild_id is not None else None
+        gid = (
+            str(guild_id)
+            if guild_id is not None and str(guild_id) not in ("", "0")
+            else None
+        )
         best: dict | None = None
         best_ts = 0.0
         best_with_board: dict | None = None
@@ -363,7 +367,8 @@ class MemoryMatchStore(MatchStore):
         for doc in self._activity.values():
             if str(doc.get("user_id")) != uid:
                 continue
-            if gid is not None and str(doc.get("guild_id") or "") != gid:
+            doc_gid = str(doc.get("guild_id") or "")
+            if gid is not None and doc_gid not in ("", "0", gid):
                 continue
             ts = float(
                 doc.get("last_move_at")
@@ -739,8 +744,16 @@ class MongoMatchStore(MatchStore):
         if self._activity is None:
             await self.connect()
         query: dict = {"user_id": str(user_id)}
-        if guild_id is not None:
-            query["guild_id"] = str(guild_id)
+        # Match MemoryMatchStore: scoped guild also accepts orphan guild "" / "0".
+        if guild_id is not None and str(guild_id) not in ("", "0"):
+            gid = str(guild_id)
+            query["$or"] = [
+                {"guild_id": gid},
+                {"guild_id": "0"},
+                {"guild_id": ""},
+                {"guild_id": None},
+                {"guild_id": {"$exists": False}},
+            ]
         sort = [("last_move_at", -1), ("updated_at", -1)]
         doc = await self._activity.find_one(
             {**query, "board": {"$exists": True}, "given": {"$exists": True}},
@@ -783,8 +796,16 @@ class MongoMatchStore(MatchStore):
             "user_id": str(user_id),
             "watch_message_id": {"$exists": True, "$ne": None},
         }
+        # Match MemoryMatchStore: scoped guild also accepts orphan guild "" / "0".
         if guild_id is not None and str(guild_id) not in ("", "0"):
-            query["guild_id"] = str(guild_id)
+            gid = str(guild_id)
+            query["$or"] = [
+                {"guild_id": gid},
+                {"guild_id": "0"},
+                {"guild_id": ""},
+                {"guild_id": None},
+                {"guild_id": {"$exists": False}},
+            ]
         return await self._activity.find_one(
             query,
             sort=[("watch_posted_at", -1), ("last_move_at", -1), ("updated_at", -1)],
@@ -868,7 +889,7 @@ class MongoMatchStore(MatchStore):
         if self._daily is None:
             await self.connect()
         if self._daily is None:
-            return False
+            raise RuntimeError("Mongo daily collection not connected")
         doc = await self._daily.find_one({"_id": f"{guild_id}:{day}:{user_id}"})
         return doc is not None and not doc.get("forfeit")
 
@@ -876,7 +897,7 @@ class MongoMatchStore(MatchStore):
         if self._daily is None:
             await self.connect()
         if self._daily is None:
-            return False
+            raise RuntimeError("Mongo daily collection not connected")
         doc = await self._daily.find_one({"_id": f"{guild_id}:{day}:{user_id}"})
         return bool(doc and doc.get("forfeit"))
 

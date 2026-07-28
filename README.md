@@ -69,7 +69,7 @@ One **Docker** Web Service builds the Activity and runs the bot.
    - **Activities → Settings** → Enable Activities
    - **Activities → Settings → Supported Platforms** → ativa **Desktop**, **iOS** e **Android**
      (sem isto, no telemóvel aparece “não disponível para este SO”)
-7. Suspend **Netlify** and **Fly** when Render is stable (one token / one host).
+7. Suspend **Netlify** when Render is stable (one token / one host).
 
 If you already created a **Python** service, change it to **Docker** (or recreate from Blueprint) so the Activity build runs.
 

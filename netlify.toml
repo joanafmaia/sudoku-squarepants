@@ -21,7 +21,7 @@
   status = 200
   force = true
 
-# Shared Mongo leaderboard (same doc as the Fly.io bot)
+# Shared Mongo leaderboard (same doc as the Render bot)
 [[redirects]]
   from = "/api/leaderboard"
   to = "/.netlify/functions/leaderboard"

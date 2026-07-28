@@ -23,6 +23,16 @@
       <div id="game-shell">
         <div id="game-board-stack">
           <div id="app-toolbar" aria-label="Game settings">
+            <button
+              type="button"
+              id="watchers-chip"
+              hidden
+              aria-live="polite"
+              aria-expanded="false"
+              title="People watching your game"
+            >
+              <span id="watchers-chip-label">👀</span>
+            </button>
             <button type="button" id="music-toggle" title="Música do jogo" aria-label="Música" aria-pressed="false">🔕</button>
             <button type="button" id="sfx-toggle" title="Sons do jogo" aria-label="Sons" aria-pressed="false">🔊</button>
             <button type="button" id="theme-toggle" title="Toggle theme">🌙</button>

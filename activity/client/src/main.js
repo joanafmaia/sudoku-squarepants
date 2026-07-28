@@ -518,6 +518,12 @@ async function loadSavedSession() {
       const res = await apiFetch(`/api/activity/session?guild_id=${encodeURIComponent(gid)}`);
       if (res && res.ok) {
         const data = await res.json();
+        if (data?.challenge_pending) {
+          showWinToast(
+            data.message
+              || "Waiting for other players to finish your challenge before you can start something new."
+          );
+        }
         const session = data?.session;
         if (session) {
           if (session.won_at) {
@@ -787,7 +793,8 @@ function startAutosave() {
 }
 
 export function closeDiscordActivity() {
-  // Drop the channel "is playing" post when the Activity window closes (Quit / exit).
+  // Drop the channel "is playing" post when the Activity window closes.
+  // Challenge races are NOT forfeited here — only Quit/Forfeit may.
   endWatchOnExit({ force: true, challengeForfeit: false });
   try {
     const sdk = window.__DISCORD_SDK__;
@@ -891,9 +898,60 @@ function stopSpectatorPolling() {
   }
 }
 
+const watchersChipEl = document.getElementById("watchers-chip");
+const watchersChipLabelEl = document.getElementById("watchers-chip-label");
+let watchersChipExpanded = false;
+let latestWatchers = [];
+
+function formatWatchersChip(watchers, expanded) {
+  const list = Array.isArray(watchers) ? watchers : [];
+  if (!list.length) return "";
+  const names = list.map((w) => String(w?.name || "Player").trim() || "Player");
+  if (names.length === 1) return `👀 ${names[0]}`;
+  if (expanded) return `👀 Watching\n${names.map((n) => `· ${n}`).join("\n")}`;
+  return `👀 ${names.length} watching`;
+}
+
+function renderWatchersChip(watchers) {
+  latestWatchers = Array.isArray(watchers) ? watchers.slice() : [];
+  if (!watchersChipEl || !watchersChipLabelEl) return;
+  if (!latestWatchers.length || spectating) {
+    watchersChipEl.hidden = true;
+    watchersChipEl.classList.remove("is-open");
+    watchersChipEl.setAttribute("aria-expanded", "false");
+    watchersChipExpanded = false;
+    watchersChipLabelEl.textContent = "";
+    return;
+  }
+  const label = formatWatchersChip(latestWatchers, watchersChipExpanded);
+  watchersChipLabelEl.textContent = label;
+  watchersChipEl.hidden = false;
+  watchersChipEl.classList.toggle("is-open", watchersChipExpanded);
+  watchersChipEl.setAttribute("aria-expanded", watchersChipExpanded ? "true" : "false");
+  watchersChipEl.title = watchersChipExpanded
+    ? "Tap to collapse watcher list"
+    : latestWatchers.length > 1
+      ? "Tap to see who is watching"
+      : "Someone is watching your game";
+}
+
+function bindWatchersChip() {
+  if (!watchersChipEl) return;
+  watchersChipEl.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (latestWatchers.length <= 1) return;
+    watchersChipExpanded = !watchersChipExpanded;
+    renderWatchersChip(latestWatchers);
+  });
+}
+
 function renderWatchers(watchers) {
+  renderWatchersChip(watchers);
   gameApi?.setWatchers?.(watchers);
 }
+
+bindWatchersChip();
 
 function stopWatcherPolling() {
   if (watcherPollTimer) {

@@ -24,6 +24,21 @@ from typing import Any, Callable
 from activity_watchers import prune_watchers
 
 
+async def _activity_challenge_pending_response(uid: int) -> dict | None:
+    """Block play/daily Activity HTTP while the user waits on an unsettled race."""
+    from bot import challenge_blocks_user
+
+    reason = await challenge_blocks_user(uid)
+    if not reason:
+        return None
+    return {
+        "ok": False,
+        "error": "challenge_pending",
+        "message": reason,
+        "challenge": True,
+    }
+
+
 def _activity_last_move_at(
     existing: dict | None, filled: int, *, same_puzzle: bool
 ) -> float:
@@ -77,24 +92,38 @@ def _activity_win_lock(session_id: str) -> asyncio.Lock:
 async def _lookup_activity_session(
     bot: Any, guild_id: str | int, user_id: str | int
 ) -> tuple[dict | None, str]:
-    """Primary key → orphan activity:0 (same guild or unset) → find-by-user scoped."""
+    """Primary key → orphan activity:0 (same guild or unset) → find-by-user scoped.
+
+    Preference-only primary docs (no board) do not shadow an orphan board.
+    """
     from bot import match_store
 
     uid = int(user_id)
     gid = str(guild_id if guild_id is not None else "0")
     primary = _activity_session_id(gid, uid)
     session = await match_store.get_activity_session(primary)
-    if session:
-        return session, primary
+    primary_has_board = bool(session and (session.get("board") or session.get("solution")))
 
     orphan_id = _activity_session_id("0", uid)
+    orphan = None
     if orphan_id != primary:
         orphan = await match_store.get_activity_session(orphan_id)
         if orphan:
             orphan_gid = str(orphan.get("guild_id") or "0")
-            # Only accept orphan if it belongs to this guild or has no real guild yet.
-            if orphan_gid in ("", "0", gid):
-                return orphan, orphan_id
+            if orphan_gid not in ("", "0", gid):
+                orphan = None
+
+    orphan_has_board = bool(orphan and (orphan.get("board") or orphan.get("solution")))
+
+    # Prefer a real board: orphan wins over preference-only primary.
+    if primary_has_board:
+        return session, primary
+    if orphan_has_board:
+        return orphan, orphan_id
+    if session:
+        return session, primary
+    if orphan:
+        return orphan, orphan_id
 
     if gid not in ("", "0"):
         found = await match_store.find_activity_session_by_user_id(uid, guild_id=gid)
@@ -154,14 +183,17 @@ async def _cleanup_activity_session_after_win(
     bot: Any, session_id: str, uid: int
 ) -> None:
     """End watch + clear primary and orphan keys after a win (or already_won)."""
-    from bot import clear_activity_session, end_activity_watch
+    from bot import clear_activity_session
 
+    # clear_activity_session ends the watch first and refuses to drop the doc
+    # while the Discord announcement is still live (avoids permanent orphans).
     try:
-        await end_activity_watch(bot, session_id, force=True)
-    except Exception as exc:  # noqa: BLE001
-        print(f"activity win end_watch failed: {exc}")
-    try:
-        await clear_activity_session(bot, session_id)
+        cleared = await clear_activity_session(bot, session_id)
+        if not cleared:
+            print(
+                f"activity win clear deferred for {session_id}: watch still live"
+            )
+            return
         wrong_id = _activity_session_id("0", uid)
         if wrong_id != session_id:
             await clear_activity_session(bot, wrong_id)
@@ -470,6 +502,10 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
         result["elapsed"] = elapsed
         return result
 
+    pending = await _activity_challenge_pending_response(uid)
+    if pending:
+        return pending
+
     try:
         gid_key = int(guild_id)
     except ValueError:
@@ -477,19 +513,19 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
 
     from bot import match_store
     session, lookup_id = await _lookup_activity_session(bot, gid_key, uid)
-    # Lock on canonical guild key when known, else lookup id.
-    lock_id = (
-        _activity_session_id(gid_key, uid)
-        if gid_key
-        else lookup_id
-    )
+    # One lock per user so orphan vs canonical guild keys cannot race.
+    lock_id = f"activity:user:{uid}"
 
     async with _activity_win_lock(lock_id):
         # Re-fetch under lock — never revive a stale in-memory copy.
         session = await match_store.get_activity_session(lookup_id)
-        if not session and lookup_id != lock_id:
-            session = await match_store.get_activity_session(lock_id)
-        session_id = lookup_id if session else lock_id
+        if not session and gid_key:
+            session = await match_store.get_activity_session(
+                _activity_session_id(gid_key, uid)
+            )
+        session_id = lookup_id if session else (
+            _activity_session_id(gid_key, uid) if gid_key else lookup_id
+        )
         # Prefer client channel on win (SDK may be ready now); keep session as fallback.
         channel_id_raw = body.get("channel_id") or (session or {}).get("channel_id")
 
@@ -1238,6 +1274,11 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
             game["elapsed"] = max(0, int(time.time() - started))
             await sync_challenge_board(game)
         return {"ok": True, "filled": game["filled"], "elapsed": game["elapsed"]}
+
+    pending = await _activity_challenge_pending_response(uid)
+    if pending:
+        return pending
+
     solution = body.get("solution")
     if board is None or given is None:
         print(
@@ -1246,7 +1287,24 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         )
         return {"ok": False, "error": "invalid_board"}
 
-    existing = await match_store.get_activity_session(session_id)
+    # Same orphan-aware lookup as load/win/hint — then migrate onto canonical key.
+    existing, looked_up_id = await _lookup_activity_session(bot, guild_id, uid)
+    canonical_id = _activity_session_id(guild_id, uid)
+    session_id = canonical_id
+    if existing and looked_up_id != canonical_id and str(guild_id) not in ("", "0"):
+        try:
+            gid_int = int(guild_id)
+        except ValueError:
+            gid_int = 0
+        if gid_int:
+            existing = await _migrate_orphan_session(
+                bot, existing, looked_up_id, canonical_id, gid_int, uid
+            )
+            looked_up_id = canonical_id
+    elif existing and str(guild_id) in ("", "0"):
+        # Still no real guild — keep writing the looked-up doc (often activity:0:uid).
+        session_id = looked_up_id
+
     if (not isinstance(solution, list) or len(solution) != 9) and existing:
         solution = existing.get("solution")
     if not isinstance(solution, list) or len(solution) != 9:
@@ -1384,7 +1442,8 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         doc["channel_id"] = existing.get("channel_id")
     else:
         doc["channel_id"] = None
-    # New play puzzle must drop a leftover won_at from a prior failed clear.
+    # New play puzzle must drop leftover win/watch state — delete the Discord
+    # announcement first so we never orphan an "is playing" message.
     if existing and session_kind == "play":
         existing_given = _normalize_activity_given(existing.get("given"), board)
         same_puzzle = (
@@ -1394,15 +1453,89 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         )
         if not same_puzzle:
             doc["won_at"] = None
-            doc["watch_once_notified"] = False
-            doc["watch_notified"] = False
-            doc["watch_message_id"] = None
+            watch_cleared = True
+            refreshed = None
+            had_message = bool(existing.get("watch_message_id"))
+            if had_message or existing.get("watch_notified"):
+                try:
+                    from bot import end_activity_watch
+
+                    ended = await end_activity_watch(bot, session_id, force=True)
+                    # Re-read — only wipe local flags if Discord message is gone.
+                    refreshed = await match_store.get_activity_session(session_id)
+                    if refreshed and refreshed.get("watch_message_id"):
+                        watch_cleared = False
+                        print(
+                            f"activity watch still live after new-puzzle end "
+                            f"for {session_id}; keeping message id"
+                        )
+                    elif had_message and not ended:
+                        watch_cleared = False
+                except Exception as exc:  # noqa: BLE001
+                    watch_cleared = False
+                    print(f"activity watch clear on new puzzle failed: {exc}")
+            if watch_cleared:
+                source = refreshed if refreshed is not None else existing
+                # Flag set without message_id — keep once-flag so we never re-post
+                # over a possible Discord orphan.
+                if source.get("watch_once_notified") and not source.get("watch_message_id"):
+                    doc["watch_once_notified"] = True
+                    doc["watch_notified"] = False
+                    doc["watch_message_id"] = None
+                    doc["watch_posted_at"] = None
+                else:
+                    doc["watch_once_notified"] = False
+                    doc["watch_notified"] = False
+                    doc["watch_message_id"] = None
+                    doc["watch_posted_at"] = None
+            else:
+                # Keep pointing at the live Discord message; do not post a second one.
+                keep_from = refreshed or existing
+                for watch_key in (
+                    "watch_once_notified",
+                    "watch_notified",
+                    "watch_message_id",
+                    "watch_channel_id",
+                    "watch_posted_at",
+                ):
+                    if keep_from.get(watch_key) is not None:
+                        doc[watch_key] = keep_from[watch_key]
+                doc["watch_once_notified"] = True
+    # Preserve live watch fields on same-puzzle autosaves (belt + suspenders).
+    if existing and "watch_message_id" not in doc:
+        for watch_key in (
+            "watch_once_notified",
+            "watch_notified",
+            "watch_message_id",
+            "watch_channel_id",
+            "watch_posted_at",
+        ):
+            if existing.get(watch_key) is not None and watch_key not in doc:
+                doc[watch_key] = existing[watch_key]
     await match_store.upsert_activity_session(doc)
     wrong_id = _activity_session_id("0", uid)
     if wrong_id != session_id:
         wrong = await match_store.get_activity_session(wrong_id)
         if wrong:
-            await match_store.delete_activity_session(wrong_id)
+            # If the orphan holds the live watch announcement, end it first.
+            if wrong.get("watch_message_id"):
+                try:
+                    from bot import end_activity_watch
+
+                    ended = await end_activity_watch(bot, wrong_id, force=True)
+                    if not ended:
+                        refreshed = await match_store.get_activity_session(wrong_id)
+                        if refreshed and refreshed.get("watch_message_id"):
+                            print(
+                                f"activity orphan watch still live for {wrong_id}; "
+                                "skipping delete"
+                            )
+                            wrong = None
+                except Exception as exc:  # noqa: BLE001
+                    print(f"activity orphan watch end failed: {exc}")
+                    wrong = None
+            if wrong is not None:
+                await match_store.delete_activity_session(wrong_id)
     current = await match_store.get_activity_session(session_id)
     
     from bot import _activity_notify_inflight
@@ -1411,30 +1544,14 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
     watch_live = bool(
         in_flight
         or (current and current.get("watch_notified") and current.get("watch_message_id"))
-        or (time.time() - posted_at < 60)
+        or (time.time() - posted_at < 120)
     )
     notify_doc = current or doc
     from bot import activity_session_spectatable
 
-    # Skip re-notification if this continuous watch period already announced.
-    # watch_once_notified is cleared when the watch ends (leave Activity) or a new puzzle starts.
+    # Once this open session announced, never post again until end_watch clears the flag.
+    # (Do NOT re-allow notify when message_id is missing — that orphans Discord messages.)
     already_notified_once = bool(current and current.get("watch_once_notified"))
-    if already_notified_once and current and not (
-        current.get("watch_notified") and current.get("watch_message_id")
-    ):
-        # Stale flag after end_watch / deleted message — allow a fresh post.
-        already_notified_once = False
-        try:
-            await match_store.merge_activity_session(
-                session_id,
-                {
-                    "watch_once_notified": False,
-                    "watch_notified": False,
-                    "watch_message_id": None,
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"activity clear stale once-flag failed: {exc}")
     will_notify = (
         not watch_live
         and not already_notified_once
@@ -1444,17 +1561,11 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         f"activity session save user={uid} guild={guild_id} filled={filled} "
         f"notify={'yes' if will_notify else 'skip'}"
     )
-    if not watch_live and not already_notified_once:
+    if will_notify:
         try:
             from bot import notify_activity_play_started
 
-            if activity_session_spectatable(notify_doc):
-                await notify_activity_play_started(bot, session_id)
-            else:
-                print(
-                    f"activity watch notify deferred user={uid} guild={guild_id}: "
-                    "no spectatable board yet"
-                )
+            await notify_activity_play_started(bot, session_id)
         except Exception as exc:  # noqa: BLE001
             print(f"activity play notify failed: {exc}")
     return {"ok": True, "filled": filled, "elapsed": elapsed}
@@ -1502,6 +1613,17 @@ async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict
                 "match_id": game.get("match_id"),
                 "player_slot": game.get("player_slot"),
             },
+        }
+
+    pending = await _activity_challenge_pending_response(uid)
+    if pending:
+        # Soft-block: Activity may remount after you finish while peers still race.
+        # Don't hard-error the load — just withhold a play/daily board.
+        return {
+            "ok": True,
+            "session": None,
+            "challenge_pending": True,
+            "message": pending.get("message"),
         }
 
     resolved_guild = await _resolve_activity_guild_id(guild_id, uid)
@@ -1561,6 +1683,9 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
         if gid_key:
             stats = user_stats(guild_stats(bot.data, gid_key), uid)
     else:
+        pending = await _activity_challenge_pending_response(uid)
+        if pending:
+            return pending
         session, persist_hint = await _lookup_activity_session(bot, guild_id, uid)
         if not session or board is None:
             return {"ok": False, "error": "no_session"}
@@ -1701,9 +1826,26 @@ async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> di
         try:
             from bot import end_activity_watch
 
-            await end_activity_watch(bot, session_id, force=True)
+            ended = await end_activity_watch(bot, session_id, force=True)
+            if not ended:
+                refreshed = await match_store.get_activity_session(session_id)
+                if refreshed and refreshed.get("watch_message_id"):
+                    return {
+                        "ok": False,
+                        "error": "watch_still_live",
+                        "cleared": False,
+                        "message": "Could not remove the watch announcement; try again.",
+                    }
         except Exception as exc:  # noqa: BLE001
             print(f"delete session end_watch failed: {exc}")
+            refreshed = await match_store.get_activity_session(session_id)
+            if refreshed and refreshed.get("watch_message_id"):
+                return {
+                    "ok": False,
+                    "error": "watch_still_live",
+                    "cleared": False,
+                    "message": "Could not remove the watch announcement; try again.",
+                }
 
         session_gid = str(session.get("guild_id") or "")
         try:
