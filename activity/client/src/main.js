@@ -32,13 +32,11 @@ let autosaveTimer = null;
 let saving = false;
 let exitHooksBound = false;
 let sessionOpenedAt = 0;
-let hideEndWatchTimer = null;
 let spectating = false;
 let spectatorPollTimer = null;
 let watcherPollTimer = null;
 const SPECTATOR_POLL_MS = 3500;
 const WATCHERS_POLL_MS = 5000;
-const HIDE_END_WATCH_DELAY_MS = 5000;
 
 function setStatus(message) {
   if (statusEl) statusEl.textContent = message;
@@ -702,25 +700,6 @@ function endWatchOnExit({ force = false, challengeForfeit = false } = {}) {
   resolveGuildId(8000).then(post).catch(() => post(cachedGuildId || guildId()));
 }
 
-function scheduleEndWatchOnHide() {
-  if (hideEndWatchTimer) clearTimeout(hideEndWatchTimer);
-  hideEndWatchTimer = setTimeout(() => {
-    hideEndWatchTimer = null;
-    if (document.visibilityState === "hidden") {
-      // Remove the "is playing" chat post when the Activity closes.
-      // Short delay avoids Discord remount flicker right after open.
-      endWatchOnExit({ force: true, challengeForfeit: false });
-    }
-  }, HIDE_END_WATCH_DELAY_MS);
-}
-
-function cancelEndWatchOnHide() {
-  if (hideEndWatchTimer) {
-    clearTimeout(hideEndWatchTimer);
-    hideEndWatchTimer = null;
-  }
-}
-
 function flushSessionOnExit({ endWatch = false } = {}) {
   const snap = currentSessionSnap();
   // Never forfeit on unload/remount — only Quit may.
@@ -771,9 +750,7 @@ function startAutosave() {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       flushSessionOnExit({ endWatch: false });
-      scheduleEndWatchOnHide();
     } else {
-      cancelEndWatchOnHide();
       reportSessionActive();
     }
   });
@@ -786,7 +763,7 @@ function startAutosave() {
 }
 
 export function closeDiscordActivity() {
-  // Drop the channel "X is playing Sudoku!" post when the window closes.
+  // Drop the channel "is playing" post when the Activity window closes (Quit / exit).
   endWatchOnExit({ force: true, challengeForfeit: false });
   try {
     const sdk = window.__DISCORD_SDK__;

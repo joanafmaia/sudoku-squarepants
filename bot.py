@@ -4022,7 +4022,7 @@ def build_challenge_live_embed(
         _slot, player = active
         embed.add_field(
             name="Now playing",
-            value=f"{challenge_player_mention(guild, player)} is on the board.",
+            value=f"{challenge_player_mention(guild, player)} is playing the **challenge race**.",
             inline=False,
         )
     embed.set_footer(text=footer)
@@ -4326,13 +4326,18 @@ def build_activity_live_embed(
         embed.title = f"{PINEAPPLE} Daily in progress"
     elif kinds <= {"play"}:
         embed.title = f"{SPONGE} /play in progress"
-    embed.description = "\n".join(lines) or "Nobody playing right now."
+    embed.description = "\n".join(lines) or "Nobody is playing right now."
     if active_uid:
         for session in sessions:
             if str(session.get("user_id")) == active_uid:
+                kind = session.get("session_kind") or "play"
+                if kind == "daily":
+                    playing = f"{activity_session_mention(guild, session)} is playing today's **Daily Sudoku**."
+                else:
+                    playing = f"{activity_session_mention(guild, session)} is playing **Bikini Bottom Sudoku**."
                 embed.add_field(
                     name="Now playing",
-                    value=f"{activity_session_mention(guild, session)} is on the board.",
+                    value=playing,
                     inline=False,
                 )
                 break
@@ -4526,6 +4531,13 @@ async def sync_daily_watch_session(key: tuple, game: dict) -> None:
     if not board or not given or not solution:
         return
     session_id = daily_watch_session_id(guild_id, user_id)
+    new_filled = game_filled_count(game)
+    existing = await match_store.get_activity_session(session_id)
+    last_move_at = time.time()
+    if existing:
+        prev_filled = int(existing.get("filled") or 0)
+        if new_filled <= prev_filled and existing.get("last_move_at"):
+            last_move_at = float(existing["last_move_at"])
     doc = {
         "_id": session_id,
         "session_kind": "daily",
@@ -4536,14 +4548,13 @@ async def sync_daily_watch_session(key: tuple, game: dict) -> None:
         "board": board,
         "given": given,
         "solution": solution,
-        "filled": game_filled_count(game),
+        "filled": new_filled,
         "name": game.get("owner_name") or "Player",
         "channel_id": str(game.get("channel_id")) if game.get("channel_id") else None,
         "daily_date": game.get("daily_date"),
         "started_at": float(game.get("started_at") or time.time()),
-        "last_move_at": time.time(),
+        "last_move_at": last_move_at,
     }
-    existing = await match_store.get_activity_session(session_id)
     if existing:
         for watch_key in (
             "watch_notified",
@@ -4576,6 +4587,16 @@ async def activity_watch_is_live(
         return True
     except discord.HTTPException:
         return False
+
+
+def format_activity_watch_announcement(
+    mention: str, session: dict | None
+) -> str:
+    kind = (session or {}).get("session_kind") or "play"
+    if kind == "daily":
+        day = (session or {}).get("daily_date") or utc_today()
+        return f"{mention} is playing today's **Daily Sudoku** (`{day}`)!"
+    return f"{mention} is playing **Bikini Bottom Sudoku**!"
 
 
 async def notify_activity_play_started(
@@ -4636,14 +4657,7 @@ async def notify_activity_play_started(
             return
 
         if announcement is None:
-            kind = (session or {}).get("session_kind") or "play"
-            if kind == "daily":
-                day = (session or {}).get("daily_date") or utc_today()
-                announcement = f"{mention} is playing today's **Daily Sudoku** (`{day}`)!"
-            elif kind == "challenge":
-                announcement = f"{mention} is playing a **Challenge Match**!"
-            else:
-                announcement = f"{mention} is playing **Sudoku**!"
+            announcement = format_activity_watch_announcement(mention, session)
 
         watch_view = ActivityPlayWatchView(session_id, bot_ref)
         msg = await channel.send(

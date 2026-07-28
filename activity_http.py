@@ -23,6 +23,24 @@ from typing import Any, Callable
 
 from activity_watchers import prune_watchers
 
+
+def _activity_last_move_at(
+    existing: dict | None, filled: int, *, same_puzzle: bool
+) -> float:
+    """Only bump last_move_at when the player fills a new cell (not on heartbeat saves)."""
+    now = time.time()
+    if not existing:
+        return now
+    if not same_puzzle:
+        return now
+    prev_filled = int(existing.get("filled") or 0)
+    if filled > prev_filled:
+        return now
+    prev = existing.get("last_move_at")
+    if prev is not None:
+        return float(prev)
+    return now
+
 BotGetter = Callable[[], Any]
 
 CORS = {
@@ -1297,6 +1315,10 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
                 print(f"activity session clear on solve failed: {exc}")
             return {"ok": True, "cleared": True}
 
+    last_move_at = _activity_last_move_at(
+        existing, filled, same_puzzle=same_puzzle
+    )
+
     doc = {
         "_id": session_id,
         "guild_id": guild_id,
@@ -1315,7 +1337,7 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         "session_kind": session_kind,
         "daily_date": daily_date,
         "started_at": started_at,
-        "last_move_at": time.time(),
+        "last_move_at": last_move_at,
         "hints_used": hints_used,
         "hints_gary_used": int(existing.get("hints_gary_used") or 0) if existing else 0,
     }
@@ -1368,10 +1390,9 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         or (current and current.get("watch_notified") and current.get("watch_message_id"))
         or (time.time() - posted_at < 60)
     )
-    print(
-        f"activity session save user={uid} guild={guild_id} filled={filled} "
-        f"notify={'skip' if watch_live else 'yes'}"
-    )
+    notify_doc = current or doc
+    from bot import activity_session_spectatable
+
     # Skip re-notification if this continuous watch period already announced.
     # watch_once_notified is cleared when the watch ends (leave Activity) or a new puzzle starts.
     already_notified_once = bool(current and current.get("watch_once_notified"))
@@ -1391,11 +1412,19 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
             )
         except Exception as exc:  # noqa: BLE001
             print(f"activity clear stale once-flag failed: {exc}")
+    will_notify = (
+        not watch_live
+        and not already_notified_once
+        and activity_session_spectatable(notify_doc)
+    )
+    print(
+        f"activity session save user={uid} guild={guild_id} filled={filled} "
+        f"notify={'yes' if will_notify else 'skip'}"
+    )
     if not watch_live and not already_notified_once:
         try:
-            from bot import activity_session_spectatable, notify_activity_play_started
+            from bot import notify_activity_play_started
 
-            notify_doc = current or doc
             if activity_session_spectatable(notify_doc):
                 await notify_activity_play_started(bot, session_id)
             else:
