@@ -270,7 +270,7 @@ SHOP_TITLES = {
     "drea_mom": {"label": "🫶 Mama Drea", "cost": 1400, "pin": "Mama", "emoji": "🫶"},
     "hulk_r5": {"label": "🧌 Hulk Command", "cost": 1650, "pin": "Hulk", "emoji": "🧌"},
     "apex_whale": {"label": "🐋 Apex Whale", "cost": 2500, "pin": "Apex", "emoji": "🐋"},
-    "fuzzy": {"label": "🌸 Fuzzy Wuzzy", "cost": 1750, "pin": "Fuzzy", "emoji": "🌸"},
+    "fuzzy": {"label": "🔪 Fuzzy Wuzzy", "cost": 1750, "pin": "Fuzzy", "emoji": "🔪"},
 }
 
 # Pins = border stickers only. One free; paid pins scale up so cosmetics stay a chase.
@@ -317,7 +317,7 @@ SHOP_PINS = {
     "pin_drea": {"label": "🫶 Drea Pin", "pin": "Drea", "emoji": "🫶", "cost": 700, "theme": "crew"},
     "pin_hulk": {"label": "🧌 Hulk Pin", "pin": "Hulk", "emoji": "🧌", "cost": 820, "theme": "crew"},
     "pin_apex": {"label": "🐋 Apex Pin", "pin": "Apex", "emoji": "🐋", "cost": 1000, "theme": "crew"},
-    "pin_fuzzy": {"label": "🌸 Fuzzy Pin", "pin": "Fuzzy", "emoji": "🌸", "cost": 880, "theme": "crew"},
+    "pin_fuzzy": {"label": "🔪 Fuzzy Pin", "pin": "Fuzzy", "emoji": "🔪", "cost": 880, "theme": "crew"},
 }
 
 SHOP_BOOST_KEYS = frozenset({
