@@ -4296,7 +4296,7 @@ async def forfeit_challenge_activity(bot: "SudokuBot", user_id: int) -> bool:
         if not mid:
             continue
         for slot, player in match_player_entries(match):
-            if player.get("user_id") != user_id:
+            if int(player.get("user_id") or 0) != int(user_id):
                 continue
             if player.get("forfeit") or player.get("finished_time") is not None:
                 continue
