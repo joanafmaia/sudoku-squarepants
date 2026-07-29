@@ -9829,6 +9829,62 @@ async def resetdaily_cmd(interaction: discord.Interaction):
 
 
 @admin_group.command(
+    name="fixdaily",
+    description="Unblock a user stuck with 'session lost' on today's daily",
+)
+@app_commands.describe(user="The user to unblock")
+async def fixdaily_cmd(interaction: discord.Interaction, user: discord.Member):
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+    if not await require_bot_admin(interaction):
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild.id
+    daily = get_guild_daily(bot.data, guild_id)
+    day = str(daily.get("date") or utc_today())
+    uid = str(user.id)
+
+    entry = daily.get("results", {}).get(uid)
+    if not entry:
+        await interaction.followup.send(
+            f"{user.mention} has no daily entry for today (`{day}`).",
+            ephemeral=True,
+        )
+        return
+
+    if not entry.get("in_progress"):
+        await interaction.followup.send(
+            f"{user.mention}'s daily for `{day}` is already finalised (`{'won' if entry.get('won') else 'forfeit'}`). Nothing to fix.",
+            ephemeral=True,
+        )
+        return
+
+    # Remove the stuck in_progress lock
+    daily["results"].pop(uid, None)
+    save_data(bot.data)
+
+    # Also clear any orphaned Activity session and durable claim
+    sid = daily_watch_session_id(guild_id, user.id)
+    try:
+        await end_activity_watch(bot, sid, force=True)
+    except Exception as _exc:  # noqa: BLE001
+        pass
+    await clear_activity_session(bot, sid)
+    try:
+        await match_store.clear_daily_completions_for_user(guild_id, user.id, day)
+    except Exception as exc:  # noqa: BLE001
+        print(f"fixdaily clear_daily_completions_for_user failed: {exc}")
+
+    await interaction.followup.send(
+        f"{PINEAPPLE} Unblocked {user.mention} for today's daily (`{day}`). "
+        "They can now run `/daily` again.",
+        ephemeral=True,
+    )
+
+
+@admin_group.command(
     name="clearstale",
     description="Delete idle Activity sessions (ends watch + no resume)",
 )
