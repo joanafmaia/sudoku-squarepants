@@ -2751,19 +2751,96 @@ def new_game_state(
 
 
 def challenge_game_key(match_id: str, user_id: int) -> tuple:
-    return ("ch", match_id, user_id)
+    return ("ch", str(match_id), int(user_id))
 
 
 def find_challenge_game_for_user(user_id: int) -> tuple | None:
+    uid = int(user_id)
     for key, game in games.items():
-        if game.get("mode") == "challenge" and game.get("owner_id") == user_id:
+        if game.get("mode") != "challenge":
+            continue
+        try:
+            owner = int(game.get("owner_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if owner == uid:
             return key
+    return None
+
+
+async def purge_challenge_games_for_match(match_id: str, match: dict | None = None) -> int:
+    """Drop leftover in-memory/persisted boards for a match. Returns how many removed."""
+    mid = str(match_id)
+    removed = 0
+    # Pop every in-memory key for this match first (covers legacy string user_id keys).
+    for key, game in list(games.items()):
+        if game.get("mode") != "challenge":
+            continue
+        game_mid = str(game.get("match_id") or "")
+        key_mid = str(key[1]) if isinstance(key, tuple) and len(key) >= 2 else ""
+        if game_mid != mid and key_mid != mid:
+            continue
+        await remove_game(key)
+        removed += 1
+    # Also clear normalized persisted ids for roster players (even if not in memory).
+    uids: set[int] = set()
+    if match:
+        for _slot, player in match_player_entries(match):
+            try:
+                uid = int(player.get("user_id") or 0)
+            except (TypeError, ValueError):
+                uid = 0
+            if uid:
+                uids.add(uid)
+    for uid in uids:
+        await remove_game(challenge_game_key(mid, uid))
+    return removed
+
+
+async def reconcile_challenge_game_for_user(user_id: int) -> tuple | None:
+    """Return a still-live challenge key, dropping boards for finished/orphan races.
+
+    Ghost boards after settle (or a finished player waiting on peers) used to keep
+    blocking `/play` forever even though the race was done.
+    """
+    uid = int(user_id)
+    ch_key = find_challenge_game_for_user(uid)
+    if not ch_key:
+        return None
+    game = games.get(ch_key)
+    if not game:
+        return None
+    match_id = game.get("match_id")
+    if not match_id and isinstance(ch_key, tuple) and len(ch_key) >= 2:
+        match_id = ch_key[1]
+    if not match_id:
+        await remove_game(ch_key)
+        return None
+    try:
+        match = await match_store.get_match(str(match_id))
+    except Exception as exc:  # noqa: BLE001
+        print(f"reconcile_challenge_game_for_user get_match failed: {exc}")
+        # Fail closed — keep blocking if we cannot verify.
+        return ch_key
+    if not match or match.get("status") == "finished" or match.get("rewards_applied"):
+        await purge_challenge_games_for_match(str(match_id), match)
+        return None
+    for _slot, player in match_player_entries(match):
+        if int(player.get("user_id") or 0) != uid:
+            continue
+        if player.get("forfeit") or player.get("finished_time") is not None:
+            # Player is done; board should not block /play (Mongo wait message may still apply).
+            await remove_game(ch_key)
+            return None
+        return ch_key
+    # Owner no longer on the match roster — orphan.
+    await remove_game(ch_key)
     return None
 
 
 async def ensure_challenge_game_for_user(bot: "SudokuBot", user_id: int) -> tuple | None:
     """Return in-memory challenge key, rehydrating from an active Mongo match if needed."""
-    ch_key = find_challenge_game_for_user(user_id)
+    ch_key = await reconcile_challenge_game_for_user(user_id)
     if ch_key:
         return ch_key
     try:
@@ -2783,13 +2860,13 @@ async def ensure_challenge_game_for_user(bot: "SudokuBot", user_id: int) -> tupl
             except Exception as exc:  # noqa: BLE001
                 print(f"ensure_challenge_game_for_user restore failed: {exc}")
                 return None
-            return find_challenge_game_for_user(uid)
+            return await reconcile_challenge_game_for_user(uid)
     return None
 
 
 async def challenge_blocks_user(user_id: int) -> str | None:
     """Reason the user cannot start play/daily/another challenge (unsettled race)."""
-    if find_challenge_game_for_user(user_id):
+    if await reconcile_challenge_game_for_user(user_id):
         return "Finish your speedrun challenge first (`/quit`)."
     try:
         active = await match_store.list_matches(status="active")
@@ -3509,6 +3586,8 @@ async def settle_challenge_match(
         if not fresh:
             return
         if fresh.get("rewards_applied") or fresh.get("status") == "finished":
+            # Still scrub ghost boards so /play is not blocked after a settled race.
+            await purge_challenge_games_for_match(str(match_id), fresh)
             return
         if not challenge_ready_to_settle(fresh):
             return
@@ -3522,6 +3601,15 @@ async def settle_challenge_match(
             print(f"settle_challenge_match try_begin failed: {exc}")
             claimed = None
         if not claimed:
+            try:
+                again = await match_store.get_match(str(match_id))
+            except Exception as exc:  # noqa: BLE001
+                print(f"settle_challenge_match reget after claim miss failed: {exc}")
+                again = None
+            if again and (
+                again.get("rewards_applied") or again.get("status") == "finished"
+            ):
+                await purge_challenge_games_for_match(str(match_id), again)
             return
         match = claimed
 
@@ -3565,9 +3653,7 @@ async def settle_challenge_match(
             ]
             winner_name = " & ".join(names) if names else "dead heat"
         # Award after durable settle claim; rewards_applied seals the ledger.
-        for _slot, player in entries:
-            key = challenge_game_key(match["_id"], player["user_id"])
-            await remove_game(key)
+        await purge_challenge_games_for_match(str(match["_id"]), match)
 
         guild = bot.get_guild(guild_id)
         reward_notes: list[str] = []
@@ -5833,7 +5919,9 @@ class ChallengeInviteView(discord.ui.View):
         if uid in self.accepted_ids:
             await interaction.response.send_message("You already accepted.", ephemeral=True)
             return
-        if find_challenge_game_for_user(self.challenger_id) or find_challenge_game_for_user(uid):
+        if await reconcile_challenge_game_for_user(self.challenger_id) or (
+            await reconcile_challenge_game_for_user(uid)
+        ):
             await interaction.response.send_message(
                 "You or the challenger already have an active challenge.",
                 ephemeral=True,
@@ -5970,7 +6058,7 @@ class OpenChallengeLobbyView(discord.ui.View):
         if len(self.joined_ids) >= MAX_CHALLENGE_PLAYERS:
             await interaction.response.send_message("Lobby is full.", ephemeral=True)
             return
-        if find_challenge_game_for_user(uid):
+        if await reconcile_challenge_game_for_user(uid):
             await interaction.response.send_message("Finish your active challenge first.", ephemeral=True)
             return
         block = await challenge_blocks_user(uid)
@@ -6076,7 +6164,7 @@ class OpenChallengeLobbyView(discord.ui.View):
             if m is None:
                 await _start_abort("Could not resolve all players.")
                 return
-            if find_challenge_game_for_user(uid):
+            if await reconcile_challenge_game_for_user(uid):
                 await _start_abort(f"<@{uid}> already has an active challenge.")
                 return
             block = await challenge_blocks_user(uid)
@@ -8903,7 +8991,7 @@ async def restore_challenge_games_from_match(bot: "SudokuBot", match: dict) -> b
     restored_any = False
 
     for slot, player in match_player_entries(match):
-        if player.get("forfeit") or player.get("finished_time"):
+        if player.get("forfeit") or player.get("finished_time") is not None:
             continue
         uid = int(player.get("user_id") or 0)
         if not uid:
@@ -9106,9 +9194,51 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
         # Challenge boards live in Activity; one shared Play button is reattached
         # per match after all boards are loaded (see active_matches loop below).
         if game.get("mode") == "challenge":
-            mid = None
-            if isinstance(key, tuple) and len(key) >= 2:
+            mid = game.get("match_id")
+            if not mid and isinstance(key, tuple) and len(key) >= 2:
                 mid = key[1]
+            match_doc = None
+            if mid:
+                try:
+                    match_doc = await match_store.get_match(str(mid))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"restore challenge get_match failed for {mid}: {exc}")
+                    match_doc = None
+            # Drop boards for settled races / finished players so they never block /play.
+            if (
+                not match_doc
+                or match_doc.get("status") == "finished"
+                or match_doc.get("rewards_applied")
+            ):
+                print(
+                    f"Dropping settled/orphan challenge session "
+                    f"{serialize_game_key(key)} (match={mid})"
+                )
+                await drop_persisted_game(key, game)
+                dropped += 1
+                continue
+            try:
+                owner_id = int(game.get("owner_id") or 0)
+            except (TypeError, ValueError):
+                owner_id = 0
+            player_done = False
+            for _slot, player in match_player_entries(match_doc):
+                if int(player.get("user_id") or 0) != owner_id:
+                    continue
+                if player.get("forfeit") or player.get("finished_time") is not None:
+                    player_done = True
+                break
+            else:
+                # Owner missing from roster
+                player_done = True
+            if player_done:
+                print(
+                    f"Dropping finished-player challenge session "
+                    f"{serialize_game_key(key)} (match={mid})"
+                )
+                await drop_persisted_game(key, game)
+                dropped += 1
+                continue
             launch_ch = await resolve_challenge_launch_channel(bot, game, mid)
             if launch_ch is not None and game.get("channel_id") != launch_ch.id:
                 print(
@@ -9121,6 +9251,11 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
                     f"Challenge session {serialize_game_key(key)} launch channel missing "
                     f"(was {game.get('channel_id')}) — keeping match, use /quit"
                 )
+            # Normalize key so later remove_game(challenge_game_key(...)) always hits.
+            if owner_id and mid:
+                key = challenge_game_key(str(mid), owner_id)
+                game["match_id"] = str(mid)
+                game["owner_id"] = owner_id
             games[key] = game
             restored += 1
             continue
@@ -9183,6 +9318,7 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
         if not fresh:
             continue
         if fresh.get("rewards_applied") or fresh.get("status") == "finished":
+            await purge_challenge_games_for_match(str(mid), fresh)
             continue
 
         age = time.time() - float(fresh.get("start_time") or 0)
@@ -9558,7 +9694,7 @@ async def play_cmd(
         if daily_block:
             await interaction.response.send_message(daily_block, ephemeral=True)
             return
-        if find_challenge_game_for_user(interaction.user.id):
+        if await reconcile_challenge_game_for_user(interaction.user.id):
             await interaction.response.send_message(
                 "Finish your speedrun challenge first.",
                 ephemeral=True,
@@ -9758,8 +9894,8 @@ async def challenge_cmd(
         )
         return
 
-    if find_challenge_game_for_user(interaction.user.id):
-        ch_key = find_challenge_game_for_user(interaction.user.id)
+    ch_key = await reconcile_challenge_game_for_user(interaction.user.id)
+    if ch_key is not None:
         await interaction.response.send_message(
             "You already have an active challenge — leave it first?",
             view=ConfirmQuitView(ch_key, bot, None),
@@ -9857,7 +9993,7 @@ async def challenge_cmd(
         return
 
     for uid in seen:
-        if find_challenge_game_for_user(uid):
+        if await reconcile_challenge_game_for_user(uid):
             await interaction.response.send_message(
                 f"<@{uid}> already has an active challenge — they need `/quit` first.",
                 ephemeral=True,
@@ -9917,7 +10053,7 @@ async def daily_cmd(interaction: discord.Interaction):
     day = daily["date"]
     uid = str(user_id)
 
-    if find_challenge_game_for_user(user_id):
+    if await reconcile_challenge_game_for_user(user_id):
         await interaction.response.send_message(
             "Finish your speedrun challenge first.",
             ephemeral=True,
@@ -10810,7 +10946,7 @@ async def recover_cmd(interaction: discord.Interaction):
     guild_id = interaction.guild.id
     uid = interaction.user.id
 
-    if find_challenge_game_for_user(uid):
+    if await reconcile_challenge_game_for_user(uid):
         await interaction.response.send_message(
             "Finish or `/quit` your speedrun challenge first.",
             ephemeral=True,
@@ -10861,7 +10997,7 @@ async def cleargame_cmd(interaction: discord.Interaction):
         return
 
     guild_id = interaction.guild.id
-    ch_key = find_challenge_game_for_user(interaction.user.id)
+    ch_key = await reconcile_challenge_game_for_user(interaction.user.id)
     if ch_key is not None:
         await interaction.response.send_message(
             "Abandon this speedrun?",
@@ -10912,7 +11048,7 @@ async def quit_cmd(interaction: discord.Interaction):
         return
 
     guild_id = interaction.guild.id
-    ch_key = find_challenge_game_for_user(interaction.user.id)
+    ch_key = await reconcile_challenge_game_for_user(interaction.user.id)
     if ch_key is not None:
         await interaction.response.send_message(
             "Really leave this speedrun?",
@@ -10932,7 +11068,7 @@ async def quit_cmd(interaction: discord.Interaction):
         if not mid:
             continue
         for slot, player in match_player_entries(match):
-            if player.get("user_id") != interaction.user.id:
+            if int(player.get("user_id") or 0) != int(interaction.user.id):
                 continue
             if player.get("forfeit") or player.get("finished_time") is not None:
                 continue
@@ -10941,7 +11077,7 @@ async def quit_cmd(interaction: discord.Interaction):
                 await restore_challenge_games_from_match(bot, match)
             except Exception as exc:  # noqa: BLE001
                 print(f"quit_cmd restore challenge failed: {exc}")
-            ch_key = find_challenge_game_for_user(interaction.user.id)
+            ch_key = await reconcile_challenge_game_for_user(interaction.user.id)
             if ch_key is not None:
                 await interaction.response.send_message(
                     "Really leave this speedrun?",
