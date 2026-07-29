@@ -9668,6 +9668,7 @@ async def daily_cmd(interaction: discord.Interaction):
         )
         return
 
+    session_id = f"activity:{guild_id}:{user_id}"
     board, given, solution, diff_key = make_daily_puzzle(guild_id, daily["date"], user_id)
     try:
         diff_index = DIFF_KEYS_LIST.index(diff_key)
@@ -10502,6 +10503,12 @@ async def quit_cmd(interaction: discord.Interaction):
             },
         )
         await drop_persisted_game(sk)
+        orphan_sid = daily_watch_session_id(guild_id, interaction.user.id)
+        try:
+            await end_activity_watch(bot, orphan_sid, force=True)
+        except Exception as _exc:  # noqa: BLE001
+            pass
+        await clear_activity_session(bot, orphan_sid)
         await interaction.response.send_message(
             f"{BUBBLE} Cleared a stuck daily lock (counted as forfeit for today).",
             ephemeral=True,

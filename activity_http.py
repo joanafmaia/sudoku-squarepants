@@ -1731,6 +1731,8 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
             return {"ok": False, "error": "invalid_board"}
         solution = normalize_solution(game.get("solution"))
         given = _normalize_activity_given(game.get("given"), board)
+        if not solution or not given:
+            return {"ok": False, "error": "no_session"}
         session_kind = "challenge"
         hints_used = int(game.get("hints_used") or 0)
         max_hints = MAX_HINTS_PLAY + int(game.get("gary_wisdom_bonus") or 0)
@@ -1774,6 +1776,7 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
         if gid_key:
             stats = user_stats(guild_stats(bot.data, gid_key), uid)
 
+    charge: dict = {}
     charge_container: dict = {}
     if ch_key and game is not None:
         charge_container = game
