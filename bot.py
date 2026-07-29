@@ -11,7 +11,7 @@ import asyncio
 import urllib.request
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 
@@ -787,8 +787,28 @@ async def restore_leaderboard_from_mongo(bot: "SudokuBot") -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"fair streak reset failed: {exc}")
 
+    # One-time: restore known players wiped to 1 by the fair reset.
+    try:
+        restored = migrate_restore_known_streaks(bot.data)
+        if restored:
+            save_data(bot.data)
+            try:
+                await match_store.save_leaderboard(bot.data)
+            except Exception as save_exc:  # noqa: BLE001
+                print(f"streak restore mongo save failed: {save_exc}")
+            print(f"Restored daily streaks: {', '.join(restored)}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"known streak restore failed: {exc}")
+
 
 STREAK_FAIR_RESET_FLAG = "streak_calendar_fair_reset_v1"
+STREAK_RESTORE_V1_FLAG = "streak_restore_bookqueen_fuzzy_xiao_v1"
+# Display-name substrings (case-insensitive) → streak to restore after fair reset.
+STREAK_RESTORE_V1_TARGETS: dict[str, int] = {
+    "bookqueen": 3,
+    "fuzzy": 3,
+    "xiao": 3,
+}
 
 
 def migrate_fair_daily_streaks(data: dict) -> int:
@@ -817,6 +837,64 @@ def migrate_fair_daily_streaks(data: dict) -> int:
             touched += 1
     data[STREAK_FAIR_RESET_FLAG] = True
     return touched
+
+
+def apply_manual_streak(
+    stats: dict,
+    *,
+    streak: int,
+    day: str | None = None,
+    won_today: bool = False,
+) -> None:
+    """Set calendar streak and stamp last_streak_day so the chain stays continuous."""
+    value = max(0, int(streak))
+    today = day or utc_today()
+    stats["streak"] = value
+    stats["best_streak"] = max(int(stats.get("best_streak") or 0), value)
+    if value <= 0:
+        stats["last_streak_day"] = None
+        return
+    if won_today:
+        stats["last_streak_day"] = today
+    else:
+        # Treat the streak as ending yesterday so today's win continues it.
+        yesterday = (
+            datetime.fromisoformat(str(today)).date() - timedelta(days=1)
+        ).isoformat()
+        stats["last_streak_day"] = yesterday
+
+
+def migrate_restore_known_streaks(data: dict) -> list[str]:
+    """One-shot: restore Bookqueen / Fuzzy / Xiao streaks wiped by the fair reset."""
+    if data.get(STREAK_RESTORE_V1_FLAG):
+        return []
+    today = utc_today()
+    restored: list[str] = []
+    for guild_key, gstats in list(data.items()):
+        if not isinstance(gstats, dict) or not str(guild_key).isdigit():
+            continue
+        daily_meta = gstats.get("_daily") if isinstance(gstats.get("_daily"), dict) else {}
+        results = daily_meta.get("results") if isinstance(daily_meta.get("results"), dict) else {}
+        daily_date = str(daily_meta.get("date") or "")
+        for uid, stats in iter_players(gstats):
+            if not isinstance(stats, dict):
+                continue
+            name = str(stats.get("name") or "").casefold()
+            target = None
+            for needle, value in STREAK_RESTORE_V1_TARGETS.items():
+                if needle in name:
+                    target = value
+                    break
+            if target is None:
+                continue
+            prior = results.get(str(uid)) or {}
+            won_today = bool(daily_date == today and prior.get("won"))
+            apply_manual_streak(
+                stats, streak=target, day=today, won_today=won_today
+            )
+            restored.append(f"{stats.get('name') or uid}→{target}")
+    data[STREAK_RESTORE_V1_FLAG] = True
+    return restored
 
 
 def catalog_spend_total(stats: dict) -> int:
@@ -9880,6 +9958,47 @@ async def fixdaily_cmd(interaction: discord.Interaction, user: discord.Member):
     await interaction.followup.send(
         f"{PINEAPPLE} Unblocked {user.mention} for today's daily (`{day}`). "
         "They can now run `/daily` again.",
+        ephemeral=True,
+    )
+
+
+@admin_group.command(
+    name="setstreak",
+    description="Set a player's daily calendar streak (admin)",
+)
+@app_commands.describe(
+    user="Player to update",
+    streak="New streak value (e.g. 3)",
+)
+async def setstreak_cmd(
+    interaction: discord.Interaction, user: discord.Member, streak: app_commands.Range[int, 0, 365]
+):
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+    if not await require_bot_admin(interaction):
+        return
+
+    guild_id = interaction.guild.id
+    daily = get_guild_daily(bot.data, guild_id)
+    day = str(daily.get("date") or utc_today())
+    entry = (daily.get("results") or {}).get(str(user.id)) or {}
+    won_today = bool(entry.get("won"))
+
+    gstats = guild_stats(bot.data, guild_id)
+    stats = user_stats(gstats, user.id)
+    stats["name"] = user.display_name
+    apply_manual_streak(stats, streak=int(streak), day=day, won_today=won_today)
+    save_data(bot.data)
+    try:
+        await match_store.save_leaderboard(bot.data)
+    except Exception as exc:  # noqa: BLE001
+        print(f"setstreak save_leaderboard failed: {exc}")
+
+    await interaction.response.send_message(
+        f"{STAR} Set {user.mention} streak to **{int(streak)}** "
+        f"(last day `{stats.get('last_streak_day')}`, "
+        f"{'won today' if won_today else 'not won today'}).",
         ephemeral=True,
     )
 
