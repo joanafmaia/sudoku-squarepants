@@ -3252,6 +3252,13 @@ def challenge_home_channel(
     return None
 
 
+def as_challenge_text_channel(
+    channel: discord.abc.Messageable | None,
+) -> discord.TextChannel | None:
+    """Prefer a TextChannel for challenge announce/cleanup (unwrap threads)."""
+    return challenge_home_channel(channel)
+
+
 async def resolve_channel(
     bot: "SudokuBot",
     channel_id: int | None,
@@ -3336,6 +3343,11 @@ async def abort_challenge_launch(match_id: str, player_ids: list[int]) -> None:
     """Clear partial sessions if challenge start fails mid-way."""
     for uid in player_ids:
         await remove_game(challenge_game_key(match_id, uid))
+    match: dict | None = None
+    try:
+        match = await match_store.get_match(str(match_id))
+    except Exception as exc:  # noqa: BLE001
+        print(f"abort_challenge_launch get_match failed: {exc}")
     try:
         await match_store.update_match(
             match_id,
@@ -3348,6 +3360,21 @@ async def abort_challenge_launch(match_id: str, player_ids: list[int]) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         print(f"abort_challenge_launch update failed: {exc}")
+    if match:
+        channel = as_challenge_text_channel(
+            await resolve_channel(bot, match.get("channel_id"))
+        )
+        if channel is not None:
+            await cleanup_challenge_channel_messages(
+                bot,
+                channel,
+                launch_message_id=match.get("launch_message_id"),
+                live_message_id=match.get("live_message_id"),
+            )
+    # Cancel any pending live refresh for this match.
+    existing = _challenge_live_tasks.pop(str(match_id), None)
+    if existing and not existing.done():
+        existing.cancel()
 
 
 def challenge_ready_to_settle(match: dict) -> bool:
@@ -3447,7 +3474,7 @@ async def settle_challenge_match(
             await remove_game(key)
 
         guild = bot.get_guild(guild_id)
-        reward_embeds: list = []
+        reward_notes: list[str] = []
 
         async def _award_solved_winner(wid: int) -> None:
             winner_elapsed = 0.0
@@ -3488,17 +3515,20 @@ async def settle_challenge_match(
             winner_game = {
                 "mode": "challenge",
                 "started_at": time.time() - winner_elapsed,
+                "elapsed": int(winner_elapsed),
                 "difficulty": match.get("difficulty"),
                 "hints_used": 0,
             }
-            reward_embeds.append(
-                finish_win(
-                    bot.data,
-                    guild_id,
-                    winner_user,
-                    winner_game,
-                    challenge_winner=True,
-                ).embed
+            outcome = finish_win(
+                bot.data,
+                guild_id,
+                winner_user,
+                winner_game,
+                challenge_winner=True,
+            )
+            reward_notes.append(
+                f"{format_sponges(int(outcome.coins), signed=True)} · "
+                f"+{int(outcome.xp)} XP → <@{wid}>"
             )
             wstats["challenge_wins"] = int(wstats.get("challenge_wins", 0) or 0) + 1
 
@@ -3549,32 +3579,29 @@ async def settle_challenge_match(
                 winner_game = {
                     "mode": "challenge",
                     "started_at": time.time() - winner_elapsed,
+                    "elapsed": int(winner_elapsed),
                     "difficulty": match.get("difficulty"),
                     "hints_used": 0,
                 }
-                reward_embeds.append(
-                    finish_win(
-                        bot.data,
-                        guild_id,
-                        winner_user,
-                        winner_game,
-                        challenge_winner=True,
-                    ).embed
+                outcome = finish_win(
+                    bot.data,
+                    guild_id,
+                    winner_user,
+                    winner_game,
+                    challenge_winner=True,
+                )
+                reward_notes.append(
+                    f"{format_sponges(int(outcome.coins), signed=True)} · "
+                    f"+{int(outcome.xp)} XP → <@{winner_id}>"
                 )
             else:
                 # Last standing after opponents forfeit — no board solve.
                 # Sponges + challenge_wins only; never best_time / full XP win.
                 coins = CHALLENGE_FORFEIT_WIN_COINS
                 wstats["coins"] = int(wstats.get("coins") or 0) + coins
-                reward_embeds.append(
-                    paper_embed(
-                        "Challenge win",
-                        description=(
-                            f"Last standing — opponents forfeited.\n"
-                            f"**{format_sponges(coins, signed=True)}** "
-                            f"(no solve time recorded)."
-                        ),
-                    )
+                reward_notes.append(
+                    f"Last standing — {format_sponges(coins, signed=True)} "
+                    f"(no solve time) → <@{winner_id}>"
                 )
             wstats["challenge_wins"] = int(wstats.get("challenge_wins", 0) or 0) + 1
             save_data(bot.data)
@@ -3603,18 +3630,31 @@ async def settle_challenge_match(
             "winner_id": winner_id,
             "tied_user_ids": tied_user_ids,
             "detail": detail,
-            "reward_embeds": reward_embeds,
+            "reward_notes": reward_notes,
             "channel_id": match.get("channel_id"),
+            "launch_message_id": match.get("launch_message_id"),
+            "live_message_id": match.get("live_message_id"),
         }
 
-    schedule_challenge_live_update(str(match_id), immediate=True)
-
+    # Don't refresh the live panel after settle — it will be deleted below.
     if announce_payload is None:
         return
 
-    channel = await resolve_channel(bot, announce_payload["channel_id"])
-    if not isinstance(channel, discord.TextChannel):
-        print(f"settle_challenge_match: origin channel missing for match {match_id}")
+    # Cancel pending live edits so they cannot race with cleanup deletes.
+    pending = _challenge_live_tasks.pop(str(match_id), None)
+    if pending and not pending.done():
+        pending.cancel()
+
+    channel = as_challenge_text_channel(
+        await resolve_channel(bot, announce_payload["channel_id"])
+    )
+    launch_id = announce_payload.get("launch_message_id")
+    live_id = announce_payload.get("live_message_id")
+    if channel is None:
+        print(
+            f"settle_challenge_match: origin channel missing for match {match_id} "
+            f"(result/cleanup skipped; launch={launch_id} live={live_id})"
+        )
         return
 
     guild = bot.get_guild(announce_payload["guild_id"])
@@ -3624,10 +3664,7 @@ async def settle_challenge_match(
     entries = announce_payload["entries"]
     start = announce_payload["start"]
     match = announce_payload["match"]
-    reward_embeds = list(announce_payload.get("reward_embeds") or [])
-    # Back-compat if an older caller still sets reward_embed
-    if not reward_embeds and announce_payload.get("reward_embed") is not None:
-        reward_embeds = [announce_payload["reward_embed"]]
+    reward_notes = list(announce_payload.get("reward_notes") or [])
 
     def mention(uid: int | None) -> str:
         if uid is None:
@@ -3635,53 +3672,103 @@ async def settle_challenge_match(
         member = guild.get_member(uid) if guild else None
         return member.mention if member else f"<@{uid}>"
 
-    if winner_id is None and detail != "dead heat":
-        embed = paper_embed("Challenge ended", description=f"No winner ({detail}).")
-        await channel.send(embed=embed)
-        return
+    try:
+        if winner_id is None and detail != "dead heat":
+            embed = paper_embed("Challenge ended", description=f"No winner ({detail}).")
+            await channel.send(embed=embed)
+            return
 
-    # Ranked board: finishers by time, then forfeits / last standing
-    ranked_lines: list[str] = []
-    finishers = sorted(
-        (p for _, p in entries if p.get("finished_time") is not None and not p.get("forfeit")),
-        key=lambda p: float(p["finished_time"]),
-    )
-    if detail == "dead heat" and tied_user_ids:
-        tied_mentions = ", ".join(mention(uid) for uid in sorted(tied_user_ids))
-        ranked_lines.append(f"🏆 Dead heat — shared win: {tied_mentions}")
-    elif winner_id is not None and not any(p["user_id"] == winner_id for p in finishers):
-        ranked_lines.append(f"🏆 {mention(winner_id)} — last standing ({detail})")
-    for i, p in enumerate(finishers, start=1):
-        et = _elapsed_of(p, start)
-        uid = int(p["user_id"])
-        is_champ = (winner_id is not None and uid == int(winner_id)) or uid in tied_user_ids
-        medal = "🏆 " if is_champ else f"{i}. "
-        time_bit = f" — **{format_time(et)}**" if et is not None else ""
-        ranked_lines.append(f"{medal}{mention(uid)}{time_bit}")
-    for _slot, p in entries:
-        if p.get("forfeit"):
-            ranked_lines.append(f"✗ {mention(p['user_id'])} — quit")
-    consolation_finishers = [
-        p
-        for _, p in entries
-        if not p.get("forfeit")
-        and p.get("finished_time") is not None
-        and int(p["user_id"]) != (int(winner_id) if winner_id is not None else -1)
-        and int(p["user_id"]) not in tied_user_ids
-    ]
-    if consolation_finishers:
-        ranked_lines.append(
-            f"Other finishers: {format_sponges(CHALLENGE_LOSER_COINS, signed=True)} consolation each"
+        # Ranked board: finishers by time, then forfeits / last standing
+        ranked_lines: list[str] = []
+        finishers = sorted(
+            (
+                p
+                for _, p in entries
+                if p.get("finished_time") is not None and not p.get("forfeit")
+            ),
+            key=lambda p: float(p["finished_time"]),
         )
-    ranked_lines.append(
-        f"Difficulty: **{difficulty_label(match.get('difficulty'))}** · winner ×{CHALLENGE_WIN_MULT:g}"
-    )
-    ranked_lines.append(f"{STAR} Daily streak is **never** reset by challenge results.")
+        if detail == "dead heat" and tied_user_ids:
+            tied_mentions = ", ".join(mention(uid) for uid in sorted(tied_user_ids))
+            ranked_lines.append(f"🏆 Dead heat — shared win: {tied_mentions}")
+        elif winner_id is not None and not any(
+            p["user_id"] == winner_id for p in finishers
+        ):
+            ranked_lines.append(f"🏆 {mention(winner_id)} — last standing ({detail})")
+        for i, p in enumerate(finishers, start=1):
+            et = _elapsed_of(p, start)
+            uid = int(p["user_id"])
+            is_champ = (
+                (winner_id is not None and uid == int(winner_id))
+                or uid in tied_user_ids
+            )
+            medal = "🏆 " if is_champ else f"{i}. "
+            time_bit = f" — **{format_time(et)}**" if et is not None else ""
+            ranked_lines.append(f"{medal}{mention(uid)}{time_bit}")
+        for _slot, p in entries:
+            if p.get("forfeit"):
+                ranked_lines.append(f"✗ {mention(p['user_id'])} — quit")
+        consolation_finishers = [
+            p
+            for _, p in entries
+            if not p.get("forfeit")
+            and p.get("finished_time") is not None
+            and int(p["user_id"]) != (int(winner_id) if winner_id is not None else -1)
+            and int(p["user_id"]) not in tied_user_ids
+        ]
+        if consolation_finishers:
+            ranked_lines.append(
+                f"Other finishers: {format_sponges(CHALLENGE_LOSER_COINS, signed=True)} consolation each"
+            )
+        ranked_lines.append(
+            f"Difficulty: **{difficulty_label(match.get('difficulty'))}** · winner ×{CHALLENGE_WIN_MULT:g}"
+        )
+        for note in reward_notes:
+            ranked_lines.append(f"🎁 {note}")
+        ranked_lines.append(
+            f"{STAR} Daily streak is **never** reset by challenge results."
+        )
 
-    announce = paper_embed("Challenge result", description="\n".join(ranked_lines))
-    await channel.send(embed=announce)
-    for reward_embed in reward_embeds:
-        await channel.send(embed=reward_embed)
+        announce = paper_embed("Challenge result", description="\n".join(ranked_lines))
+        await channel.send(embed=announce)
+    except Exception as exc:  # noqa: BLE001
+        print(f"settle_challenge_match announce failed for {match_id}: {exc}")
+    finally:
+        await cleanup_challenge_channel_messages(
+            bot,
+            channel,
+            launch_message_id=launch_id,
+            live_message_id=live_id,
+        )
+
+
+async def cleanup_challenge_channel_messages(
+    bot_ref: "SudokuBot",
+    channel: discord.abc.Messageable,
+    *,
+    launch_message_id: int | str | None,
+    live_message_id: int | str | None,
+) -> None:
+    """Delete the Play launch + live progress messages after the match ends."""
+    for label, raw_id in (
+        ("launch", launch_message_id),
+        ("live", live_message_id),
+    ):
+        if not raw_id:
+            continue
+        try:
+            msg_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        try:
+            msg = await channel.fetch_message(msg_id)
+            await msg.delete()
+        except (discord.NotFound, discord.Forbidden):
+            pass
+        except (discord.HTTPException, AttributeError) as exc:
+            print(f"cleanup challenge {label} message {raw_id} failed: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"cleanup challenge {label} message {raw_id} error: {exc}")
 
 
 async def handle_challenge_completion(
@@ -3712,6 +3799,19 @@ async def handle_challenge_completion(
             await interaction.edit_original_response(
                 content=None,
                 embed=paper_embed("Match missing"),
+                view=None,
+                attachments=[],
+            )
+            game.pop("finishing", None)
+            game.pop("_digit_lock", None)
+            view.stop()
+            await remove_game(view.game_key)
+            return
+
+        if current.get("status") == "finished":
+            await interaction.edit_original_response(
+                content=None,
+                embed=paper_embed("Challenge already settled"),
                 view=None,
                 attachments=[],
             )
@@ -3775,7 +3875,11 @@ async def handle_challenge_completion(
         else "Settling match…"
     )
     shown_elapsed = float(player.get("elapsed") or elapsed) if already and player else elapsed
-    caption = f"**Board complete** · Time: **{format_time(shown_elapsed)}**. {wait_msg}"
+    who = (player or {}).get("name") or interaction.user.display_name
+    caption = (
+        f"✅ **{who}** finished · {interaction.user.mention} · "
+        f"**{format_time(shown_elapsed)}**\n{wait_msg}"
+    )
     file = board_to_file(image)
     await interaction.edit_original_response(
         content=caption,
@@ -3857,14 +3961,22 @@ async def handle_challenge_completion_activity(
             await settle_challenge_match(bot, match, reason="all finished")
         return {"ok": True, "challenge": True, "already": True}
 
-    # Send completion image & text to the private thread
-    channel_id = game.get("channel_id")
+    # Post this player's finished board once (named), then refresh the live board.
+    channel_id = match.get("channel_id") or game.get("channel_id")
     if channel_id:
         try:
-            channel = bot.get_channel(int(channel_id))
-            if channel is None:
-                channel = await bot.fetch_channel(int(channel_id))
-            if channel:
+            channel = await resolve_channel(bot, int(channel_id))
+            if channel is not None:
+                player = None
+                for _, p in match_player_entries(match):
+                    if int(p.get("user_id") or 0) == int(user_id):
+                        player = p
+                        break
+                player_name = (
+                    (player or {}).get("name")
+                    or game.get("owner_name")
+                    or f"Player {user_id}"
+                )
                 image = render_board(
                     game["board"],
                     game["given"],
@@ -3881,18 +3993,26 @@ async def handle_challenge_completion_activity(
                     for _, p in match_player_entries(match)
                     if not p.get("forfeit") and p.get("finished_time") is None
                 )
-                wait_msg = "Waiting for other players…" if remaining else "Settling match…"
-                caption = f"**Board complete (via Activity)** · Time: **{format_time(elapsed)}**. {wait_msg}"
+                wait_msg = (
+                    "Waiting for other players…"
+                    if remaining
+                    else "Settling match…"
+                )
+                caption = (
+                    f"✅ **{player_name}** finished · "
+                    f"<@{user_id}> · **{format_time(elapsed)}**\n"
+                    f"{wait_msg}"
+                )
                 await channel.send(content=caption, file=file)
-        except Exception as exc:
-            print(f"Failed to post challenge activity completion to thread: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Failed to post challenge finish board for {user_id}: {exc}")
 
     schedule_challenge_live_update(match_id, immediate=True)
 
     if challenge_ready_to_settle(match):
         await settle_challenge_match(bot, match, reason="all finished")
 
-    return {"ok": True, "challenge": True}
+    return {"ok": True, "challenge": True, "elapsed": elapsed}
 
 
 async def forfeit_challenge_player(
@@ -4241,8 +4361,19 @@ async def update_challenge_live_message(bot_ref: "SudokuBot", match_id: str) -> 
         match = await match_store.get_match(match_id)
         if not match or not match.get("live_message_id"):
             return
-        channel = await resolve_channel(bot_ref, match.get("channel_id"))
+        channel = as_challenge_text_channel(
+            await resolve_channel(bot_ref, match.get("channel_id"))
+        )
         if channel is None:
+            return
+        # Finished matches delete launch/live in settle — never edit a stale panel.
+        if match.get("status") == "finished":
+            await cleanup_challenge_channel_messages(
+                bot_ref,
+                channel,
+                launch_message_id=None,
+                live_message_id=match.get("live_message_id"),
+            )
             return
         guild = bot_ref.get_guild(int(match.get("guild_id") or 0))
         try:
@@ -4251,13 +4382,11 @@ async def update_challenge_live_message(bot_ref: "SudokuBot", match_id: str) -> 
             return
         player_sessions = await activity_sessions_for_challenge(match)
         embed = build_challenge_live_embed(match, guild, player_sessions=player_sessions)
-        finished = match.get("status") == "finished"
-        view = None if finished else build_challenge_watch_view(match, bot_ref)
+        view = build_challenge_watch_view(match, bot_ref)
         try:
             await msg.edit(embed=embed, view=view)
-            if view is not None:
-                view.message = msg
-                bot_ref.add_view(view)
+            view.message = msg
+            bot_ref.add_view(view)
         except (discord.HTTPException, AttributeError) as exc:
             print(f"update_challenge_live_message failed for {match_id}: {exc}")
     except Exception as exc:  # noqa: BLE001
@@ -4266,15 +4395,15 @@ async def update_challenge_live_message(bot_ref: "SudokuBot", match_id: str) -> 
 
 
 def schedule_challenge_live_update(match_id: str, *, immediate: bool = False) -> None:
+    existing = _challenge_live_tasks.get(match_id)
+    if existing and not existing.done():
+        existing.cancel()
     if immediate:
         asyncio.create_task(
             update_challenge_live_message(bot, match_id),
             name=f"challenge-live-{match_id}",
         )
         return
-    existing = _challenge_live_tasks.get(match_id)
-    if existing and not existing.done():
-        existing.cancel()
 
     async def _debounced() -> None:
         try:
