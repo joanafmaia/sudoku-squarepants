@@ -3259,12 +3259,22 @@ async def resolve_channel(
     """Cache lookup, then API fetch — private threads often miss cache after restart."""
     if not channel_id:
         return None
-    channel = bot.get_channel(int(channel_id))
+    try:
+        channel = bot.get_channel(int(channel_id))
+    except (TypeError, ValueError):
+        return None
     if channel is not None:
         return channel
+    # fetch_channel needs a live HTTP session — skip during reconnect/shutdown.
+    if getattr(bot, "is_closed", lambda: False)():
+        return None
+    http = getattr(bot, "http", None)
+    global_over = getattr(http, "_global_over", None) if http is not None else None
+    if global_over is None or not hasattr(global_over, "is_set"):
+        return None
     try:
         return await bot.fetch_channel(int(channel_id))
-    except (discord.HTTPException, discord.NotFound, discord.Forbidden):
+    except (discord.HTTPException, discord.NotFound, discord.Forbidden, AttributeError, TypeError):
         return None
 
 
@@ -4227,33 +4237,40 @@ def build_challenge_watch_view(match: dict, bot_ref: "SudokuBot") -> "ChallengeW
 
 
 async def update_challenge_live_message(bot_ref: "SudokuBot", match_id: str) -> None:
-    match = await match_store.get_match(match_id)
-    if not match or not match.get("live_message_id"):
-        return
-    channel = await resolve_channel(bot_ref, match.get("channel_id"))
-    if channel is None:
-        return
-    guild = bot_ref.get_guild(int(match.get("guild_id") or 0))
     try:
-        msg = await channel.fetch_message(int(match["live_message_id"]))
-    except (discord.HTTPException, discord.NotFound):
-        return
-    player_sessions = await activity_sessions_for_challenge(match)
-    embed = build_challenge_live_embed(match, guild, player_sessions=player_sessions)
-    finished = match.get("status") == "finished"
-    view = None if finished else build_challenge_watch_view(match, bot_ref)
-    try:
-        await msg.edit(embed=embed, view=view)
-        if view is not None:
-            view.message = msg
-            bot_ref.add_view(view)
-    except discord.HTTPException as exc:
-        print(f"update_challenge_live_message failed for {match_id}: {exc}")
+        match = await match_store.get_match(match_id)
+        if not match or not match.get("live_message_id"):
+            return
+        channel = await resolve_channel(bot_ref, match.get("channel_id"))
+        if channel is None:
+            return
+        guild = bot_ref.get_guild(int(match.get("guild_id") or 0))
+        try:
+            msg = await channel.fetch_message(int(match["live_message_id"]))
+        except (discord.HTTPException, discord.NotFound, AttributeError):
+            return
+        player_sessions = await activity_sessions_for_challenge(match)
+        embed = build_challenge_live_embed(match, guild, player_sessions=player_sessions)
+        finished = match.get("status") == "finished"
+        view = None if finished else build_challenge_watch_view(match, bot_ref)
+        try:
+            await msg.edit(embed=embed, view=view)
+            if view is not None:
+                view.message = msg
+                bot_ref.add_view(view)
+        except (discord.HTTPException, AttributeError) as exc:
+            print(f"update_challenge_live_message failed for {match_id}: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        # Background task — never leave "Task exception was never retrieved".
+        print(f"update_challenge_live_message error for {match_id}: {exc}")
 
 
 def schedule_challenge_live_update(match_id: str, *, immediate: bool = False) -> None:
     if immediate:
-        asyncio.create_task(update_challenge_live_message(bot, match_id))
+        asyncio.create_task(
+            update_challenge_live_message(bot, match_id),
+            name=f"challenge-live-{match_id}",
+        )
         return
     existing = _challenge_live_tasks.get(match_id)
     if existing and not existing.done():
@@ -4265,11 +4282,15 @@ def schedule_challenge_live_update(match_id: str, *, immediate: bool = False) ->
             await update_challenge_live_message(bot, match_id)
         except asyncio.CancelledError:
             pass
+        except Exception as exc:  # noqa: BLE001
+            print(f"challenge live debounce error for {match_id}: {exc}")
         finally:
             if _challenge_live_tasks.get(match_id) is asyncio.current_task():
                 _challenge_live_tasks.pop(match_id, None)
 
-    _challenge_live_tasks[match_id] = asyncio.create_task(_debounced())
+    _challenge_live_tasks[match_id] = asyncio.create_task(
+        _debounced(), name=f"challenge-live-debounce-{match_id}"
+    )
 
 
 async def post_challenge_live_panel(
