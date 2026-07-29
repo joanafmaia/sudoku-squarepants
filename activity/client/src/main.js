@@ -29,6 +29,8 @@ let gameStarted = false;
 let gameApi = null;
 let autosaveTimer = null;
 let saving = false;
+let pendingSaveSnap = null;
+let saveSeq = 0;
 let exitHooksBound = false;
 let sessionOpenedAt = 0;
 let spectating = false;
@@ -652,38 +654,60 @@ async function saveSessionNow({ keepalive = false, force = false, snap = null } 
   if (!snap) return;
   writeLocalSession(snap);
   if (!window.__DISCORD_ACCESS_TOKEN__) return;
-  if (saving && !force && !keepalive) return;
+  // Never run overlapping saves — queue the latest snapshot so a pause
+  // (timer_active:false) cannot be overwritten by an older in-flight active save.
+  if (saving) {
+    pendingSaveSnap = snap;
+    return;
+  }
   saving = true;
   try {
-    const payload = await buildSessionPayload(snap);
-    const res = await apiFetch("/api/activity/session", {
-      method: "POST",
-      body: JSON.stringify(payload),
-      keepalive,
-    });
-    if (!res?.ok) {
-      const data = await res.json().catch(() => ({}));
-      console.warn("[Thcoku] session save failed", res?.status, data.error || data);
-      if (data.error === "invalid_board" && (data.challenge || snap.session_kind === "challenge")) {
-        // Mistakes mid-race are rejected silently; only reload a "full" forged board.
-        const filled = Number(snap.filled) || 0;
-        if (filled < 81) return;
-        showWinToast("Challenge board mismatch — reloading race puzzle…");
-        try {
-          clearLocalSession();
-          const session = await loadSavedSession();
-          if (session?.board && session.session_kind === "challenge") {
-            await beginPlay({ resumeSession: session });
+    while (snap) {
+      pendingSaveSnap = null;
+      const mySeq = ++saveSeq;
+      const payload = await buildSessionPayload(snap);
+      payload.save_seq = mySeq;
+      const res = await apiFetch("/api/activity/session", {
+        method: "POST",
+        body: JSON.stringify(payload),
+        keepalive,
+      });
+      if (!res?.ok) {
+        const data = await res.json().catch(() => ({}));
+        console.warn("[Thcoku] session save failed", res?.status, data.error || data);
+        if (data.error === "invalid_board" && (data.challenge || snap.session_kind === "challenge")) {
+          // Mistakes mid-race are rejected silently; only reload a "full" forged board.
+          const filled = Number(snap.filled) || 0;
+          if (filled < 81) {
+            snap = pendingSaveSnap;
+            continue;
           }
-        } catch (reloadErr) {
-          console.warn("[Thcoku] challenge reload after invalid_board failed", reloadErr);
+          showWinToast("Challenge board mismatch — reloading race puzzle…");
+          try {
+            clearLocalSession();
+            const session = await loadSavedSession();
+            if (session?.board && session.session_kind === "challenge") {
+              await beginPlay({ resumeSession: session });
+            }
+          } catch (reloadErr) {
+            console.warn("[Thcoku] challenge reload after invalid_board failed", reloadErr);
+          }
         }
+      }
+      snap = pendingSaveSnap;
+      if (snap) {
+        writeLocalSession(snap);
       }
     }
   } catch (err) {
     console.warn("[Thcoku] session save failed", err);
   } finally {
     saving = false;
+    if (pendingSaveSnap) {
+      const queued = pendingSaveSnap;
+      pendingSaveSnap = null;
+      void saveSessionNow({ force: true, snap: queued });
+    }
   }
 }
 

@@ -39,6 +39,24 @@ class MatchStore:
     async def update_player(self, match_id: str, slot: str, fields: dict) -> dict | None:
         raise NotImplementedError
 
+    async def try_begin_match_settlement(
+        self, match_id: str, *, stale_after_sec: float = 300.0
+    ) -> dict | None:
+        """Atomically claim settlement (active→settling). None = already claimed/done."""
+        return None
+
+    async def try_claim_player_finish(
+        self, match_id: str, slot: str, fields: dict
+    ) -> dict | None:
+        """Set finish fields only when the slot is still unfinished and not forfeited."""
+        return None
+
+    async def try_claim_player_forfeit(
+        self, match_id: str, slot: str
+    ) -> dict | None:
+        """Mark forfeit only when the slot is still unfinished and not forfeited."""
+        return None
+
     async def list_matches(self, *, status: str) -> list[dict]:
         raise NotImplementedError
 
@@ -122,8 +140,11 @@ class MatchStore:
     async def count_daily_wins(self, guild_id: int, day: str) -> int:
         raise NotImplementedError
 
-    async def save_leaderboard(self, data: dict) -> None:
-        """Persist sponges / stats / daily board so Render redeploys don't wipe them."""
+    async def save_leaderboard(self, data: dict, *, revision: int | None = None) -> None:
+        """Persist sponges / stats / daily board so Render redeploys don't wipe them.
+
+        When revision is set, older snapshots must not overwrite newer ones.
+        """
         return None
 
     async def load_leaderboard(self) -> dict | None:
@@ -205,6 +226,7 @@ class MemoryMatchStore(MatchStore):
         self._spectate_intents: dict[str, dict] = {}
         self._play_wins: set[str] = set()
         self._leaderboard: dict | None = None
+        self._leaderboard_revision: int = 0
 
     async def connect(self) -> None:
         self._load_play_wins_disk()
@@ -274,6 +296,55 @@ class MemoryMatchStore(MatchStore):
         if not doc or slot not in doc:
             return None
         doc[slot].update(fields)
+        return _clone(doc)
+
+    async def try_begin_match_settlement(
+        self, match_id: str, *, stale_after_sec: float = 300.0
+    ) -> dict | None:
+        doc = self._docs.get(match_id)
+        if not doc or doc.get("rewards_applied"):
+            return None
+        status = doc.get("status")
+        now = time.time()
+        if status == "finished":
+            return None
+        if status == "settling":
+            started = float(doc.get("settle_started_at") or 0)
+            if started and (now - started) < float(stale_after_sec):
+                return None
+        elif status != "active":
+            return None
+        doc["status"] = "settling"
+        doc["settle_started_at"] = now
+        return _clone(doc)
+
+    async def try_claim_player_finish(
+        self, match_id: str, slot: str, fields: dict
+    ) -> dict | None:
+        doc = self._docs.get(match_id)
+        if not doc or slot not in doc:
+            return None
+        if doc.get("status") == "finished":
+            return None
+        player = doc[slot]
+        if player.get("forfeit") or player.get("finished_time") is not None:
+            return None
+        player.update(fields)
+        return _clone(doc)
+
+    async def try_claim_player_forfeit(
+        self, match_id: str, slot: str
+    ) -> dict | None:
+        doc = self._docs.get(match_id)
+        if not doc or slot not in doc:
+            return None
+        if doc.get("status") == "finished":
+            return None
+        player = doc[slot]
+        if player.get("forfeit") or player.get("finished_time") is not None:
+            return None
+        player["forfeit"] = True
+        player["finished_time"] = None
         return _clone(doc)
 
     async def list_matches(self, *, status: str) -> list[dict]:
@@ -582,11 +653,14 @@ class MemoryMatchStore(MatchStore):
             and not doc.get("forfeit")
         )
 
-    async def save_leaderboard(self, data: dict) -> None:
+    async def save_leaderboard(self, data: dict, *, revision: int | None = None) -> None:
+        if revision is not None:
+            if int(self._leaderboard_revision) >= int(revision):
+                return
+            self._leaderboard = _clone(data)
+            self._leaderboard_revision = int(revision)
+            return
         self._leaderboard = _clone(data)
-
-    async def load_leaderboard(self) -> dict | None:
-        return _clone(self._leaderboard) if self._leaderboard is not None else None
 
     async def list_daily_completions(self) -> list[dict]:
         return [_clone(d) for d in self._daily.values()]
@@ -665,6 +739,72 @@ class MongoMatchStore(MatchStore):
         set_fields = {f"{slot}.{k}": v for k, v in fields.items()}
         await self._col.update_one({"_id": match_id}, {"$set": set_fields})
         return await self.get_match(match_id)
+
+    async def try_begin_match_settlement(
+        self, match_id: str, *, stale_after_sec: float = 300.0
+    ) -> dict | None:
+        from pymongo import ReturnDocument  # type: ignore
+
+        if self._col is None:
+            await self.connect()
+        now = time.time()
+        stale_before = now - float(stale_after_sec)
+        return await self._col.find_one_and_update(
+            {
+                "_id": match_id,
+                "rewards_applied": {"$ne": True},
+                "$or": [
+                    {"status": "active"},
+                    {
+                        "status": "settling",
+                        "settle_started_at": {"$lt": stale_before},
+                    },
+                    {
+                        "status": "settling",
+                        "settle_started_at": {"$exists": False},
+                    },
+                ],
+            },
+            {"$set": {"status": "settling", "settle_started_at": now}},
+            return_document=ReturnDocument.AFTER,
+        )
+
+    async def try_claim_player_finish(
+        self, match_id: str, slot: str, fields: dict
+    ) -> dict | None:
+        from pymongo import ReturnDocument  # type: ignore
+
+        if self._col is None:
+            await self.connect()
+        set_fields = {f"{slot}.{k}": v for k, v in fields.items()}
+        return await self._col.find_one_and_update(
+            {
+                "_id": match_id,
+                "status": {"$nin": ["finished"]},
+                f"{slot}.finished_time": None,
+                f"{slot}.forfeit": {"$ne": True},
+            },
+            {"$set": set_fields},
+            return_document=ReturnDocument.AFTER,
+        )
+
+    async def try_claim_player_forfeit(
+        self, match_id: str, slot: str
+    ) -> dict | None:
+        from pymongo import ReturnDocument  # type: ignore
+
+        if self._col is None:
+            await self.connect()
+        return await self._col.find_one_and_update(
+            {
+                "_id": match_id,
+                "status": {"$nin": ["finished"]},
+                f"{slot}.finished_time": None,
+                f"{slot}.forfeit": {"$ne": True},
+            },
+            {"$set": {f"{slot}.forfeit": True, f"{slot}.finished_time": None}},
+            return_document=ReturnDocument.AFTER,
+        )
 
     async def list_matches(self, *, status: str) -> list[dict]:
         cursor = self._col.find({"status": status})
@@ -1044,12 +1184,37 @@ class MongoMatchStore(MatchStore):
             {"guild_id": guild_id, "date": day, "forfeit": {"$ne": True}}
         )
 
-    async def save_leaderboard(self, data: dict) -> None:
+    async def save_leaderboard(self, data: dict, *, revision: int | None = None) -> None:
         if self._leaderboard is None:
             await self.connect()
+        payload = {
+            "_id": "main",
+            "data": _clone(data),
+            "updated_at": time.time(),
+        }
+        if revision is not None:
+            payload["revision"] = int(revision)
+            result = await self._leaderboard.update_one(
+                {
+                    "_id": "main",
+                    "$or": [
+                        {"revision": {"$exists": False}},
+                        {"revision": {"$lt": int(revision)}},
+                    ],
+                },
+                {"$set": payload},
+            )
+            if result.matched_count:
+                return
+            existing = await self._leaderboard.find_one({"_id": "main"})
+            if existing is None:
+                await self._leaderboard.replace_one(
+                    {"_id": "main"}, payload, upsert=True
+                )
+            return
         await self._leaderboard.replace_one(
             {"_id": "main"},
-            {"_id": "main", "data": _clone(data), "updated_at": time.time()},
+            payload,
             upsert=True,
         )
 

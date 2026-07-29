@@ -624,6 +624,8 @@ _challenge_live_tasks: dict[str, asyncio.Task] = {}
 _activity_notify_inflight: set[str] = set()
 _daily_finish_locks: dict[str, asyncio.Lock] = {}
 _challenge_match_locks: dict[str, asyncio.Lock] = {}
+_leaderboard_mirror_generation = 0
+_leaderboard_mirror_lock = asyncio.Lock()
 WATCH_ACTIVE_SEC = 45
 CHALLENGE_LIVE_DEBOUNCE_SEC = 4.0
 ACTIVITY_WATCH_END_GRACE_SEC = 20
@@ -647,6 +649,7 @@ def load_data() -> dict:
 
 
 def save_data(data: dict) -> None:
+    global _leaderboard_mirror_generation
     try:
         with DATA_FILE.open("w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -656,17 +659,23 @@ def save_data(data: dict) -> None:
     # Mirror to Mongo so Render restarts keep sponges / stats
     try:
         loop = asyncio.get_running_loop()
+        _leaderboard_mirror_generation += 1
+        gen = _leaderboard_mirror_generation
         snapshot = deepcopy(data)
-        loop.create_task(_mirror_leaderboard_mongo(snapshot))
+        loop.create_task(_mirror_leaderboard_mongo(snapshot, gen))
     except Exception as exc:
         print(f"save_data mirror failed: {exc}")
 
 
-async def _mirror_leaderboard_mongo(data: dict) -> None:
-    try:
-        await match_store.save_leaderboard(data)
-    except Exception as exc:  # noqa: BLE001
-        print(f"mongo leaderboard save failed: {exc}")
+async def _mirror_leaderboard_mongo(data: dict, generation: int) -> None:
+    """Write only the latest snapshot — older in-flight mirrors are skipped."""
+    async with _leaderboard_mirror_lock:
+        if generation != _leaderboard_mirror_generation:
+            return
+        try:
+            await match_store.save_leaderboard(data, revision=generation)
+        except Exception as exc:  # noqa: BLE001
+            print(f"mongo leaderboard save failed: {exc}")
 
 
 async def restore_leaderboard_from_mongo(bot: "SudokuBot") -> None:
@@ -3221,12 +3230,56 @@ async def finish_forfeit(
                 )
             try:
                 if await match_store.has_daily_claim(guild_id, user.id, day):
+                    daily["results"][str(user.id)] = {
+                        "won": True,
+                        "name": stats["name"],
+                    }
+                    save_data(data)
                     return paper_embed(
                         f"{WAVE} Quit",
                         description="Today's daily is already cleared — streak unchanged.",
                     )
             except Exception as exc:  # noqa: BLE001
                 print(f"finish_forfeit has_daily_claim failed: {exc}")
+                return paper_embed(
+                    f"{WAVE} Quit",
+                    description="Couldn't verify today's daily status — try again in a moment.",
+                )
+
+            try:
+                claimed = await match_store.try_record_daily_forfeit(
+                    guild_id=guild_id, user_id=user.id, day=day
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"finish_forfeit try_record_daily_forfeit failed: {exc}")
+                return paper_embed(
+                    f"{WAVE} Quit",
+                    description="Couldn't lock today's forfeit — try again in a moment.",
+                )
+            if not claimed:
+                try:
+                    if await match_store.has_daily_claim(guild_id, user.id, day):
+                        daily["results"][str(user.id)] = {
+                            "won": True,
+                            "name": stats["name"],
+                        }
+                        save_data(data)
+                        return paper_embed(
+                            f"{WAVE} Quit",
+                            description="Today's daily is already cleared — streak unchanged.",
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"finish_forfeit reconcile claim failed: {exc}")
+                daily["results"][str(user.id)] = {
+                    "won": False,
+                    "forfeit": True,
+                    "name": stats["name"],
+                }
+                save_data(data)
+                return paper_embed(
+                    f"{WAVE} Quit",
+                    description="Today's daily was already forfeited.",
+                )
 
             stats["losses"] += 1
             stats["games"] += 1
@@ -3238,12 +3291,6 @@ async def finish_forfeit(
                 "name": stats["name"],
             }
             save_data(data)
-            try:
-                await match_store.try_record_daily_forfeit(
-                    guild_id=guild_id, user_id=user.id, day=day
-                )
-            except Exception as exc:  # noqa: BLE001
-                print(f"finish_forfeit try_record_daily_forfeit failed: {exc}")
         return paper_embed(
             f"{WAVE} Quit",
             description="Streak wiped. Daily attempt locked for today — see you at the Krusty Krab!",
@@ -3444,6 +3491,7 @@ async def settle_challenge_match(
     match: dict,
     *,
     reason: str,
+    settle_stale_after_sec: float = 300.0,
 ) -> None:
     """Compare finish times / forfeits and announce the winner in the origin channel."""
     match_id = match.get("_id")
@@ -3458,11 +3506,24 @@ async def settle_challenge_match(
         except Exception as exc:  # noqa: BLE001
             print(f"settle_challenge_match get_match failed: {exc}")
             fresh = None
-        if not fresh or fresh.get("status") == "finished":
+        if not fresh:
+            return
+        if fresh.get("rewards_applied") or fresh.get("status") == "finished":
             return
         if not challenge_ready_to_settle(fresh):
             return
-        match = fresh
+
+        try:
+            claimed = await match_store.try_begin_match_settlement(
+                str(match_id),
+                stale_after_sec=settle_stale_after_sec,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"settle_challenge_match try_begin failed: {exc}")
+            claimed = None
+        if not claimed:
+            return
+        match = claimed
 
         entries = match_player_entries(match)
         guild_id = match["guild_id"]
@@ -3503,7 +3564,7 @@ async def settle_challenge_match(
                 if int(p.get("user_id") or 0) in tied_user_ids
             ]
             winner_name = " & ".join(names) if names else "dead heat"
-        # Award BEFORE marking finished so a crash can still retry settlement.
+        # Award after durable settle claim; rewards_applied seals the ledger.
         for _slot, player in entries:
             key = challenge_game_key(match["_id"], player["user_id"])
             await remove_game(key)
@@ -3882,7 +3943,7 @@ async def handle_challenge_completion(
             already = True
         else:
             already = False
-            match = await match_store.update_player(
+            match = await match_store.try_claim_player_finish(
                 match_id,
                 slot,
                 {
@@ -3891,6 +3952,14 @@ async def handle_challenge_completion(
                     "elapsed": elapsed,
                 },
             )
+            if match is None:
+                # Lost the race (or match finished) — re-read for settle / already state.
+                try:
+                    match = await match_store.get_match(str(match_id))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"handle_challenge_completion reget failed: {exc}")
+                    match = None
+                already = True
 
     if not match:
         await interaction.edit_original_response(
@@ -3990,7 +4059,7 @@ async def handle_challenge_completion_activity(
             match = current
             already = True
         else:
-            match = await match_store.update_player(
+            match = await match_store.try_claim_player_finish(
                 match_id,
                 slot,
                 {
@@ -3999,6 +4068,13 @@ async def handle_challenge_completion_activity(
                     "elapsed": elapsed,
                 },
             )
+            if match is None:
+                try:
+                    match = await match_store.get_match(str(match_id))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"handle_challenge_completion_activity reget failed: {exc}")
+                    match = None
+                already = True
 
     key = challenge_game_key(match_id, user_id)
     await remove_game(key)
@@ -4087,11 +4163,13 @@ async def forfeit_challenge_player(
         player = current.get(slot) if isinstance(current.get(slot), dict) else None
         if not player or player.get("forfeit") or player.get("finished_time") is not None:
             return current
-        match = await match_store.update_player(
-            str(match_id),
-            slot,
-            {"forfeit": True, "finished_time": None},
-        )
+        match = await match_store.try_claim_player_forfeit(str(match_id), slot)
+        if match is None:
+            try:
+                match = await match_store.get_match(str(match_id))
+            except Exception as exc:  # noqa: BLE001
+                print(f"forfeit_challenge_player reget failed: {exc}")
+                match = current
 
     if game_key is not None:
         await remove_game(game_key)
@@ -9085,17 +9163,26 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"list active matches failed: {exc}")
         active_matches = []
+    try:
+        settling_matches = await match_store.list_matches(status="settling")
+    except Exception as exc:  # noqa: BLE001
+        print(f"list settling matches failed: {exc}")
+        settling_matches = []
 
     stale_after = float(ACTIVITY_BLOCKING_MAX_AGE_SEC)  # 2h
-    for match in active_matches:
+    seen_ids: set[str] = set()
+    for match in list(active_matches) + list(settling_matches):
         mid = match.get("_id")
-        if not mid:
+        if not mid or str(mid) in seen_ids:
             continue
+        seen_ids.add(str(mid))
         try:
             fresh = await match_store.get_match(mid)
         except Exception:
             fresh = match
         if not fresh:
+            continue
+        if fresh.get("rewards_applied") or fresh.get("status") == "finished":
             continue
 
         age = time.time() - float(fresh.get("start_time") or 0)
@@ -9105,7 +9192,7 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
                 if player.get("forfeit") or player.get("finished_time") is not None:
                     continue
                 try:
-                    await match_store.update_player(mid, slot, {"forfeit": True})
+                    await match_store.try_claim_player_forfeit(mid, slot)
                 except Exception as ff_exc:  # noqa: BLE001
                     print(f"stale forfeit {mid}/{slot} failed: {ff_exc}")
                 uid = int(player.get("user_id") or 0)
@@ -9118,7 +9205,12 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
             except Exception:
                 fresh = None
             if fresh:
-                await settle_challenge_match(bot, fresh, reason="restart — stale match")
+                await settle_challenge_match(
+                    bot,
+                    fresh,
+                    reason="restart — stale match",
+                    settle_stale_after_sec=0,
+                )
             continue
 
         any_live = any(
@@ -9126,7 +9218,29 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
             for k in games
         )
         if fresh and challenge_ready_to_settle(fresh):
-            await settle_challenge_match(bot, fresh, reason="restart — ready to settle")
+            await settle_challenge_match(
+                bot,
+                fresh,
+                reason="restart — ready to settle",
+                settle_stale_after_sec=0,
+            )
+            continue
+        if fresh.get("status") == "settling":
+            # Mid-settle crash leftover — only retry if ready, else return to active.
+            if challenge_ready_to_settle(fresh):
+                await settle_challenge_match(
+                    bot,
+                    fresh,
+                    reason="restart — resume settling",
+                    settle_stale_after_sec=0,
+                )
+            else:
+                try:
+                    await match_store.update_match(
+                        mid, {"status": "active", "settle_started_at": None}
+                    )
+                except Exception as reset_exc:  # noqa: BLE001
+                    print(f"reset settling match {mid} failed: {reset_exc}")
             continue
         if not any_live:
             rehydrated = await restore_challenge_games_from_match(bot, fresh)
@@ -9143,11 +9257,7 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
                     if player.get("forfeit") or player.get("finished_time") is not None:
                         continue
                     try:
-                        await match_store.update_player(
-                            mid,
-                            slot,
-                            {"forfeit": True},
-                        )
+                        await match_store.try_claim_player_forfeit(mid, slot)
                     except Exception as ff_exc:  # noqa: BLE001
                         print(f"restart forfeit {mid}/{slot} failed: {ff_exc}")
                 try:
@@ -9156,7 +9266,10 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
                     fresh = None
                 if fresh and challenge_ready_to_settle(fresh):
                     await settle_challenge_match(
-                        bot, fresh, reason="restart — abandoned"
+                        bot,
+                        fresh,
+                        reason="restart — abandoned",
+                        settle_stale_after_sec=0,
                     )
                 else:
                     schedule_challenge_live_update(mid)
@@ -9950,21 +10063,11 @@ async def daily_cmd(interaction: discord.Interaction):
         await _launch_activity_window(interaction)
         return
 
-    # Lock the attempt immediately so a restart can't grant a second daily
-    daily["results"][uid] = {
-        "won": False,
-        "in_progress": True,
-        "name": interaction.user.display_name,
-    }
-    save_data(bot.data)
-
     # Don't silently overwrite an in-progress /play Activity session.
     play_session = await get_blocking_activity_session(
         guild_id, user_id, kinds={"play"}
     )
     if play_session:
-        daily["results"].pop(uid, None)
-        save_data(bot.data)
         await reply_ephemeral(
             interaction,
             "You have an active `/play` game open. Finish it or `/quit` first, then start `/daily`.",
@@ -9972,30 +10075,39 @@ async def daily_cmd(interaction: discord.Interaction):
         return
 
     session_id = f"activity:{guild_id}:{user_id}"
-    board, given, solution, diff_key = make_daily_puzzle(guild_id, daily["date"], user_id)
     try:
-        diff_index = DIFF_KEYS_LIST.index(diff_key)
-    except ValueError:
-        diff_index = difficulty_index(diff_key)
-    doc = {
-        "_id": session_id,
-        "guild_id": str(guild_id),
-        "user_id": str(user_id),
-        "difficulty": diff_key,
-        "diff_index": diff_index,
-        "elapsed": 0,
-        "board": board,
-        "given": given,
-        "solution": solution,
-        "filled": game_filled_count({"board": board}),
-        "name": interaction.user.display_name,
-        "channel_id": str(interaction.channel_id),
-        "session_kind": "daily",
-        "daily_date": daily["date"],
-        "started_at": time.time(),
-        "last_move_at": time.time(),
-    }
-    try:
+        board, given, solution, diff_key = make_daily_puzzle(
+            guild_id, daily["date"], user_id
+        )
+        try:
+            diff_index = DIFF_KEYS_LIST.index(diff_key)
+        except ValueError:
+            diff_index = difficulty_index(diff_key)
+        # Lock only after puzzle+session prep can succeed
+        daily["results"][uid] = {
+            "won": False,
+            "in_progress": True,
+            "name": interaction.user.display_name,
+        }
+        save_data(bot.data)
+        doc = {
+            "_id": session_id,
+            "guild_id": str(guild_id),
+            "user_id": str(user_id),
+            "difficulty": diff_key,
+            "diff_index": diff_index,
+            "elapsed": 0,
+            "board": board,
+            "given": given,
+            "solution": solution,
+            "filled": game_filled_count({"board": board}),
+            "name": interaction.user.display_name,
+            "channel_id": str(interaction.channel_id),
+            "session_kind": "daily",
+            "daily_date": daily["date"],
+            "started_at": time.time(),
+            "last_move_at": time.time(),
+        }
         await match_store.upsert_activity_session(doc)
         # Drop stale play orphans so they cannot shadow this daily on Activity load.
         orphan_id = f"activity:0:{user_id}"
@@ -10008,9 +10120,12 @@ async def daily_cmd(interaction: discord.Interaction):
                 print(f"clear play orphan after /daily failed: {orphan_exc}")
         await _launch_activity_window(interaction)
     except Exception as exc:
-        daily["results"].pop(str(user_id), None)
+        daily["results"].pop(uid, None)
         save_data(bot.data)
-        await match_store.delete_activity_session(session_id)
+        try:
+            await match_store.delete_activity_session(session_id)
+        except Exception as del_exc:  # noqa: BLE001
+            print(f"/daily rollback delete session failed: {del_exc}")
         if not interaction.response.is_done():
             await interaction.response.send_message(
                 f"Couldn't start the daily board: {exc}. Try again.",

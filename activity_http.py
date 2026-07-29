@@ -89,6 +89,28 @@ def _activity_win_lock(session_id: str) -> asyncio.Lock:
     return lock
 
 
+def _preserve_server_hint_progress(existing: dict | None, doc: dict) -> None:
+    """Never let an older autosave roll back a charged hint board."""
+    if not existing:
+        return
+    server_hints = int(existing.get("hints_used") or 0)
+    client_hints = int(doc.get("hints_used") or 0)
+    server_gary = int(existing.get("hints_gary_used") or 0)
+    client_gary = int(doc.get("hints_gary_used") or 0)
+    if server_hints > client_hints:
+        doc["hints_used"] = server_hints
+        doc["hints_gary_used"] = max(server_gary, client_gary)
+        if existing.get("board") is not None:
+            doc["board"] = existing["board"]
+            try:
+                doc["filled"] = int(existing.get("filled") or doc.get("filled") or 0)
+            except (TypeError, ValueError):
+                pass
+    else:
+        doc["hints_used"] = max(server_hints, client_hints)
+        doc["hints_gary_used"] = max(server_gary, client_gary)
+
+
 async def _lookup_activity_session(
     bot: Any, guild_id: str | int, user_id: str | int
 ) -> tuple[dict | None, str]:
@@ -1515,123 +1537,164 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         if prev_guild not in ("", "0"):
             store_guild = prev_guild
 
-    doc = {
-        "_id": session_id,
-        "guild_id": store_guild,
-        "user_id": str(uid),
-        "difficulty": difficulty,
-        "diff_index": diff_index,
-        "elapsed": elapsed,
-        "board": board,
-        "given": given,
-        "solution": solution,
-        "filled": filled,
-        "name": body.get("name")
-        or user.get("global_name")
-        or user.get("username")
-        or "Unknown",
-        "session_kind": session_kind,
-        "daily_date": daily_date,
-        "started_at": started_at,
-        "last_move_at": last_move_at,
-        "hints_used": hints_used,
-        "hints_gary_used": int(existing.get("hints_gary_used") or 0) if existing else 0,
-        # Live segment for spectators while Activity is visible; cleared when paused.
-        "timer_running_since": (
-            time.time() if body.get("timer_active") else None
-        ),
-    }
-    try:
-        gid_int = int(store_guild) if store_guild not in ("", "0") else 0
-    except ValueError:
-        gid_int = 0
-    if gid_int:
-        from bot import attach_gary_wisdom_to_session, guild_stats, save_data, user_stats
+    async with _activity_win_lock(session_id):
+        # Serialize with hints so a charged reveal cannot be replaced by a stale board.
+        try:
+            fresh_existing = await match_store.get_activity_session(session_id)
+        except Exception as exc:  # noqa: BLE001
+            print(f"activity save re-read failed: {exc}")
+            fresh_existing = existing
+        if fresh_existing:
+            existing = fresh_existing
+            hints_used = max(
+                int(existing.get("hints_used") or 0),
+                max(0, int(body.get("hints_used") or 0)),
+            )
+            if session_kind == "daily" or same_puzzle:
+                elapsed = _resolve_active_play_elapsed(
+                    existing, max(0, int(body.get("elapsed") or 0))
+                )
 
-        gstats = guild_stats(bot.data, gid_int)
-        pstats = user_stats(gstats, uid)
-        attach_gary_wisdom_to_session(
-            pstats, doc, existing=existing, same_puzzle=same_puzzle
-        )
-        save_data(bot.data)
-    # Keep a known channel_id — never wipe it with null from a save without SDK channel.
-    if channel_id_raw:
-        doc["channel_id"] = str(channel_id_raw)
-    elif existing and existing.get("channel_id"):
-        doc["channel_id"] = existing.get("channel_id")
-    else:
-        doc["channel_id"] = None
-    # New play puzzle must drop leftover win/watch state — delete the Discord
-    # announcement first so we never orphan an "is playing" message.
-    if existing and session_kind == "play":
-        existing_given = _normalize_activity_given(existing.get("given"), board)
-        same_puzzle = (
-            existing.get("given")
-            and existing_given is not None
-            and existing_given == given
-        )
-        if not same_puzzle:
-            doc["won_at"] = None
-            watch_cleared = True
-            refreshed = None
-            had_message = bool(existing.get("watch_message_id"))
-            if had_message or existing.get("watch_notified"):
-                try:
-                    from bot import end_activity_watch
+        try:
+            client_seq = max(0, int(body.get("save_seq") or 0))
+        except (TypeError, ValueError):
+            client_seq = 0
+        try:
+            server_seq = int((existing or {}).get("save_seq") or 0)
+        except (TypeError, ValueError):
+            server_seq = 0
+        if client_seq and server_seq and client_seq < server_seq:
+            return {
+                "ok": True,
+                "stale": True,
+                "save_seq": server_seq,
+                "filled": int((existing or {}).get("filled") or filled),
+                "elapsed": int((existing or {}).get("elapsed") or elapsed),
+            }
 
-                    ended = await end_activity_watch(bot, session_id, force=True)
-                    # Re-read — only wipe local flags if Discord message is gone.
-                    refreshed = await match_store.get_activity_session(session_id)
-                    if refreshed and refreshed.get("watch_message_id"):
+        timer_active = bool(body.get("timer_active"))
+        if timer_active:
+            timer_running_since = time.time()
+        else:
+            timer_running_since = None
+
+        doc = {
+            "_id": session_id,
+            "guild_id": store_guild,
+            "user_id": str(uid),
+            "difficulty": difficulty,
+            "diff_index": diff_index,
+            "elapsed": elapsed,
+            "board": board,
+            "given": given,
+            "solution": solution,
+            "filled": filled,
+            "name": body.get("name")
+            or user.get("global_name")
+            or user.get("username")
+            or "Unknown",
+            "session_kind": session_kind,
+            "daily_date": daily_date,
+            "started_at": started_at,
+            "last_move_at": last_move_at,
+            "hints_used": hints_used,
+            "hints_gary_used": int(existing.get("hints_gary_used") or 0) if existing else 0,
+            "save_seq": max(client_seq, server_seq),
+            # Live segment for spectators while Activity is visible; cleared when paused.
+            "timer_running_since": timer_running_since,
+        }
+        _preserve_server_hint_progress(existing, doc)
+        try:
+            gid_int = int(store_guild) if store_guild not in ("", "0") else 0
+        except ValueError:
+            gid_int = 0
+        if gid_int:
+            from bot import attach_gary_wisdom_to_session, guild_stats, save_data, user_stats
+
+            gstats = guild_stats(bot.data, gid_int)
+            pstats = user_stats(gstats, uid)
+            attach_gary_wisdom_to_session(
+                pstats, doc, existing=existing, same_puzzle=same_puzzle
+            )
+            save_data(bot.data)
+        # Keep a known channel_id — never wipe it with null from a save without SDK channel.
+        if channel_id_raw:
+            doc["channel_id"] = str(channel_id_raw)
+        elif existing and existing.get("channel_id"):
+            doc["channel_id"] = existing.get("channel_id")
+        else:
+            doc["channel_id"] = None
+        # New play puzzle must drop leftover win/watch state — delete the Discord
+        # announcement first so we never orphan an "is playing" message.
+        if existing and session_kind == "play":
+            existing_given = _normalize_activity_given(existing.get("given"), board)
+            same_puzzle = (
+                existing.get("given")
+                and existing_given is not None
+                and existing_given == given
+            )
+            if not same_puzzle:
+                doc["won_at"] = None
+                watch_cleared = True
+                refreshed = None
+                had_message = bool(existing.get("watch_message_id"))
+                if had_message or existing.get("watch_notified"):
+                    try:
+                        from bot import end_activity_watch
+
+                        ended = await end_activity_watch(bot, session_id, force=True)
+                        # Re-read — only wipe local flags if Discord message is gone.
+                        refreshed = await match_store.get_activity_session(session_id)
+                        if refreshed and refreshed.get("watch_message_id"):
+                            watch_cleared = False
+                            print(
+                                f"activity watch still live after new-puzzle end "
+                                f"for {session_id}; keeping message id"
+                            )
+                        elif had_message and not ended:
+                            watch_cleared = False
+                    except Exception as exc:  # noqa: BLE001
                         watch_cleared = False
-                        print(
-                            f"activity watch still live after new-puzzle end "
-                            f"for {session_id}; keeping message id"
-                        )
-                    elif had_message and not ended:
-                        watch_cleared = False
-                except Exception as exc:  # noqa: BLE001
-                    watch_cleared = False
-                    print(f"activity watch clear on new puzzle failed: {exc}")
-            if watch_cleared:
-                source = refreshed if refreshed is not None else existing
-                # Flag set without message_id — keep once-flag so we never re-post
-                # over a possible Discord orphan.
-                if source.get("watch_once_notified") and not source.get("watch_message_id"):
-                    doc["watch_once_notified"] = True
-                    doc["watch_notified"] = False
-                    doc["watch_message_id"] = None
-                    doc["watch_posted_at"] = None
+                        print(f"activity watch clear on new puzzle failed: {exc}")
+                if watch_cleared:
+                    source = refreshed if refreshed is not None else existing
+                    # Flag set without message_id — keep once-flag so we never re-post
+                    # over a possible Discord orphan.
+                    if source.get("watch_once_notified") and not source.get("watch_message_id"):
+                        doc["watch_once_notified"] = True
+                        doc["watch_notified"] = False
+                        doc["watch_message_id"] = None
+                        doc["watch_posted_at"] = None
+                    else:
+                        doc["watch_once_notified"] = False
+                        doc["watch_notified"] = False
+                        doc["watch_message_id"] = None
+                        doc["watch_posted_at"] = None
                 else:
-                    doc["watch_once_notified"] = False
-                    doc["watch_notified"] = False
-                    doc["watch_message_id"] = None
-                    doc["watch_posted_at"] = None
-            else:
-                # Keep pointing at the live Discord message; do not post a second one.
-                keep_from = refreshed or existing
-                for watch_key in (
-                    "watch_once_notified",
-                    "watch_notified",
-                    "watch_message_id",
-                    "watch_channel_id",
-                    "watch_posted_at",
-                ):
-                    if keep_from.get(watch_key) is not None:
-                        doc[watch_key] = keep_from[watch_key]
-                doc["watch_once_notified"] = True
-    # Preserve live watch fields on same-puzzle autosaves (belt + suspenders).
-    if existing and "watch_message_id" not in doc:
-        for watch_key in (
-            "watch_once_notified",
-            "watch_notified",
-            "watch_message_id",
-            "watch_channel_id",
-            "watch_posted_at",
-        ):
-            if existing.get(watch_key) is not None and watch_key not in doc:
-                doc[watch_key] = existing[watch_key]
-    await match_store.upsert_activity_session(doc)
+                    # Keep pointing at the live Discord message; do not post a second one.
+                    keep_from = refreshed or existing
+                    for watch_key in (
+                        "watch_once_notified",
+                        "watch_notified",
+                        "watch_message_id",
+                        "watch_channel_id",
+                        "watch_posted_at",
+                    ):
+                        if keep_from.get(watch_key) is not None:
+                            doc[watch_key] = keep_from[watch_key]
+                    doc["watch_once_notified"] = True
+        # Preserve live watch fields on same-puzzle autosaves (belt + suspenders).
+        if existing and "watch_message_id" not in doc:
+            for watch_key in (
+                "watch_once_notified",
+                "watch_notified",
+                "watch_message_id",
+                "watch_channel_id",
+                "watch_posted_at",
+            ):
+                if existing.get(watch_key) is not None and watch_key not in doc:
+                    doc[watch_key] = existing[watch_key]
+        await match_store.upsert_activity_session(doc)
     wrong_id = _activity_session_id("0", uid)
     if wrong_id != session_id:
         wrong = await match_store.get_activity_session(wrong_id)
