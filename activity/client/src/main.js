@@ -781,17 +781,29 @@ function startAutosave() {
   exitHooksBound = true;
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
+      gameApi?.pauseTimer?.();
       flushSessionOnExit({ endWatch: false });
     } else {
+      gameApi?.resumeTimer?.();
       reportSessionActive();
     }
   });
   window.addEventListener("pagehide", (event) => {
+    gameApi?.pauseTimer?.();
     flushSessionOnExit({ endWatch: !event.persisted });
   });
-  window.addEventListener("beforeunload", () => flushSessionOnExit({ endWatch: true }));
+  window.addEventListener("beforeunload", () => {
+    gameApi?.pauseTimer?.();
+    flushSessionOnExit({ endWatch: true });
+  });
   // Discord Embedded App may freeze the frame without a full unload.
-  document.addEventListener("freeze", () => flushSessionOnExit({ endWatch: true }));
+  document.addEventListener("freeze", () => {
+    gameApi?.pauseTimer?.();
+    flushSessionOnExit({ endWatch: true });
+  });
+  document.addEventListener("resume", () => {
+    gameApi?.resumeTimer?.();
+  });
 }
 
 export function closeDiscordActivity() {

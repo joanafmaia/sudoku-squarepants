@@ -552,7 +552,10 @@ export function startThcokuGame(canvas, options = {}) {
     won: false,
     reportingWin: false,
     boardGen: 0,
-    startedAt: Date.now(),
+    // Active play time only (pauses when Activity is hidden/closed).
+    baseElapsedSec: 0,
+    runStartedAt: Date.now(),
+    sessionStartedAt: Date.now(),
     board: [],
     given: [],
     solution: [],
@@ -680,6 +683,33 @@ export function startThcokuGame(canvas, options = {}) {
     ctx.fillText(String(state.status).slice(0, 42), 36, 58);
   }
 
+  function getElapsedSec() {
+    // Challenge races are ranked on wall-clock — keep the UI in sync.
+    if (state.sessionKind === "challenge" && state.sessionStartedAt) {
+      return Math.max(0, Math.floor((Date.now() - state.sessionStartedAt) / 1000));
+    }
+    let elapsed = Math.max(0, Number(state.baseElapsedSec) || 0);
+    if (state.runStartedAt && !state.won) {
+      elapsed += Math.max(0, Math.floor((Date.now() - state.runStartedAt) / 1000));
+    }
+    return elapsed;
+  }
+
+  function pauseTimer() {
+    // Challenge races stay wall-clock on the server — keep the on-screen clock running.
+    if (state.sessionKind === "challenge") return;
+    if (!state.runStartedAt) return;
+    state.baseElapsedSec = getElapsedSec();
+    state.runStartedAt = null;
+  }
+
+  function resumeTimer() {
+    if (state.runStartedAt || state.won || state.reportingWin || state.spectatorMode) {
+      return;
+    }
+    state.runStartedAt = Date.now();
+  }
+
   function setWatchers(watchers) {
     // Watcher list is rendered in the HTML toolbar chip (readable on mobile).
     state.watchers = Array.isArray(watchers) ? watchers.slice() : [];
@@ -712,14 +742,16 @@ export function startThcokuGame(canvas, options = {}) {
     const payload = {
       difficulty: state.difficulty,
       diff_index: state.diffIndex,
-      elapsed: Math.floor((Date.now() - state.startedAt) / 1000),
+      elapsed: getElapsedSec(),
       board: state.board,
       given: state.given,
       filled: filledCount(state.board),
       session_kind: state.sessionKind,
       hints_used: state.hintsUsed,
       hints_max: state.hintsMax,
-      started_at: state.startedAt / 1000,
+      // Original open time (metadata only) — elapsed is active screen time.
+      started_at: (state.sessionStartedAt || Date.now()) / 1000,
+      timer_active: Boolean(state.runStartedAt) && !state.won && !state.spectatorMode,
     };
     if (state.dailyDate) payload.daily_date = state.dailyDate;
     if (state.matchId) payload.match_id = state.matchId;
@@ -772,11 +804,13 @@ export function startThcokuGame(canvas, options = {}) {
     state.confetti = [];
     state.pencilMode = false;
     state.flashCell = null;
-    if (snap.started_at != null && Number(snap.started_at) > 0) {
-      state.startedAt = Number(snap.started_at) * 1000;
-    } else {
-      state.startedAt = Date.now() - Math.max(0, Number(snap.elapsed) || 0) * 1000;
-    }
+    // Resume from frozen active seconds — do NOT re-anchor to wall-clock started_at.
+    state.baseElapsedSec = Math.max(0, Number(snap.elapsed) || 0);
+    state.sessionStartedAt =
+      snap.started_at != null && Number(snap.started_at) > 0
+        ? Number(snap.started_at) * 1000
+        : Date.now() - state.baseElapsedSec * 1000;
+    state.runStartedAt = state.spectatorMode ? null : Date.now();
     state.sessionKind = snap.session_kind || null;
     state.dailyDate = snap.daily_date || null;
     state.matchId = snap.match_id || null;
@@ -976,7 +1010,9 @@ export function startThcokuGame(canvas, options = {}) {
     state.solution = puzzle.solution;
     state.difficulty = puzzle.difficulty;
     state.selected = [0, 0];
-    state.startedAt = Date.now();
+    state.baseElapsedSec = 0;
+    state.runStartedAt = Date.now();
+    state.sessionStartedAt = Date.now();
     state.pencilMode = false;
     state.flashCell = null;
     state.hintsUsed = 0;
@@ -1046,7 +1082,8 @@ export function startThcokuGame(canvas, options = {}) {
   function celebrateWin() {
     if (state.won || state.reportingWin) return;
     state.reportingWin = true;
-    const elapsed = Math.floor((Date.now() - state.startedAt) / 1000);
+    pauseTimer();
+    const elapsed = getElapsedSec();
     const gen = state.boardGen;
     const run = async () => {
       try {
@@ -1767,5 +1804,8 @@ export function startThcokuGame(canvas, options = {}) {
     loadSpectatorSnapshot,
     syncControls,
     setWatchers,
+    pauseTimer,
+    resumeTimer,
+    getElapsedSec,
   };
 }

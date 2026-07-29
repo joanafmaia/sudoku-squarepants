@@ -2934,7 +2934,7 @@ def finish_win(
     gstats = guild_stats(data, guild_id)
     stats = user_stats(gstats, user.id)
     stats["name"] = getattr(user, "display_name", user.name)
-    elapsed = time.time() - game["started_at"]
+    elapsed = float(game_elapsed_sec(game))
     is_daily = game["mode"] == "daily"
 
     if not award and is_daily:
@@ -3067,7 +3067,7 @@ async def finish_win_and_announce(
         return finish_win(bot.data, guild_id, user, game)
 
     day = game.get("daily_date") or utc_today()
-    elapsed = int(time.time() - game["started_at"])
+    elapsed = game_elapsed_sec(game)
     tier = difficulty_label(game.get("difficulty"))
 
     lock = _daily_finish_lock(guild_id, user.id, day)
@@ -3188,6 +3188,7 @@ def finish_forfeit(data: dict, guild_id: int, user: discord.abc.User, game: dict
     # Calendar streak only breaks on daily forfeit — never play or challenge.
     if mode == "daily":
         stats["streak"] = 0
+        stats["last_streak_day"] = None
         day = game.get("daily_date") or utc_today()
         daily = get_guild_daily(data, guild_id)
         daily["results"][str(user.id)] = {
@@ -4620,15 +4621,29 @@ def game_filled_count(game: dict) -> int:
 
 
 def game_elapsed_sec(game: dict) -> int:
+    """Prefer explicit active elapsed when present; else wall-clock from started_at."""
+    if game.get("elapsed") is not None:
+        try:
+            return max(0, int(float(game["elapsed"])))
+        except (TypeError, ValueError):
+            pass
     return max(0, int(time.time() - float(game.get("started_at") or time.time())))
 
 
 def activity_session_elapsed(session: dict) -> int:
-    """Wall-clock elapsed for spectators — prefer server started_at over client saves."""
+    """Active play time for spectators — frozen elapsed + live open segment."""
+    base = max(0, int(session.get("elapsed") or 0))
+    running = session.get("timer_running_since")
+    if running:
+        try:
+            base += max(0, int(time.time() - float(running)))
+        except (TypeError, ValueError):
+            pass
     started = float(session.get("started_at") or 0)
     if started > 0:
-        return max(0, int(time.time() - started))
-    return max(0, int(session.get("elapsed") or 0))
+        wall = max(0, int(time.time() - started))
+        base = min(base, wall)
+    return max(0, base)
 
 
 async def lookup_user_activity_session(

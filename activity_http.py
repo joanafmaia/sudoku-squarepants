@@ -589,11 +589,8 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
             return {"ok": False, "error": "not_solved"}
 
         started_at = float(session.get("started_at") or 0)
-        if started_at > 0:
-            elapsed = max(0, int(time.time() - started_at))
-        elif session.get("elapsed") is not None:
-            elapsed = max(0, int(session.get("elapsed") or 0))
-        else:
+        elapsed = _resolve_active_play_elapsed(session, client_elapsed)
+        if started_at <= 0 and session.get("elapsed") is None and client_elapsed <= 0:
             print(
                 f"activity win rejected user={uid} guild={guild_id}: "
                 "no_server_elapsed"
@@ -629,6 +626,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                 "mode": "daily",
                 "daily_date": daily_date,
                 "started_at": game_started,
+                "elapsed": elapsed,
                 "difficulty": difficulty,
                 "board": board,
                 "given": given,
@@ -761,6 +759,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
         game_state = {
             "mode": "play",
             "started_at": game_started,
+            "elapsed": elapsed,
             "difficulty": difficulty,
             "board": board,
             "given": given,
@@ -887,17 +886,43 @@ def _hints_max_for_session(session_kind: str | None, doc: dict | None = None) ->
     return base + bonus
 
 
+def _resolve_active_play_elapsed(
+    session: dict | None,
+    client_elapsed: int | None = None,
+    *,
+    now: float | None = None,
+) -> int:
+    """Active screen time for /play and /daily (not wall-clock since /command).
+
+    Uses the higher of stored session.elapsed and the client report, then caps by
+    wall-clock since started_at so a spoofed client cannot invent infinite time.
+    When the Activity is currently open (timer_running_since), add the live segment.
+    """
+    ts = time.time() if now is None else float(now)
+    stored = max(0, int((session or {}).get("elapsed") or 0))
+    client = max(0, int(client_elapsed or 0))
+    elapsed = max(stored, client)
+    running = (session or {}).get("timer_running_since")
+    if running:
+        try:
+            elapsed = max(elapsed, stored + max(0, int(ts - float(running))))
+        except (TypeError, ValueError):
+            pass
+    started = float((session or {}).get("started_at") or 0)
+    if started > 0:
+        wall = max(0, int(ts - started))
+        elapsed = min(elapsed, wall)
+    return max(0, int(elapsed))
+
+
 def _client_activity_session(doc: dict, *, strip_solution: bool = True) -> dict:
     """Session payload for the Activity client (solution withheld server-side)."""
     from bot import normalize_solution
 
     session_kind = doc.get("session_kind") or "play"
     from bot import HINT_SPONGE_COST, hint_gary_free_remaining
-    started = float(doc.get("started_at") or 0)
-    if started > 0:
-        elapsed_display = max(0, int(time.time() - started))
-    else:
-        elapsed_display = int(doc.get("elapsed") or 0)
+    # Frozen active seconds only — client restarts its run clock on load.
+    elapsed_display = max(0, int(doc.get("elapsed") or 0))
     difficulty = doc.get("difficulty") or "medium"
     if session_kind == "daily":
         from bot import DIFF_KEYS_LIST, daily_difficulty_for_date, utc_today
@@ -937,6 +962,7 @@ def _client_activity_session(doc: dict, *, strip_solution: bool = True) -> dict:
         "gary_free_left": hint_gary_free_remaining(doc),
         "hint_sponge_cost": HINT_SPONGE_COST,
     }
+    started = float(doc.get("started_at") or 0)
     if started > 0:
         payload["started_at"] = started
     if not strip_solution:
@@ -1404,9 +1430,14 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
                 solution = existing.get("solution")
                 difficulty, diff_index = resolve_session_difficulty(existing)
                 accepting_client_puzzle = False
+                elapsed = _resolve_active_play_elapsed(existing, elapsed)
             elif session_kind == "play":
                 # New play puzzle — reset the session clock and any stale win claim.
                 started_at = time.time()
+                elapsed = max(0, int(body.get("elapsed") or 0))
+        elif session_kind == "daily":
+            # Daily session without a full board yet — still accumulate active time.
+            elapsed = _resolve_active_play_elapsed(existing, elapsed)
 
     if session_kind == "daily":
         from bot import DIFF_KEYS_LIST, daily_difficulty_for_date, utc_today
@@ -1485,6 +1516,10 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         "last_move_at": last_move_at,
         "hints_used": hints_used,
         "hints_gary_used": int(existing.get("hints_gary_used") or 0) if existing else 0,
+        # Live segment for spectators while Activity is visible; cleared when paused.
+        "timer_running_since": (
+            time.time() if body.get("timer_active") else None
+        ),
     }
     try:
         gid_int = int(guild_id) if str(guild_id) not in ("", "0") else 0
