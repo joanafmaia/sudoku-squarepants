@@ -112,6 +112,13 @@ class MatchStore:
         """Drop a play-win claim when payout failed after try_claim_play_win."""
         return False
 
+    async def release_daily_win(self, guild_id: int, user_id: int, day: str) -> bool:
+        """Drop a daily win claim when payout failed after try_claim_daily_win.
+
+        Never deletes a forfeit doc.
+        """
+        return False
+
     async def count_daily_wins(self, guild_id: int, day: str) -> int:
         raise NotImplementedError
 
@@ -557,6 +564,15 @@ class MemoryMatchStore(MatchStore):
         self._persist_play_wins_disk()
         return True
 
+    async def release_daily_win(self, guild_id: int, user_id: int, day: str) -> bool:
+        key = self._daily_key(guild_id, user_id, day)
+        doc = self._daily.get(key)
+        if not doc or doc.get("forfeit"):
+            return False
+        del self._daily[key]
+        self._persist_daily_disk()
+        return True
+
     async def count_daily_wins(self, guild_id: int, day: str) -> int:
         return sum(
             1
@@ -771,8 +787,13 @@ class MongoMatchStore(MatchStore):
                 {"guild_id": {"$exists": False}},
             ]
         sort = [("last_move_at", -1), ("updated_at", -1)]
+        # Prefer a real board — preference stubs store board: null which still $exists.
         doc = await self._activity.find_one(
-            {**query, "board": {"$exists": True}, "given": {"$exists": True}},
+            {
+                **query,
+                "board": {"$type": "array"},
+                "given": {"$type": "array"},
+            },
             sort=sort,
         )
         if doc:
@@ -1001,6 +1022,17 @@ class MongoMatchStore(MatchStore):
             return False
         doc_id = f"{guild_id}:{user_id}:{puzzle_key}"
         result = await self._play_wins.delete_one({"_id": doc_id})
+        return bool(getattr(result, "deleted_count", 0))
+
+    async def release_daily_win(self, guild_id: int, user_id: int, day: str) -> bool:
+        if self._daily is None:
+            await self.connect()
+        if self._daily is None:
+            return False
+        doc_id = f"{guild_id}:{day}:{user_id}"
+        result = await self._daily.delete_one(
+            {"_id": doc_id, "forfeit": {"$ne": True}}
+        )
         return bool(getattr(result, "deleted_count", 0))
 
     async def count_daily_wins(self, guild_id: int, day: str) -> int:

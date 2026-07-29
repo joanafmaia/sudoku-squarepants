@@ -527,7 +527,7 @@ async function loadSavedSession() {
           ...remote,
           board: local.board,
           filled: lFilled,
-          elapsed: local.elapsed ?? remote.elapsed,
+          elapsed: Math.max(Number(local.elapsed) || 0, Number(remote.elapsed) || 0),
           hints_used: Math.max(
             Number(remote.hints_used) || 0,
             Number(local.hints_used) || 0
@@ -607,17 +607,17 @@ async function clearSavedSession({ preserveDiffIndex = null } = {}) {
     let res = await apiFetch(`/api/activity/session?guild_id=${encoded}`, { method: "DELETE" });
     if (res?.ok) {
       const data = await res.json().catch(() => ({}));
-      if (data.cleared !== false) {
-        if (preserveDiffIndex != null) await writeDiffPreference(preserveDiffIndex);
+      if (data.cleared === false) {
+        console.info(
+          "[Thcoku] session kept —",
+          data.reason || data.error || "not cleared"
+        );
         return;
       }
-      if (data.reason === "active_challenge") {
-        console.info("[Thcoku] session kept — challenge race in progress");
-        return;
-      }
-    }
-    if (res && (res.ok || res.status === 401 || res.status === 404)) {
       if (preserveDiffIndex != null) await writeDiffPreference(preserveDiffIndex);
+      return;
+    }
+    if (res && (res.status === 401 || res.status === 404)) {
       return;
     }
     res = await apiFetch("/api/activity/session", {
@@ -626,8 +626,11 @@ async function clearSavedSession({ preserveDiffIndex = null } = {}) {
     });
     if (res?.ok) {
       const data = await res.json().catch(() => ({}));
-      if (data.cleared === false && data.reason === "active_challenge") {
-        console.info("[Thcoku] session kept — challenge race in progress");
+      if (data.cleared === false) {
+        console.info(
+          "[Thcoku] session kept —",
+          data.reason || data.error || "not cleared"
+        );
         return;
       }
     }

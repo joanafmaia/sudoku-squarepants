@@ -1133,7 +1133,9 @@ export function startThcokuGame(canvas, options = {}) {
     let targetR = state.selected[0];
     let targetC = state.selected[1];
 
-    if (state.serverHints || !state.solution?.length) {
+    // Prefer server hints whenever available so sponge charges stay authoritative.
+    // Local solution fill is offline-only fallback.
+    if (state.serverHints || !state.solution?.length || typeof options.onHint === "function") {
       if (typeof options.onHint !== "function") {
         state.status = "Hints unavailable offline.";
         draw();

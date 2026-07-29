@@ -643,10 +643,13 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                     session_id, {"won_at": time.time(), "filled": 81}
                 )
                 await _cleanup_activity_session_after_win(bot, session_id, uid)
+                reason = outcome.quiet_reason or (
+                    "already_won" if int(outcome.coins) > 0 else "daily_locked"
+                )
                 return {
                     "ok": True,
-                    "already_won": int(outcome.coins) > 0,
-                    "error": "already_won" if int(outcome.coins) > 0 else "daily_locked",
+                    "already_won": reason == "already_won",
+                    "error": reason,
                     "daily": True,
                     "quiet": True,
                     "coins": int(outcome.coins),
@@ -911,7 +914,9 @@ def _resolve_active_play_elapsed(
     started = float((session or {}).get("started_at") or 0)
     if started > 0:
         wall = max(0, int(ts - started))
-        elapsed = min(elapsed, wall)
+        # Don't crush active time when started_at was reset later than accrued play.
+        if wall >= stored:
+            elapsed = min(elapsed, wall)
     return max(0, int(elapsed))
 
 
@@ -1330,16 +1335,21 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
 
         diff_key, diff_index = resolve_session_difficulty(body)
         session_id = _activity_session_id(guild_id, uid)
+        store_guild = str(guild_id)
+        existing = None
         if str(guild_id) in ("", "0"):
             existing, looked_up_id = await _lookup_activity_session(bot, guild_id, uid)
             if existing:
                 session_id = looked_up_id
+                prev = str(existing.get("guild_id") or "")
+                if prev not in ("", "0"):
+                    store_guild = prev
         await match_store.merge_activity_session(
             session_id,
             {
                 "diff_index": diff_index,
                 "difficulty": diff_key,
-                "guild_id": str(guild_id),
+                "guild_id": store_guild,
                 "user_id": str(uid),
                 "session_kind": "play",
                 "board": None,
@@ -1412,13 +1422,17 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
 
     session_kind = "play"
     daily_date = None
-    started_at = time.time()
+    started_at = time.time() - elapsed
     accepting_client_puzzle = True
     same_puzzle = False
     if existing:
         session_kind = existing.get("session_kind") or "play"
         daily_date = existing.get("daily_date")
-        started_at = existing.get("started_at") or time.time()
+        prior_started = float(existing.get("started_at") or 0)
+        if prior_started > 0:
+            started_at = prior_started
+        else:
+            started_at = time.time() - elapsed
         # Pin puzzle metadata once authorized. Daily is always immutable.
         # Play: keep solution/difficulty if the given clues still match (same puzzle);
         # a different given matrix means the player started a new game.
@@ -1433,7 +1447,7 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
                 elapsed = _resolve_active_play_elapsed(existing, elapsed)
             elif session_kind == "play":
                 # New play puzzle — reset the session clock and any stale win claim.
-                started_at = time.time()
+                started_at = time.time() - max(0, int(body.get("elapsed") or 0))
                 elapsed = max(0, int(body.get("elapsed") or 0))
         elif session_kind == "daily":
             # Daily session without a full board yet — still accumulate active time.
@@ -1495,9 +1509,15 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         existing, filled, same_puzzle=same_puzzle
     )
 
+    store_guild = str(guild_id)
+    if store_guild in ("", "0") and existing:
+        prev_guild = str(existing.get("guild_id") or "")
+        if prev_guild not in ("", "0"):
+            store_guild = prev_guild
+
     doc = {
         "_id": session_id,
-        "guild_id": guild_id,
+        "guild_id": store_guild,
         "user_id": str(uid),
         "difficulty": difficulty,
         "diff_index": diff_index,
@@ -1522,7 +1542,7 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         ),
     }
     try:
-        gid_int = int(guild_id) if str(guild_id) not in ("", "0") else 0
+        gid_int = int(store_guild) if store_guild not in ("", "0") else 0
     except ValueError:
         gid_int = 0
     if gid_int:
@@ -2005,7 +2025,7 @@ async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> di
                         "message": "Board is solved but rewards could not be saved; try again.",
                     }
             else:
-                finish_forfeit(
+                await finish_forfeit(
                     bot.data,
                     gid,
                     actor,
@@ -2055,7 +2075,7 @@ async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> di
                     }
             else:
                 # Abandon mid-game via clear/"new order" — quit play (daily streak kept).
-                finish_forfeit(
+                await finish_forfeit(
                     bot.data,
                     gid,
                     actor,

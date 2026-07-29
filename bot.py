@@ -2835,6 +2835,8 @@ class WinOutcome:
     xp: int = 0
     rank: int | None = None
     quiet: bool = False
+    # When quiet: already_won | forfeited | claim_unavailable
+    quiet_reason: str | None = None
     xp_boost_used: bool = False
     xp_boost_remaining: int = 0
     krabby_snack_used: bool = False
@@ -3085,6 +3087,7 @@ async def finish_win_and_announce(
                 xp=prior_xp,
                 rank=quiet.rank,
                 quiet=True,
+                quiet_reason="already_won",
             )
 
         if prior.get("forfeit"):
@@ -3095,6 +3098,7 @@ async def finish_win_and_announce(
                 xp=0,
                 rank=quiet.rank,
                 quiet=True,
+                quiet_reason="forfeited",
             )
 
         gstats = guild_stats(bot.data, guild_id)
@@ -3107,8 +3111,9 @@ async def finish_win_and_announce(
         )
 
         # Fail-closed like award_play_win: never pay if the durable claim store is down.
+        claimed = False
         try:
-            claimed = await match_store.try_claim_daily_win(
+            claimed_ok = await match_store.try_claim_daily_win(
                 guild_id=guild_id,
                 user_id=user.id,
                 day=day,
@@ -3122,7 +3127,7 @@ async def finish_win_and_announce(
             print(f"try_claim_daily_win failed (fail-closed): {exc}")
             raise
 
-        if claimed is False:
+        if claimed_ok is False:
             try:
                 already = await match_store.has_daily_claim(guild_id, user.id, day)
             except Exception:
@@ -3135,6 +3140,7 @@ async def finish_win_and_announce(
                     xp=int(prior.get("xp") or prior.get("coins") or preview_coins),
                     rank=quiet.rank,
                     quiet=True,
+                    quiet_reason="already_won",
                 )
             # Duplicate key may be a durable forfeit — never award over it.
             try:
@@ -3150,6 +3156,7 @@ async def finish_win_and_announce(
                     xp=0,
                     rank=quiet.rank,
                     quiet=True,
+                    quiet_reason="forfeited",
                 )
             # Claim miss without claim/forfeit doc — refuse local award (fail-closed).
             print(
@@ -3163,10 +3170,19 @@ async def finish_win_and_announce(
                 xp=0,
                 rank=quiet.rank,
                 quiet=True,
+                quiet_reason="claim_unavailable",
             )
 
-        outcome = finish_win(bot.data, guild_id, user, game)
-        return outcome
+        claimed = True
+        try:
+            return finish_win(bot.data, guild_id, user, game)
+        except Exception:
+            if claimed:
+                try:
+                    await match_store.release_daily_win(guild_id, user.id, day)
+                except Exception as rel_exc:  # noqa: BLE001
+                    print(f"release_daily_win failed: {rel_exc}")
+            raise
 
 
 async def record_daily_forfeit_mongo(guild_id: int, user_id: int, day: str) -> None:
@@ -3178,39 +3194,67 @@ async def record_daily_forfeit_mongo(guild_id: int, user_id: int, day: str) -> N
         print(f"record_daily_forfeit_mongo failed: {exc}")
 
 
-def finish_forfeit(data: dict, guild_id: int, user: discord.abc.User, game: dict) -> discord.Embed:
+async def finish_forfeit(
+    data: dict, guild_id: int, user: discord.abc.User, game: dict
+) -> discord.Embed:
+    """Record a quit/forfeit. Daily path uses the same lock as wins to avoid races."""
     gstats = guild_stats(data, guild_id)
     stats = user_stats(gstats, user.id)
     stats["name"] = getattr(user, "display_name", user.name)
+    mode = normalize_game_mode(game.get("mode"))
+
+    if mode == "daily":
+        day = game.get("daily_date") or utc_today()
+        lock = _daily_finish_lock(guild_id, user.id, day)
+        async with lock:
+            daily = get_guild_daily(data, guild_id)
+            prior = daily.get("results", {}).get(str(user.id)) or {}
+            if prior.get("won"):
+                return paper_embed(
+                    f"{WAVE} Quit",
+                    description="Today's daily is already cleared — streak unchanged.",
+                )
+            if prior.get("forfeit"):
+                return paper_embed(
+                    f"{WAVE} Quit",
+                    description="Today's daily was already forfeited.",
+                )
+            try:
+                if await match_store.has_daily_claim(guild_id, user.id, day):
+                    return paper_embed(
+                        f"{WAVE} Quit",
+                        description="Today's daily is already cleared — streak unchanged.",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                print(f"finish_forfeit has_daily_claim failed: {exc}")
+
+            stats["losses"] += 1
+            stats["games"] += 1
+            stats["streak"] = 0
+            stats["last_streak_day"] = None
+            daily["results"][str(user.id)] = {
+                "won": False,
+                "forfeit": True,
+                "name": stats["name"],
+            }
+            save_data(data)
+            try:
+                await match_store.try_record_daily_forfeit(
+                    guild_id=guild_id, user_id=user.id, day=day
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"finish_forfeit try_record_daily_forfeit failed: {exc}")
+        return paper_embed(
+            f"{WAVE} Quit",
+            description="Streak wiped. Daily attempt locked for today — see you at the Krusty Krab!",
+        )
+
     stats["losses"] += 1
     stats["games"] += 1
-    mode = normalize_game_mode(game.get("mode"))
-    # Calendar streak only breaks on daily forfeit — never play or challenge.
-    if mode == "daily":
-        stats["streak"] = 0
-        stats["last_streak_day"] = None
-        day = game.get("daily_date") or utc_today()
-        daily = get_guild_daily(data, guild_id)
-        daily["results"][str(user.id)] = {
-            "won": False,
-            "forfeit": True,
-            "name": stats["name"],
-        }
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(record_daily_forfeit_mongo(guild_id, user.id, day))
-        except RuntimeError:
-            pass
     save_data(data)
-    if mode == "daily":
-        note = " Daily attempt locked for today — see you at the Krusty Krab!"
-        wipe = "Streak wiped."
-    else:
-        note = ""
-        wipe = "Quit — daily streak unchanged."
     return paper_embed(
         f"{WAVE} Quit",
-        description=f"{wipe}{note}",
+        description="Quit — daily streak unchanged.",
     )
 
 
@@ -3459,16 +3503,7 @@ async def settle_challenge_match(
                 if int(p.get("user_id") or 0) in tied_user_ids
             ]
             winner_name = " & ".join(names) if names else "dead heat"
-        await match_store.update_match(
-            match["_id"],
-            {
-                "status": "finished",
-                "winner_id": winner_id,
-                "winner_name": winner_name,
-                "settle_reason": detail,
-            },
-        )
-
+        # Award BEFORE marking finished so a crash can still retry settlement.
         for _slot, player in entries:
             key = challenge_game_key(match["_id"], player["user_id"])
             await remove_game(key)
@@ -3622,6 +3657,17 @@ async def settle_challenge_match(
             loser_stats["coins"] += CHALLENGE_LOSER_COINS
         save_data(bot.data)
 
+        await match_store.update_match(
+            match["_id"],
+            {
+                "status": "finished",
+                "winner_id": winner_id,
+                "winner_name": winner_name,
+                "settle_reason": detail,
+                "rewards_applied": True,
+            },
+        )
+
         announce_payload = {
             "match": match,
             "entries": entries,
@@ -3720,9 +3766,14 @@ async def settle_challenge_match(
             ranked_lines.append(
                 f"Other finishers: {format_sponges(CHALLENGE_LOSER_COINS, signed=True)} consolation each"
             )
-        ranked_lines.append(
-            f"Difficulty: **{difficulty_label(match.get('difficulty'))}** · winner ×{CHALLENGE_WIN_MULT:g}"
-        )
+        if detail in ("fastest finish", "dead heat"):
+            ranked_lines.append(
+                f"Difficulty: **{difficulty_label(match.get('difficulty'))}** · winner ×{CHALLENGE_WIN_MULT:g}"
+            )
+        else:
+            ranked_lines.append(
+                f"Difficulty: **{difficulty_label(match.get('difficulty'))}**"
+            )
         for note in reward_notes:
             ranked_lines.append(f"🎁 {note}")
         ranked_lines.append(
@@ -4792,7 +4843,10 @@ def activity_session_elapsed(session: dict) -> int:
     started = float(session.get("started_at") or 0)
     if started > 0:
         wall = max(0, int(time.time() - started))
-        base = min(base, wall)
+        # Don't crush when started_at was reset after active time accrued.
+        stored = max(0, int(session.get("elapsed") or 0))
+        if wall >= stored:
+            base = min(base, wall)
     return max(0, base)
 
 
@@ -6230,13 +6284,18 @@ class ConfirmQuitView(discord.ui.View):
                             self.bot, guild_id, interaction.user, game
                         )
                         if outcome.quiet:
+                            if outcome.quiet_reason == "forfeited":
+                                desc = "You already forfeited today's daily."
+                            elif outcome.quiet_reason == "claim_unavailable":
+                                desc = (
+                                    "Couldn't verify today's daily claim — "
+                                    "try again in a moment."
+                                )
+                            else:
+                                desc = "Daily already recorded for today."
                             embed = paper_embed(
                                 "Already recorded",
-                                description=(
-                                    "Daily already recorded for today."
-                                    if int(outcome.coins) > 0
-                                    else "You already forfeited today's daily."
-                                ),
+                                description=desc,
                             )
                         else:
                             embed = paper_embed(
@@ -6266,7 +6325,7 @@ class ConfirmQuitView(discord.ui.View):
                 pass
             return
 
-        embed = finish_forfeit(self.bot.data, guild_id, interaction.user, game)
+        embed = await finish_forfeit(self.bot.data, guild_id, interaction.user, game)
         await remove_game(self.game_key)
         await self._edit_board_message(game, embed=embed)
 
@@ -6353,11 +6412,12 @@ class ConfirmQuitActivityDailyView(discord.ui.View):
                 self.bot, guild_id, interaction.user, game_state
             )
             if outcome.quiet:
-                msg = (
-                    "Daily already recorded for today."
-                    if int(outcome.coins) > 0
-                    else "You already forfeited today's daily."
-                )
+                if outcome.quiet_reason == "forfeited":
+                    msg = "You already forfeited today's daily."
+                elif outcome.quiet_reason == "claim_unavailable":
+                    msg = "Couldn't verify today's daily claim — try again in a moment."
+                else:
+                    msg = "Daily already recorded for today."
             else:
                 msg = (
                     f"Solved daily recovered — +{outcome.coins} sponges, "
@@ -6371,7 +6431,7 @@ class ConfirmQuitActivityDailyView(discord.ui.View):
                 "started_at": session.get("started_at") or time.time(),
                 "difficulty": daily_difficulty_for_date(day),
             }
-            finish_forfeit(self.bot.data, guild_id, interaction.user, game)
+            await finish_forfeit(self.bot.data, guild_id, interaction.user, game)
             msg = "Forfeited today's daily. Streak wiped."
 
         try:
@@ -6480,7 +6540,7 @@ class ConfirmQuitActivityPlayView(discord.ui.View):
                 "started_at": session.get("started_at") or time.time(),
                 "difficulty": diff_key,
             }
-            finish_forfeit(self.bot.data, guild_id, interaction.user, game)
+            await finish_forfeit(self.bot.data, guild_id, interaction.user, game)
             msg = "Quit. Your daily streak is unchanged."
 
         try:
@@ -9814,7 +9874,7 @@ async def daily_cmd(interaction: discord.Interaction):
                 await _launch_activity_window(interaction)
                 return
             # Orphan lock (no recoverable session) — treat as forfeit, not a free retry
-            finish_forfeit(
+            await finish_forfeit(
                 bot.data,
                 guild_id,
                 interaction.user,
@@ -10832,7 +10892,7 @@ async def quit_cmd(interaction: discord.Interaction):
     daily = get_guild_daily(bot.data, guild_id)
     entry = daily.get("results", {}).get(str(interaction.user.id))
     if entry and entry.get("in_progress") and not entry.get("won"):
-        finish_forfeit(
+        await finish_forfeit(
             bot.data,
             guild_id,
             interaction.user,
