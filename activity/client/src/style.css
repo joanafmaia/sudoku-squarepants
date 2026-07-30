@@ -234,15 +234,19 @@ body {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+  width: 100%;
+  margin: 0 auto;
 }
 
-/* Challenge/daily: Diff hidden — Quit + Notes share the row evenly */
+/* /play /daily /challenge: Diff hidden — Quit · Hint · Reset */
 .ctrl-actions-meta.is-compact {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .ctrl-actions-meta.is-compact #ctrl-diff,
+.ctrl-actions-meta.is-free-diff #ctrl-reset,
 .ctrl-actions-meta.is-solo #ctrl-diff,
+.ctrl-actions-meta.is-solo #ctrl-reset,
 .ctrl-actions-meta.is-solo #ctrl-pencil {
   display: none !important;
 }

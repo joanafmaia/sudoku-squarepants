@@ -387,15 +387,14 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
         endWatchOnExit({ force: true, challengeForfeit: false });
         setTimeout(() => closeDiscordActivity(), 2500);
       },
-      onNewGame: () => {
+      onNewGame: async () => {
         const keepDiff = gameApi?.getSnapshot?.()?.diff_index ?? gameOptions.initialDiffIndex ?? null;
         clearLocalSession();
-        // Drop remote session so the next save can authorize a fresh puzzle,
-        // but re-write the /play difficulty preference for remounts.
-        clearSavedSession({ preserveDiffIndex: keepDiff });
+        // Drop remote session so the next save starts a fresh hint/Gary budget.
+        await clearSavedSession({ preserveDiffIndex: keepDiff });
       },
-      onBoardReady: () => {
-        saveSessionNow({ force: true });
+      onBoardReady: async () => {
+        await saveSessionNow({ force: true });
       },
       onProgress: () => {
         // Persist immediately so Discord "Exit" cannot race the async flush.
@@ -672,7 +671,12 @@ async function saveSessionNow({ keepalive = false, force = false, snap = null } 
         body: JSON.stringify(payload),
         keepalive,
       });
-      if (!res?.ok) {
+      if (res?.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (gameApi?.applyHintMeta && ("hints_used" in data || "gary_wisdom_bonus" in data || "hints_max" in data)) {
+          gameApi.applyHintMeta(data);
+        }
+      } else {
         const data = await res.json().catch(() => ({}));
         console.warn("[Thcoku] session save failed", res?.status, data.error || data);
         if (data.error === "invalid_board" && (data.challenge || snap.session_kind === "challenge")) {

@@ -3400,6 +3400,8 @@ async def sync_challenge_board(game: dict) -> None:
             "current_board": copy_grid(game["board"]),
             "last_move_at": time.time(),
             "hints_used": int(game.get("hints_used") or 0),
+            "hints_gary_used": int(game.get("hints_gary_used") or 0),
+            "gary_wisdom_bonus": int(game.get("gary_wisdom_bonus") or 0),
         },
     )
     key = challenge_game_key(match_id, game["owner_id"])
@@ -7711,9 +7713,9 @@ def shop_page_embed(
             detail += "\n🛡️ *Covers missed **daily** days only — challenges never reset your streak.*"
         elif selected["id"] == "gary_wisdom":
             detail += (
-                f"\n🐌 *{GARY_WISDOM_HINT_BONUS} free hints per game (no sponge cost) "
-                f"for {GARY_WISDOM_GAMES_PER_PURCHASE} games. "
-                f"Regular hints cost {format_sponges(HINT_SPONGE_COST)} each.*"
+                f"\n🐌 *{GARY_WISDOM_HINT_BONUS} free hints first (no sponge cost) "
+                f"for {GARY_WISDOM_GAMES_PER_PURCHASE} games. After that, paid hints "
+                f"are unlimited at {format_sponges(HINT_SPONGE_COST)} each.*"
             )
         elif selected["id"] == "krabby_snack":
             detail += "\n🍟 *+25% pocket sponges only — career XP unchanged (3 wins).*"
@@ -7872,8 +7874,9 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
             "label": item["label"],
             "cost": cost,
             "message": (
-                f"Bought **{item['label']}**! **+{GARY_WISDOM_HINT_BONUS} hints** on your next "
-                f"game ({stats['gary_wisdom_charges']} queued)."
+                f"Bought **{item['label']}**! Next game: "
+                f"**{GARY_WISDOM_HINT_BONUS} free hints**, then unlimited paid hints "
+                f"({stats['gary_wisdom_charges']} game(s) queued)."
             ),
         }
 
@@ -9031,6 +9034,9 @@ async def restore_challenge_games_from_match(bot: "SudokuBot", match: dict) -> b
         if player.get("thread_id"):
             games[key]["thread_id"] = int(player["thread_id"])
         games[key]["hints_used"] = int(player.get("hints_used") or 0)
+        games[key]["hints_gary_used"] = int(player.get("hints_gary_used") or 0)
+        if int(player.get("gary_wisdom_bonus") or 0) > 0:
+            games[key]["gary_wisdom_bonus"] = int(player["gary_wisdom_bonus"])
         await persist_game(key, games[key])
         restored_any = True
         print(f"Rehydrated challenge game {serialize_game_key(key)} from match {mid}")
@@ -9591,6 +9597,7 @@ async def _launch_activity_window(
                 "elapsed": 0,
                 "hints_used": 0,
                 "hints_gary_used": 0,
+                "gary_wisdom_bonus": 0,
             }
             await match_store.merge_activity_session(session_id, pref)
             # Orphan activity:0 boards win over preference-only primary in lookup —
@@ -9819,7 +9826,7 @@ async def help_cmd(interaction: discord.Interaction):
     )
     embed.add_field(name="① Cell", value="Tap a square on the board", inline=True)
     embed.add_field(name="② Number", value="1–9 on the pad", inline=True)
-    embed.add_field(name="③ Clear", value="Clear cell · Notes = Pencil", inline=True)
+    embed.add_field(name="③ Edit", value="Clear cell · Reset board · Notes", inline=True)
     embed.add_field(
         name=f"{JELLY} Rules",
         value=(
@@ -9844,7 +9851,8 @@ async def help_cmd(interaction: discord.Interaction):
             f"Challenge win **×{CHALLENGE_WIN_MULT:g}** · "
             f"loss **{format_sponges(CHALLENGE_LOSER_COINS, signed=True)}** (sponges only)\n"
             f"**Hints** cost **{format_sponges(HINT_SPONGE_COST)}** from pocket sponges "
-            f"(not career XP). **Gary's Wisdom** in `/shop` grants free hints.\n"
+            f"(not career XP) — **no limit** while you can pay. "
+            f"**Gary's Wisdom** in `/shop` grants {GARY_WISDOM_HINT_BONUS} free hints/game first.\n"
             f"{tiers}"
         ),
         inline=False,
@@ -10096,7 +10104,18 @@ async def daily_cmd(interaction: discord.Interaction):
                 "daily_date": day_key,
                 "started_at": existing.get("started_at") or time.time(),
                 "last_move_at": time.time(),
+                "hints_used": int(existing.get("hints_used") or 0),
+                "hints_gary_used": int(existing.get("hints_gary_used") or 0),
             }
+            if int(existing.get("gary_wisdom_bonus") or 0) > 0:
+                doc["gary_wisdom_bonus"] = int(existing["gary_wisdom_bonus"])
+            else:
+                gstats = guild_stats(bot.data, guild_id)
+                pstats = user_stats(gstats, user_id)
+                attach_gary_wisdom_to_session(
+                    pstats, doc, existing=None, same_puzzle=False
+                )
+                save_data(bot.data)
             await match_store.upsert_activity_session(doc)
             await remove_game(sk)
             await _launch_activity_window(interaction)
@@ -10243,7 +10262,15 @@ async def daily_cmd(interaction: discord.Interaction):
             "daily_date": daily["date"],
             "started_at": time.time(),
             "last_move_at": time.time(),
+            "hints_used": 0,
+            "hints_gary_used": 0,
         }
+        gstats = guild_stats(bot.data, guild_id)
+        pstats = user_stats(gstats, user_id)
+        attach_gary_wisdom_to_session(
+            pstats, doc, existing=None, same_puzzle=False
+        )
+        save_data(bot.data)
         await match_store.upsert_activity_session(doc)
         # Drop stale play orphans so they cannot shadow this daily on Activity load.
         orphan_id = f"activity:0:{user_id}"

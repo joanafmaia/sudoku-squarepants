@@ -64,8 +64,8 @@ CORS = {
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS, HEAD, DELETE",
 }
 
-MAX_HINTS_PLAY = 10
-MAX_HINTS_DAILY = 3
+MAX_HINTS_PLAY = 10  # legacy display only — paid hints are unlimited
+MAX_HINTS_DAILY = 3  # legacy display only — paid hints are unlimited
 
 CDN_PREFIXES = {
     "/pyscript/": "https://pyscript.net/",
@@ -97,18 +97,16 @@ def _preserve_server_hint_progress(existing: dict | None, doc: dict) -> None:
     client_hints = int(doc.get("hints_used") or 0)
     server_gary = int(existing.get("hints_gary_used") or 0)
     client_gary = int(doc.get("hints_gary_used") or 0)
-    if server_hints > client_hints:
-        doc["hints_used"] = server_hints
-        doc["hints_gary_used"] = max(server_gary, client_gary)
-        if existing.get("board") is not None:
-            doc["board"] = existing["board"]
-            try:
-                doc["filled"] = int(existing.get("filled") or doc.get("filled") or 0)
-            except (TypeError, ValueError):
-                pass
-    else:
-        doc["hints_used"] = max(server_hints, client_hints)
-        doc["hints_gary_used"] = max(server_gary, client_gary)
+    doc["hints_used"] = max(server_hints, client_hints)
+    doc["hints_gary_used"] = max(server_gary, client_gary)
+    # Only restore the board when the server is ahead on hint count (stale autosave
+    # after a charged reveal). Equal hints_used with a emptier board is an intentional Reset.
+    if server_hints > client_hints and existing.get("board") is not None:
+        doc["board"] = existing["board"]
+        try:
+            doc["filled"] = int(existing.get("filled") or doc.get("filled") or 0)
+        except (TypeError, ValueError):
+            pass
 
 
 async def _lookup_activity_session(
@@ -905,10 +903,12 @@ def _play_puzzle_fingerprint(
     return play_puzzle_fingerprint(given, board=board, solution=solution)
 
 
-def _hints_max_for_session(session_kind: str | None, doc: dict | None = None) -> int:
-    base = MAX_HINTS_DAILY if session_kind == "daily" else MAX_HINTS_PLAY
-    bonus = int((doc or {}).get("gary_wisdom_bonus") or 0)
-    return base + bonus
+def _hints_max_for_session(session_kind: str | None, doc: dict | None = None) -> int | None:
+    """Paid hints are unlimited. Returns None so the client does not show a hard cap.
+
+    Gary's Wisdom free tips are capped separately via gary_wisdom_bonus / hints_gary_used.
+    """
+    return None
 
 
 def _resolve_active_play_elapsed(
@@ -1380,6 +1380,9 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
                 "won_at": None,
                 "filled": 0,
                 "elapsed": 0,
+                "hints_used": 0,
+                "hints_gary_used": 0,
+                "gary_wisdom_bonus": 0,
             },
         )
         return {
@@ -1441,6 +1444,10 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         int(existing.get("hints_used") or 0) if existing else 0,
         max(0, int(body.get("hints_used") or 0)),
     )
+    hints_gary_used = max(
+        int(existing.get("hints_gary_used") or 0) if existing else 0,
+        max(0, int(body.get("hints_gary_used") or 0)),
+    )
 
     session_kind = "play"
     daily_date = None
@@ -1468,12 +1475,18 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
                 accepting_client_puzzle = False
                 elapsed = _resolve_active_play_elapsed(existing, elapsed)
             elif session_kind == "play":
-                # New play puzzle — reset the session clock and any stale win claim.
+                # New play puzzle — reset clock, win claim, and hint/Gary counters.
                 started_at = time.time() - max(0, int(body.get("elapsed") or 0))
                 elapsed = max(0, int(body.get("elapsed") or 0))
+                hints_used = 0
+                hints_gary_used = 0
         elif session_kind == "daily":
             # Daily session without a full board yet — still accumulate active time.
             elapsed = _resolve_active_play_elapsed(existing, elapsed)
+        elif session_kind == "play":
+            # Preference stub → first real board: start hint budget fresh.
+            hints_used = 0
+            hints_gary_used = 0
 
     if session_kind == "daily":
         from bot import DIFF_KEYS_LIST, daily_difficulty_for_date, utc_today
@@ -1546,10 +1559,19 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
             fresh_existing = existing
         if fresh_existing:
             existing = fresh_existing
-            hints_used = max(
-                int(existing.get("hints_used") or 0),
-                max(0, int(body.get("hints_used") or 0)),
-            )
+            if session_kind == "play" and not same_puzzle:
+                # Never inherit spent hints / Gary usage onto a brand-new puzzle.
+                hints_used = 0
+                hints_gary_used = 0
+            else:
+                hints_used = max(
+                    int(existing.get("hints_used") or 0),
+                    max(0, int(body.get("hints_used") or 0)),
+                )
+                hints_gary_used = max(
+                    int(existing.get("hints_gary_used") or 0),
+                    max(0, int(body.get("hints_gary_used") or 0)),
+                )
             if session_kind == "daily" or same_puzzle:
                 elapsed = _resolve_active_play_elapsed(
                     existing, max(0, int(body.get("elapsed") or 0))
@@ -1570,6 +1592,10 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
                 "save_seq": server_seq,
                 "filled": int((existing or {}).get("filled") or filled),
                 "elapsed": int((existing or {}).get("elapsed") or elapsed),
+                "hints_used": int((existing or {}).get("hints_used") or 0),
+                "hints_max": None,
+                "hints_gary_used": int((existing or {}).get("hints_gary_used") or 0),
+                "gary_wisdom_bonus": int((existing or {}).get("gary_wisdom_bonus") or 0),
             }
 
         timer_active = bool(body.get("timer_active"))
@@ -1598,12 +1624,18 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
             "started_at": started_at,
             "last_move_at": last_move_at,
             "hints_used": hints_used,
-            "hints_gary_used": int(existing.get("hints_gary_used") or 0) if existing else 0,
+            "hints_gary_used": hints_gary_used,
             "save_seq": max(client_seq, server_seq),
             # Live segment for spectators while Activity is visible; cleared when paused.
             "timer_running_since": timer_running_since,
         }
-        _preserve_server_hint_progress(existing, doc)
+        if session_kind == "play" and not same_puzzle:
+            # Clear old bonus so merge/upsert cannot resurrect a spent Gary charge.
+            doc["gary_wisdom_bonus"] = 0
+            doc["hints_used"] = 0
+            doc["hints_gary_used"] = 0
+        elif session_kind == "daily" or same_puzzle:
+            _preserve_server_hint_progress(existing, doc)
         try:
             gid_int = int(store_guild) if store_guild not in ("", "0") else 0
         except ValueError:
@@ -1750,7 +1782,23 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
             await notify_activity_play_started(bot, session_id)
         except Exception as exc:  # noqa: BLE001
             print(f"activity play notify failed: {exc}")
-    return {"ok": True, "filled": filled, "elapsed": elapsed}
+    from bot import hint_gary_free_remaining
+
+    saved = current or doc
+    return {
+        "ok": True,
+        "filled": int(saved.get("filled") or filled),
+        "elapsed": int(saved.get("elapsed") or elapsed),
+        "hints_used": int(saved.get("hints_used") or 0),
+        "hints_max": _hints_max_for_session(
+            saved.get("session_kind") or session_kind,
+            saved,
+        ),
+        "hints_gary_used": int(saved.get("hints_gary_used") or 0),
+        "gary_wisdom_bonus": int(saved.get("gary_wisdom_bonus") or 0),
+        "gary_free_left": hint_gary_free_remaining(saved),
+        "save_seq": int(saved.get("save_seq") or 0),
+    }
 
 
 async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict:
@@ -1784,6 +1832,8 @@ async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict
                     "filled": game_filled_count(game),
                     "session_kind": "challenge",
                     "hints_used": int(game.get("hints_used") or 0),
+                    "hints_gary_used": int(game.get("hints_gary_used") or 0),
+                    "gary_wisdom_bonus": int(game.get("gary_wisdom_bonus") or 0),
                     "started_at": float(game.get("started_at") or time.time()),
                     "match_id": game.get("match_id"),
                     "player_slot": game.get("player_slot"),
@@ -1853,7 +1903,6 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
             return {"ok": False, "error": "no_session"}
         session_kind = "challenge"
         hints_used = int(game.get("hints_used") or 0)
-        max_hints = MAX_HINTS_PLAY + int(game.get("gary_wisdom_bonus") or 0)
         persist_hint = None
         try:
             gid_key = int(game.get("guild_id") or 0)
@@ -1881,7 +1930,6 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
             return {"ok": False, "error": "no_session"}
         session_kind = session.get("session_kind") or "play"
         hints_used = int(session.get("hints_used") or 0)
-        max_hints = _hints_max_for_session(session_kind, session)
         try:
             gid_key = int(session.get("guild_id") or 0)
         except (TypeError, ValueError):
@@ -1911,24 +1959,26 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
         elif ch_key and game is not None:
             hints_used = int(game.get("hints_used") or 0)
 
-        if hints_used >= max_hints:
-            return {
-                "ok": False,
-                "error": "hints_exhausted",
-                "hints_used": hints_used,
-                "hints_max": max_hints,
-                "gary_free_left": hint_gary_free_remaining(charge_container),
-            }
-
+        # No hard cap on paid hints — only sponges / Gary free / empty board matter.
         picked = _pick_hint_cell(board, given, solution, row, col)
         if picked is None:
-            return {"ok": False, "error": "no_hint_available"}
+            return {
+                "ok": False,
+                "error": "no_hint_available",
+                "hints_used": hints_used,
+                "hints_max": None,
+                "hints_gary_used": int(charge_container.get("hints_gary_used") or 0),
+                "gary_wisdom_bonus": int(charge_container.get("gary_wisdom_bonus") or 0),
+                "gary_free_left": hint_gary_free_remaining(charge_container),
+            }
 
         if stats is None:
             return {
                 "ok": False,
                 "error": "no_guild",
                 "message": "Join a server to use hints.",
+                "hints_used": hints_used,
+                "hints_max": None,
             }
 
         charge = apply_hint_charge(stats, charge_container)
@@ -1939,8 +1989,10 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
                 "hint_cost": int(charge.get("cost") or 0),
                 "pocket": int(charge.get("pocket") or 0),
                 "gary_free_left": int(charge.get("gary_free_left") or 0),
+                "gary_wisdom_bonus": int(charge_container.get("gary_wisdom_bonus") or 0),
                 "hints_used": hints_used,
-                "hints_max": max_hints,
+                "hints_max": None,
+                "hints_gary_used": int(charge_container.get("hints_gary_used") or 0),
             }
         save_data(bot.data)
 
@@ -1965,6 +2017,9 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
                 {
                     "hints_used": hints_used,
                     "hints_gary_used": int(charge_container.get("hints_gary_used") or 0),
+                    "gary_wisdom_bonus": int(
+                        charge_container.get("gary_wisdom_bonus") or 0
+                    ),
                     "board": board,
                     "filled": filled,
                     "last_move_at": time.time(),
@@ -1977,8 +2032,9 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
         "col": target_c,
         "value": value,
         "hints_used": hints_used,
-        "hints_max": max_hints,
+        "hints_max": None,
         "hints_gary_used": int(charge_container.get("hints_gary_used") or 0),
+        "gary_wisdom_bonus": int(charge_container.get("gary_wisdom_bonus") or 0),
         "gary_free_left": hint_gary_free_remaining(charge_container),
         "hint_cost": int(charge.get("cost") or 0),
         "paid_with": charge.get("paid_with"),

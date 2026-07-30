@@ -474,10 +474,10 @@ export function playFx(type) {
 
 function ensureControls(shell) {
   let bar = document.getElementById("game-controls");
-  if (bar) return bar;
-  bar = document.createElement("div");
-  bar.id = "game-controls";
-  bar.innerHTML = `
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "game-controls";
+    bar.innerHTML = `
     <div class="ctrl-pad" role="group" aria-label="Numbers">
       ${[1, 2, 3, 4, 5, 6, 7, 8, 9]
       .map((n) => `<button type="button" class="ctrl-digit" data-digit="${n}">${n}</button>`)
@@ -485,16 +485,34 @@ function ensureControls(shell) {
     </div>
     <div class="ctrl-actions ctrl-actions-edit" role="group" aria-label="Editing Actions">
       <button type="button" data-action="undo" id="ctrl-undo" title="Undo move">↩ Undo</button>
-      <button type="button" data-action="clear" class="ctrl-clear">Clear</button>
+      <button type="button" data-action="clear" class="ctrl-clear" title="Clear selected cell">Clear</button>
       <button type="button" data-action="pencil" id="ctrl-pencil">Notes</button>
     </div>
     <div class="ctrl-actions ctrl-actions-meta" id="ctrl-meta" role="group" aria-label="Game Setup Actions">
       <button type="button" data-action="quit" id="ctrl-quit" class="btn-danger">🚪 Quit</button>
       <button type="button" data-action="hint" id="ctrl-hint" title="Get a hint">💡 Hint</button>
+      <button type="button" data-action="reset" id="ctrl-reset" title="Clear all your entries (keeps clues)">↺ Reset</button>
       <button type="button" data-action="diff" id="ctrl-diff">Medium</button>
     </div>
   `;
-  shell.appendChild(bar);
+    shell.appendChild(bar);
+  } else {
+    // Migrate Reset into the meta row (Diff's slot) if it lived on the edit row.
+    let resetBtn = bar.querySelector("#ctrl-reset");
+    const meta = bar.querySelector("#ctrl-meta");
+    const hintBtn = bar.querySelector("#ctrl-hint");
+    if (!resetBtn && meta && hintBtn) {
+      resetBtn = document.createElement("button");
+      resetBtn.type = "button";
+      resetBtn.id = "ctrl-reset";
+      resetBtn.dataset.action = "reset";
+      resetBtn.title = "Clear all your entries (keeps clues)";
+      resetBtn.textContent = "↺ Reset";
+      hintBtn.insertAdjacentElement("afterend", resetBtn);
+    } else if (resetBtn && meta && !meta.contains(resetBtn) && hintBtn) {
+      hintBtn.insertAdjacentElement("afterend", resetBtn);
+    }
+  }
   return bar;
 }
 
@@ -574,11 +592,12 @@ export function startThcokuGame(canvas, options = {}) {
     playerSlot: options.playerSlot || null,
     undoStack: [],
     hintsUsed: 0,
-    hintsMax: options.sessionKind === "daily" ? 3 : 10,
+    hintsMax: null, // null = unlimited paid hints
     hintsGaryUsed: 0,
     garyWisdomBonus: 0,
     hintSpongeCost: Number(options.hintSpongeCost) || 15,
     pocketSponges: Number(options.pocketSponges) || 0,
+    hintInFlight: false,
     serverHints: false,
     spectatorMode: Boolean(options.spectatorMode),
     spectatorName: "",
@@ -748,7 +767,9 @@ export function startThcokuGame(canvas, options = {}) {
       filled: filledCount(state.board),
       session_kind: state.sessionKind,
       hints_used: state.hintsUsed,
-      hints_max: state.hintsMax,
+      hints_max: null, // paid hints are unlimited — never persist a stale cap
+      hints_gary_used: state.hintsGaryUsed,
+      gary_wisdom_bonus: state.garyWisdomBonus,
       // Original open time (metadata only) — elapsed is active screen time.
       started_at: (state.sessionStartedAt || Date.now()) / 1000,
       timer_active: Boolean(state.runStartedAt) && !state.won && !state.spectatorMode,
@@ -769,14 +790,10 @@ export function startThcokuGame(canvas, options = {}) {
     state.solution = Array.isArray(snap.solution) && snap.solution.length === 9 ? snap.solution : [];
     state.serverHints = !(Array.isArray(snap.solution) && snap.solution.length === 9);
     state.hintsUsed = Number(snap.hints_used) || 0;
-    state.hintsMax =
-      snap.hints_max != null
-        ? Number(snap.hints_max)
-        : state.sessionKind === "daily"
-          ? 3
-          : 10;
     state.hintsGaryUsed = Number(snap.hints_gary_used) || 0;
     state.garyWisdomBonus = Number(snap.gary_wisdom_bonus) || 0;
+    // Paid hints are always unlimited — ignore legacy localStorage caps (3/10).
+    state.hintsMax = null;
     if (snap.hint_sponge_cost != null) {
       state.hintSpongeCost = Number(snap.hint_sponge_cost) || 15;
     }
@@ -864,28 +881,54 @@ export function startThcokuGame(canvas, options = {}) {
     return k === "play" || k === "daily" || k === "challenge";
   }
 
+  function applyHintMeta(meta) {
+    if (!meta || typeof meta !== "object") return;
+    if (meta.hints_used != null) state.hintsUsed = Number(meta.hints_used) || 0;
+    if (meta.hints_gary_used != null) {
+      state.hintsGaryUsed = Number(meta.hints_gary_used) || 0;
+    }
+    if (meta.gary_wisdom_bonus != null) {
+      state.garyWisdomBonus = Number(meta.gary_wisdom_bonus) || 0;
+    } else if (meta.gary_free_left != null) {
+      state.garyWisdomBonus =
+        state.hintsGaryUsed + (Number(meta.gary_free_left) || 0);
+    }
+    if ("hints_max" in meta) {
+      // Server null = unlimited; never re-apply a positive legacy cap.
+      state.hintsMax = null;
+    }
+    if (meta.pocket != null) state.pocketSponges = Number(meta.pocket) || 0;
+    if (meta.hint_sponge_cost != null) {
+      state.hintSpongeCost = Number(meta.hint_sponge_cost) || 15;
+    }
+    syncHintButton();
+  }
+
   function syncHintButton() {
     const hintBtn = controls.querySelector("#ctrl-hint");
     if (!hintBtn || state.spectatorMode) return;
     const garyFree = Math.max(0, state.garyWisdomBonus - state.hintsGaryUsed);
-    const exhausted = state.hintsUsed >= state.hintsMax;
+    const unlimited =
+      state.hintsMax == null || !Number.isFinite(Number(state.hintsMax)) || Number(state.hintsMax) <= 0;
+    const exhausted = !unlimited && state.hintsUsed >= state.hintsMax;
+    const progress = unlimited ? String(state.hintsUsed) : `${state.hintsUsed}/${state.hintsMax}`;
+    hintBtn.disabled = Boolean(state.hintInFlight);
+    hintBtn.style.opacity = exhausted || state.hintInFlight ? "0.55" : "";
     if (exhausted) {
-      hintBtn.textContent = `💡 Hint (${state.hintsUsed}/${state.hintsMax})`;
+      hintBtn.textContent = `💡 None left (${progress})`;
       hintBtn.title = "No hints left this puzzle";
-      hintBtn.disabled = true;
-      hintBtn.style.opacity = "0.45";
       return;
     }
-    hintBtn.disabled = false;
-    hintBtn.style.opacity = "";
     if (garyFree > 0) {
-      hintBtn.textContent = `💡 Hint (free ×${garyFree})`;
-      hintBtn.title = `Gary's Wisdom — ${garyFree} free hint(s), no sponge cost`;
+      hintBtn.textContent = `💡 Hint · free ×${garyFree}`;
+      hintBtn.title = `Gary's Wisdom — ${garyFree} free left, then unlimited paid hints (${state.hintSpongeCost} 🧽 each)`;
     } else {
       const cost = state.hintSpongeCost;
       const pocket = state.pocketSponges;
-      hintBtn.textContent = `💡 Hint (${cost} 🧽)`;
-      hintBtn.title = `Costs ${cost} pocket sponges (not career XP) · ${pocket} in pocket`;
+      hintBtn.textContent = `💡 Hint · ${cost} 🧽`;
+      hintBtn.title = unlimited
+        ? `Unlimited paid hints · ${cost} sponges each · ${pocket} in pocket · ${state.hintsUsed} used`
+        : `${cost} sponges each · ${pocket} in pocket · ${progress}`;
       if (pocket < cost) {
         hintBtn.style.opacity = "0.65";
       }
@@ -901,9 +944,15 @@ export function startThcokuGame(canvas, options = {}) {
     const spec = state.spectatorMode;
     const meta = controls.querySelector("#ctrl-meta");
     const hideDiff = difficultyLocked();
+    const resetBtn = controls.querySelector("#ctrl-reset");
     if (diffBtn) {
+      // Diff only when difficulty is free; otherwise Reset takes that slot.
       diffBtn.hidden = hideDiff || spec;
       diffBtn.style.display = "";
+    }
+    if (resetBtn) {
+      resetBtn.hidden = spec || !hideDiff;
+      resetBtn.style.display = "";
     }
     if (pencilBtn) {
       pencilBtn.hidden = spec;
@@ -911,7 +960,9 @@ export function startThcokuGame(canvas, options = {}) {
     }
     if (meta) {
       meta.classList.toggle("is-solo", spec);
+      // Compact = Diff gone, Reset shown → still 3 equal slots (Quit · Hint · Reset)
       meta.classList.toggle("is-compact", !spec && hideDiff);
+      meta.classList.toggle("is-free-diff", !spec && !hideDiff);
     }
     const newBtn = controls.querySelector('[data-action="new"]');
     if (newBtn) newBtn.style.display = spec ? "none" : "";
@@ -986,49 +1037,54 @@ export function startThcokuGame(canvas, options = {}) {
       draw();
       return;
     }
-    if (typeof options.onNewGame === "function") {
-      try {
-        options.onNewGame();
-      } catch (err) {
-        console.warn("[Thcoku] onNewGame", err);
+    void (async () => {
+      if (typeof options.onNewGame === "function") {
+        try {
+          await options.onNewGame();
+        } catch (err) {
+          console.warn("[Thcoku] onNewGame", err);
+        }
       }
-    }
-    const key = DIFF_KEYS[state.diffIndex];
-    state.status = `Cooking (${difficultyLabel(key)})…`;
-    state.won = false;
-    state.reportingWin = false;
-    state.boardGen += 1;
-    state.bubbles = [];
-    state.confetti = [];
-    state.undoStack = [];
-    state.winZoom = 1;
-    state.undoStack = [];
-    draw();
-    const puzzle = makePuzzle(key);
-    state.board = puzzle.board;
-    state.given = puzzle.given;
-    state.solution = puzzle.solution;
-    state.difficulty = puzzle.difficulty;
-    state.selected = [0, 0];
-    state.baseElapsedSec = 0;
-    state.runStartedAt = Date.now();
-    state.sessionStartedAt = Date.now();
-    state.pencilMode = false;
-    state.flashCell = null;
-    state.hintsUsed = 0;
-    state.hintsMax = state.sessionKind === "daily" ? 3 : 10;
-    state.serverHints = false;
-    const user = discordUsername();
-    state.status = user ? `Hey, ${user}! I'm ready!` : "Tap a cell — I'm ready!";
-    syncControls();
-    draw();
-    if (typeof options.onBoardReady === "function") {
-      try {
-        options.onBoardReady();
-      } catch (err) {
-        console.warn("[Thcoku] onBoardReady", err);
+      const key = DIFF_KEYS[state.diffIndex];
+      state.status = `Cooking (${difficultyLabel(key)})…`;
+      state.won = false;
+      state.reportingWin = false;
+      state.boardGen += 1;
+      const gen = state.boardGen;
+      state.bubbles = [];
+      state.confetti = [];
+      state.undoStack = [];
+      state.winZoom = 1;
+      draw();
+      const puzzle = makePuzzle(key);
+      if (gen !== state.boardGen) return;
+      state.board = puzzle.board;
+      state.given = puzzle.given;
+      state.solution = puzzle.solution;
+      state.difficulty = puzzle.difficulty;
+      state.selected = [0, 0];
+      state.baseElapsedSec = 0;
+      state.runStartedAt = Date.now();
+      state.sessionStartedAt = Date.now();
+      state.pencilMode = false;
+      state.flashCell = null;
+      state.hintsUsed = 0;
+      state.hintsGaryUsed = 0;
+      state.garyWisdomBonus = 0;
+      state.hintsMax = null;
+      state.serverHints = false;
+      const user = discordUsername();
+      state.status = user ? `Hey, ${user}! I'm ready!` : "Tap a cell — I'm ready!";
+      syncControls();
+      draw();
+      if (typeof options.onBoardReady === "function") {
+        try {
+          await options.onBoardReady();
+        } catch (err) {
+          console.warn("[Thcoku] onBoardReady", err);
+        }
       }
-    }
+    })();
   }
 
   function saveUndoState() {
@@ -1053,6 +1109,57 @@ export function startThcokuGame(canvas, options = {}) {
       }))
     );
     state.status = "Move undone ↩";
+    playFx("pop");
+    syncControls();
+    draw();
+    if (typeof options.onProgress === "function") {
+      try {
+        options.onProgress();
+      } catch (err) {
+        console.warn("[Thcoku] onProgress", err);
+      }
+    }
+  }
+
+  function resetBoard() {
+    if (
+      state.spectatorMode
+      || state.won
+      || state.reportingWin
+      || state.hintInFlight
+      || !state.board
+      || !state.given
+    ) {
+      return;
+    }
+    let changed = false;
+    for (let r = 0; r < 9; r++) {
+      for (let c = 0; c < 9; c++) {
+        if (state.given[r][c]) continue;
+        const cell = state.board[r][c];
+        if ((cell?.value | 0) || (cell?.pencil_marks?.length || 0)) {
+          changed = true;
+          break;
+        }
+      }
+      if (changed) break;
+    }
+    if (!changed) {
+      state.status = "Nothing to reset";
+      draw();
+      return;
+    }
+    saveUndoState();
+    for (let r = 0; r < 9; r++) {
+      for (let c = 0; c < 9; c++) {
+        if (state.given[r][c]) continue;
+        state.board[r][c].value = 0;
+        state.board[r][c].pencil_marks = [];
+      }
+    }
+    state.status = state.hintsUsed
+      ? `Board reset — ${state.hintsUsed} hint(s) already spent`
+      : "Board reset — Undo to restore";
     playFx("pop");
     syncControls();
     draw();
@@ -1124,11 +1231,9 @@ export function startThcokuGame(canvas, options = {}) {
 
   async function hint() {
     if (state.spectatorMode || state.won || state.reportingWin || !state.board) return;
-    if (state.hintsUsed >= state.hintsMax) {
-      state.status = "No hints left!";
-      draw();
-      return;
-    }
+    // Ignore legacy client caps — paid hints are unlimited.
+    if (state.hintInFlight) return;
+    // (hintsMax kept null; no local exhaustion gate)
 
     let targetR = state.selected[0];
     let targetC = state.selected[1];
@@ -1141,6 +1246,9 @@ export function startThcokuGame(canvas, options = {}) {
         draw();
         return;
       }
+      state.hintInFlight = true;
+      syncHintButton();
+      const gen = state.boardGen;
       try {
         const result = await options.onHint({
           row: targetR,
@@ -1153,46 +1261,44 @@ export function startThcokuGame(canvas, options = {}) {
             const pocket = Number(result.pocket ?? state.pocketSponges);
             state.pocketSponges = pocket;
             state.status = `Need ${cost} sponges for a hint (${pocket} in pocket) — win puzzles or buy Gary's Wisdom`;
+          } else if (result?.error === "no_hint_available") {
+            state.status = "Nothing to hint — board already correct!";
           } else {
             state.status =
               result?.error === "hints_exhausted"
-                ? "No hints left!"
+                ? "No hints left for this puzzle."
                 : "Hint unavailable — try again.";
           }
-          if (result?.hints_used != null) state.hintsUsed = Number(result.hints_used);
-          if (result?.hints_max != null) state.hintsMax = Number(result.hints_max);
-          if (result?.hints_gary_used != null) {
-            state.hintsGaryUsed = Number(result.hints_gary_used);
-          }
-          if (result?.gary_free_left != null) {
-            state.garyWisdomBonus = state.hintsGaryUsed + Number(result.gary_free_left);
-          }
-          syncHintButton();
+          applyHintMeta(result);
           draw();
           return;
         }
         targetR = Number(result.row);
         targetC = Number(result.col);
         const correctVal = Number(result.value);
-        state.hintsUsed = Number(result.hints_used) || state.hintsUsed + 1;
-        if (result.hints_max != null) state.hintsMax = Number(result.hints_max);
-        if (result.hints_gary_used != null) {
-          state.hintsGaryUsed = Number(result.hints_gary_used);
-        }
-        if (result.pocket != null) state.pocketSponges = Number(result.pocket);
+        applyHintMeta(result);
+        if (result.hints_used == null) state.hintsUsed += 1;
+        if (gen !== state.boardGen) return;
         const costNote =
           result.paid_with === "gary"
             ? " · free (Gary)"
             : Number(result.hint_cost) > 0
               ? ` · −${result.hint_cost} 🧽`
               : "";
+        const garyLeft = Math.max(0, state.garyWisdomBonus - state.hintsGaryUsed);
+        let followUp = "";
+        if (result.paid_with === "gary" && garyLeft === 0) {
+          followUp = ` · next hints cost ${state.hintSpongeCost} 🧽 each (no limit)`;
+        } else if (result.paid_with === "gary" && garyLeft > 0) {
+          followUp = ` · ${garyLeft} free left`;
+        }
         saveUndoState();
         state.selected = [targetR, targetC];
         setCellValue(state.board, targetR, targetC, correctVal);
         clearPencilDigitPeers(state.board, targetR, targetC, correctVal);
         state.flashCell = [targetR, targetC];
         state.flashUntil = Date.now() + 300;
-        state.status = `Hint applied! 💡 (${correctVal}) · ${state.hintsUsed}/${state.hintsMax}${costNote}`;
+        state.status = `Hint applied! 💡 (${correctVal}) · ${state.hintsUsed} used${costNote}${followUp}`;
         syncHintButton();
         playFx("hint");
         if (!maybeCelebrateAfterMove()) {
@@ -1209,6 +1315,9 @@ export function startThcokuGame(canvas, options = {}) {
         console.warn("[Thcoku] onHint", err);
         state.status = "Hint failed — check connection.";
         draw();
+      } finally {
+        state.hintInFlight = false;
+        syncHintButton();
       }
       return;
     }
@@ -1236,7 +1345,7 @@ export function startThcokuGame(canvas, options = {}) {
     state.hintsUsed += 1;
     state.flashCell = [targetR, targetC];
     state.flashUntil = Date.now() + 300;
-    state.status = `Hint applied! 💡 (${correctVal}) · ${state.hintsUsed}/${state.hintsMax}`;
+    state.status = `Hint applied! 💡 (${correctVal}) · ${state.hintsUsed} used`;
     playFx("hint");
     if (isSolved(state.board, state.solution)) {
       celebrateWin();
@@ -1685,6 +1794,7 @@ export function startThcokuGame(canvas, options = {}) {
       return;
     }
     if (action === "clear") place(0);
+    else if (action === "reset") resetBoard();
     else if (action === "undo") undo();
     else if (action === "hint") void hint();
     else if (action === "quit") {
@@ -1723,6 +1833,7 @@ export function startThcokuGame(canvas, options = {}) {
       evt.preventDefault();
       undo();
     } else if (evt.key.toLowerCase() === "u") undo();
+    else if (evt.key.toLowerCase() === "r") resetBoard();
     else if (evt.key.toLowerCase() === "h") void hint();
     else if (evt.key === "p" || evt.key === "P") {
       state.pencilMode = !state.pencilMode;
@@ -1805,6 +1916,7 @@ export function startThcokuGame(canvas, options = {}) {
     loadSnapshot,
     loadSpectatorSnapshot,
     syncControls,
+    applyHintMeta,
     setWatchers,
     pauseTimer,
     resumeTimer,
