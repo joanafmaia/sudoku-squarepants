@@ -89,6 +89,10 @@ export function ensureUserStats(gstats, userId) {
   s.streak = Number(s.streak) || 0;
   s.best_streak = Number(s.best_streak) || 0;
   s.best_time = s.best_time == null ? null : Number(s.best_time);
+  s.longest_time = s.longest_time == null ? null : Number(s.longest_time);
+  if (s.longest_time == null && s.best_time != null) {
+    s.longest_time = s.best_time;
+  }
   s.name = s.name || "Unknown";
   return s;
 }
@@ -111,6 +115,12 @@ export function collectTopXp(data, { guildId = null, limit = 10 } = {}) {
         wins: Number(stats.wins) || 0,
         streak: Number(stats.streak) || 0,
         best_time: stats.best_time == null ? null : Number(stats.best_time),
+        longest_time:
+          stats.longest_time == null
+            ? stats.best_time == null
+              ? null
+              : Number(stats.best_time)
+            : Number(stats.longest_time),
       });
     }
   }

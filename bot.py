@@ -424,6 +424,11 @@ def build_stats_embed(stats: dict, *, avatar_url: str | None = None) -> discord.
         if stats.get("best_time") is not None
         else "—"
     )
+    longest = (
+        format_time(stats["longest_time"])
+        if stats.get("longest_time") is not None
+        else "—"
+    )
     title = (
         SHOP_TITLES[stats["title"]]["label"]
         if stats.get("title") in SHOP_TITLES
@@ -454,7 +459,7 @@ def build_stats_embed(stats: dict, *, avatar_url: str | None = None) -> discord.
         f"{format_sponges(stats.get('coins', 0))} · "
         f"spent {int(stats.get('sponges_spent', 0) or 0)} · "
         f"{format_xp(stats.get('xp', 0))}\n"
-        f"**{wins}**W–**{losses}**L ({win_rate}) · best **{best}**\n"
+        f"**{wins}**W–**{losses}**L ({win_rate}) · best **{best}** · longest **{longest}**\n"
         f"{PINEAPPLE} **{int(stats.get('daily_wins', 0) or 0)}** · "
         f"{JELLY} **{int(stats.get('challenge_wins', 0) or 0)}** · "
         f"**{games_n}** boards · 🛡️ **{shields}**\n"
@@ -764,10 +769,7 @@ async def restore_leaderboard_from_mongo(bot: "SudokuBot") -> None:
         stats["streak"] = max(int(stats.get("streak") or 0), 1)
         stats["best_streak"] = max(int(stats.get("best_streak") or 0), stats["streak"])
         if elapsed is not None:
-            try:
-                stats["best_time"] = float(elapsed)
-            except (TypeError, ValueError):
-                pass
+            record_solve_times(stats, elapsed)
         stats["name"] = name
         if day:
             daily_meta["date"] = day
@@ -809,6 +811,19 @@ async def restore_leaderboard_from_mongo(bot: "SudokuBot") -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"known streak restore failed: {exc}")
 
+    # One-time: clear Xiao's bogus ~12s best_time from the timer bug.
+    try:
+        cleared = migrate_clear_xiao_bogus_best_time(bot.data)
+        if cleared:
+            save_data(bot.data)
+            try:
+                await match_store.save_leaderboard(bot.data)
+            except Exception as save_exc:  # noqa: BLE001
+                print(f"xiao best_time clear mongo save failed: {save_exc}")
+            print(f"Cleared bogus best_time: {', '.join(cleared)}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"xiao best_time clear failed: {exc}")
+
 
 STREAK_FAIR_RESET_FLAG = "streak_calendar_fair_reset_v1"
 STREAK_RESTORE_V1_FLAG = "streak_restore_bookqueen_fuzzy_xiao_v1"
@@ -818,6 +833,65 @@ STREAK_RESTORE_V1_TARGETS: dict[str, int] = {
     "fuzzy": 3,
     "xiao": 3,
 }
+
+XIAO_BEST_TIME_BUG_RESET_FLAG = "xiao_best_time_bug_reset_v1"
+# Known Discord user id for [THC]Xiao (from Activity win posts).
+XIAO_BEST_TIME_BUG_USER_IDS = frozenset({922903420053098497})
+# Career bests at/under this many seconds are treated as the timer bug for Xiao.
+XIAO_BEST_TIME_BUG_MAX_SEC = 15
+
+
+def migrate_clear_xiao_bogus_best_time(data: dict) -> list[str]:
+    """One-shot: wipe Xiao's impossible ~12s career best from the elapsed bug."""
+    if data.get(XIAO_BEST_TIME_BUG_RESET_FLAG):
+        return []
+    cleared: list[str] = []
+    xiao_seen = False
+    for guild_key, gstats in list(data.items()):
+        if not isinstance(gstats, dict) or not str(guild_key).isdigit():
+            continue
+        for uid, stats in iter_players(gstats):
+            if not isinstance(stats, dict):
+                continue
+            try:
+                uid_i = int(uid)
+            except (TypeError, ValueError):
+                continue
+            name = str(stats.get("name") or "").casefold()
+            if uid_i not in XIAO_BEST_TIME_BUG_USER_IDS and "xiao" not in name:
+                continue
+            xiao_seen = True
+            best = stats.get("best_time")
+            if best is None:
+                continue
+            try:
+                t = float(best)
+            except (TypeError, ValueError):
+                continue
+            if t > XIAO_BEST_TIME_BUG_MAX_SEC:
+                continue
+            before = format_time(t)
+            # Clear bogus best; only wipe longest if it is also the bug (or seeded from it).
+            stats["best_time"] = None
+            longest = stats.get("longest_time")
+            try:
+                lt = None if longest is None else float(longest)
+            except (TypeError, ValueError):
+                lt = None
+            if lt is None or lt <= XIAO_BEST_TIME_BUG_MAX_SEC or lt == t:
+                stats["longest_time"] = None
+            badges = [
+                b
+                for b in (stats.get("badges") or [])
+                if b not in ("speed_demon", "jelly_flash")
+            ]
+            stats["badges"] = badges
+            cleared.append(f"{stats.get('name') or uid}@{guild_key} ({before})")
+    # Only stamp the flag once we've actually seen Xiao (or cleared someone),
+    # so a partial/empty leaderboard load doesn't skip the fix forever.
+    if xiao_seen or cleared:
+        data[XIAO_BEST_TIME_BUG_RESET_FLAG] = True
+    return cleared
 
 
 def migrate_fair_daily_streaks(data: dict) -> int:
@@ -1020,6 +1094,13 @@ def user_stats(gstats: dict, user_id: int) -> dict:
     s.setdefault("losses", 0)
     s.setdefault("games", 0)
     s.setdefault("best_time", None)
+    s.setdefault("longest_time", None)
+    # Seed longest from known best when we only ever tracked fastest before.
+    if s.get("longest_time") is None and s.get("best_time") is not None:
+        try:
+            s["longest_time"] = int(float(s["best_time"]))
+        except (TypeError, ValueError):
+            pass
     s.setdefault("streak", 0)
     s.setdefault("best_streak", 0)
     s.setdefault("last_streak_day", None)
@@ -1958,6 +2039,32 @@ def format_time(seconds: float) -> str:
         h, m = divmod(m, 60)
         return f"{h}h {m:02d}m {s:02d}s"
     return f"{m}m {s:02d}s"
+
+
+def record_solve_times(stats: dict, elapsed: float | int | None) -> None:
+    """Update career fastest (`best_time`) and longest (`longest_time`) solve times."""
+    if elapsed is None:
+        return
+    try:
+        t = int(float(elapsed))
+    except (TypeError, ValueError):
+        return
+    if t < 0:
+        return
+    best = stats.get("best_time")
+    if best is None or t < float(best):
+        stats["best_time"] = t
+    longest = stats.get("longest_time")
+    if longest is None or t > float(longest):
+        stats["longest_time"] = t
+
+
+def clear_solve_times(stats: dict) -> None:
+    """Wipe career best/longest solve times (and speed badges tied to them)."""
+    stats["best_time"] = None
+    stats["longest_time"] = None
+    badges = [b for b in (stats.get("badges") or []) if b not in ("speed_demon", "jelly_flash")]
+    stats["badges"] = badges
 
 
 def win_reward(
@@ -3036,8 +3143,7 @@ def finish_win(
         day = game.get("daily_date") or utc_today()
         apply_daily_calendar_streak(stats, day)
     # /play and challenge use the current daily streak for bonus, but do not advance it.
-    if stats["best_time"] is None or elapsed < stats["best_time"]:
-        stats["best_time"] = int(elapsed)
+    record_solve_times(stats, elapsed)
 
     coins = win_reward(
         int(stats.get("streak") or 0),
@@ -10502,6 +10608,39 @@ async def setstreak_cmd(
         f"{STAR} Set {user.mention} streak to **{int(streak)}** "
         f"(last day `{stats.get('last_streak_day')}`, "
         f"{'won today' if won_today else 'not won today'}).",
+        ephemeral=True,
+    )
+
+
+@admin_group.command(
+    name="clearsolvetime",
+    description="Clear a player's career best/longest solve times (admin)",
+)
+@app_commands.describe(user="Player whose best/longest times to wipe")
+async def clearsolvetime_cmd(interaction: discord.Interaction, user: discord.Member):
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+    if not await require_bot_admin(interaction):
+        return
+
+    gstats = guild_stats(bot.data, interaction.guild.id)
+    stats = user_stats(gstats, user.id)
+    stats["name"] = user.display_name
+    before_best = stats.get("best_time")
+    before_long = stats.get("longest_time")
+    clear_solve_times(stats)
+    save_data(bot.data)
+    try:
+        await match_store.save_leaderboard(bot.data)
+    except Exception as exc:  # noqa: BLE001
+        print(f"clearsolvetime save_leaderboard failed: {exc}")
+
+    best_txt = format_time(before_best) if before_best is not None else "—"
+    long_txt = format_time(before_long) if before_long is not None else "—"
+    await interaction.response.send_message(
+        f"{BUBBLE} Cleared {user.mention} solve times "
+        f"(was best **{best_txt}** · longest **{long_txt}**).",
         ephemeral=True,
     )
 

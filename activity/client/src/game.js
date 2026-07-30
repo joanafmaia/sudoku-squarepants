@@ -276,9 +276,11 @@ function roundRect(ctx, x, y, w, h, r) {
 import {
   armTrackBgm,
   configureTrackBgm,
+  cycleTrack,
   getTrackMeta,
   pauseTrackBgm,
   resumeTrackBgm,
+  setTrackIndex,
   syncTrackBgmEnabled,
 } from "./track-bgm.js";
 
@@ -344,6 +346,27 @@ export function isMusicEnabled() {
 
 export function getMusicPresetMeta() {
   return getTrackMeta();
+}
+
+export function cycleMusicTrack(delta = 1) {
+  // Turn music on first so track switch can arm/play with isEnabled() true.
+  if (!musicEnabled) {
+    musicEnabled = true;
+    persistMusicPrefs();
+  }
+  const meta = cycleTrack(delta);
+  applyMusicPlayback();
+  return meta;
+}
+
+export function setMusicTrackIndex(index) {
+  if (!musicEnabled) {
+    musicEnabled = true;
+    persistMusicPrefs();
+  }
+  const meta = setTrackIndex(index);
+  applyMusicPlayback();
+  return meta;
 }
 
 function applyMusicPlayback() {
@@ -852,6 +875,16 @@ export function startThcokuGame(canvas, options = {}) {
     state.solution = [];
     if (snap.board && snap.given) {
       loadSnapshot(snap);
+    }
+    if (snap.cosmetics) {
+      setCosmetics({
+        title: snap.cosmetics.title || null,
+        pins: Array.isArray(snap.cosmetics.pins) ? snap.cosmetics.pins : [],
+        seed:
+          snap.cosmetics.seed != null
+            ? Number(snap.cosmetics.seed)
+            : Number(snap.player_id) || cosmetics.seed,
+      });
     }
     const filled = snap.board ? filledCount(snap.board) : Number(snap.filled) || 0;
     if (snap.won_at || filled >= 81) {

@@ -11,6 +11,7 @@ import {
   getMusicPresetMeta,
   setMusicEnabled,
   setSfxEnabled,
+  cycleMusicTrack,
 } from "./game.js";
 import { pauseTrackBgm, resumeTrackBgm } from "./track-bgm.js";
 import { difficultyLabel, DIFF_KEYS } from "./sudoku-core.js";
@@ -275,22 +276,42 @@ function applyTheme(theme) {
 
 function applyMusicUi() {
   const btn = document.getElementById("music-toggle");
-  if (!btn) return;
+  const nextBtn = document.getElementById("music-next");
   const enabled = isMusicEnabled();
   const meta = getMusicPresetMeta();
-  if (!enabled) {
-    btn.textContent = "🔕";
-    btn.title = "Música desligada — clica para ligar (Clownfish Capers)";
-    btn.setAttribute("aria-pressed", "true");
-    btn.setAttribute("aria-label", "Música desligada");
-    btn.classList.add("is-muted");
-    return;
+  const trackLabel = meta?.label || "Clownfish Capers";
+  const trackEmoji = meta?.emoji || "🎵";
+  const pos =
+    meta?.total > 1 ? ` ${Number(meta.index || 0) + 1}/${meta.total}` : "";
+
+  if (btn) {
+    if (!enabled) {
+      btn.textContent = "🔕";
+      btn.title = `Música desligada — clica para ligar (${trackLabel})`;
+      btn.setAttribute("aria-pressed", "true");
+      btn.setAttribute("aria-label", "Música desligada");
+      btn.classList.add("is-muted");
+    } else {
+      btn.textContent = trackEmoji;
+      btn.title = `Música ligada (${trackLabel}${pos}) — clica para desligar · em loop`;
+      btn.setAttribute("aria-pressed", "false");
+      btn.setAttribute("aria-label", `Música ligada: ${trackLabel}`);
+      btn.classList.remove("is-muted");
+    }
   }
-  btn.textContent = meta?.emoji || "🎵";
-  btn.title = `Música ligada (${meta?.label || "Clownfish Capers"}) — clica para desligar`;
-  btn.setAttribute("aria-pressed", "false");
-  btn.setAttribute("aria-label", "Música ligada");
-  btn.classList.remove("is-muted");
+
+  if (nextBtn) {
+    nextBtn.hidden = !(meta?.total > 1);
+    nextBtn.textContent = "⏭";
+    nextBtn.title = enabled
+      ? `Próxima música (${trackLabel}${pos}) — a escolhida fica em loop`
+      : `Escolher música (${trackLabel}${pos}) — liga e fica em loop`;
+    nextBtn.setAttribute(
+      "aria-label",
+      enabled ? "Próxima música" : "Escolher e ligar música"
+    );
+    nextBtn.classList.toggle("is-muted", !enabled);
+  }
 }
 
 function applySfxUi(enabled) {
@@ -317,7 +338,23 @@ function bindMusicToggle() {
   });
 }
 
+function bindMusicNext() {
+  const btn = document.getElementById("music-next");
+  if (!btn) return;
+
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const meta = cycleMusicTrack(1);
+    applyMusicUi();
+    if (meta?.label) {
+      showWinToast(`${meta.emoji || "🎵"} ${meta.label} · loop`);
+    }
+  });
+}
+
 bindMusicToggle();
+bindMusicNext();
 
 document.addEventListener(
   "pointerdown",
@@ -368,6 +405,7 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
       pocketSponges: Number(cosmetics?.pocketSponges) || 0,
       hintSpongeCost: Number(cosmetics?.hintSpongeCost) || 15,
       autoStart: gameOptions.autoStart !== false,
+      spectatorMode: Boolean(gameOptions.spectatorMode),
       sessionKind: gameOptions.sessionKind || null,
       dailyDate: gameOptions.dailyDate || null,
       matchId: gameOptions.matchId || null,
@@ -797,7 +835,14 @@ function flushSessionOnExit({ endWatch = false } = {}) {
 }
 
 async function refreshCosmeticsIfPlaying() {
-  if (!gameStarted || !gameApi?.setCosmetics || !window.__DISCORD_ACCESS_TOKEN__) return;
+  if (
+    !gameStarted ||
+    !gameApi?.setCosmetics ||
+    !window.__DISCORD_ACCESS_TOKEN__ ||
+    spectating
+  ) {
+    return;
+  }
   const cosmetics = await loadCosmetics();
   if (cosmetics) gameApi.setCosmetics(cosmetics);
 }
@@ -1080,9 +1125,10 @@ function startSpectatorPolling(targetUserId) {
     if (!data.session) {
       if (data.ended && gameApi?.loadSpectatorSnapshot) {
         gameApi.loadSpectatorSnapshot({
-          player_name: "Player",
+          player_name: data.player_name || "Player",
           player_id: targetUserId,
           won_at: Date.now() / 1000,
+          cosmetics: data.cosmetics || null,
         });
         stopSpectatorPolling();
       }
@@ -1110,9 +1156,8 @@ async function beginSpectate(targetUserId) {
   }
 
   startSpectatorPolling(targetUserId);
-
-  const cosmetics = await loadCosmetics();
-  if (cosmetics && gameApi?.setCosmetics) gameApi.setCosmetics(cosmetics);
+  // Cosmetics come from the player being watched (in the spectate snapshot),
+  // not the spectator's own /profile.
 }
 
 async function beginPlay({ resumeSession = null, initialDiffIndex = null } = {}) {

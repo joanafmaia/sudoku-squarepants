@@ -453,6 +453,15 @@ def _collect_top_xp(data: dict, guild_id: str | None, limit: int) -> list[dict]:
                         if stats.get("best_time") is None
                         else float(stats.get("best_time"))
                     ),
+                    "longest_time": (
+                        float(stats["longest_time"])
+                        if stats.get("longest_time") is not None
+                        else (
+                            None
+                            if stats.get("best_time") is None
+                            else float(stats.get("best_time"))
+                        )
+                    ),
                 }
             )
     rows.sort(key=lambda r: r["xp"], reverse=True)
@@ -875,6 +884,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
             "career_xp": int(stats["xp"]),
             "pocket": int(stats["coins"]),
             "best_time": stats.get("best_time"),
+            "longest_time": stats.get("longest_time"),
             "elapsed": elapsed,
             "difficulty": difficulty,
             "guild_id": guild_id,
@@ -1008,6 +1018,32 @@ def _client_spectate_session(doc: dict) -> dict:
     return payload
 
 
+def _cosmetics_for_user(bot: Any, guild_id: int, user_id: int) -> dict:
+    """Title + pin badges for the player being watched (not the spectator)."""
+    from bot import SHOP_TITLES, equipped_title_id, guild_stats, owned_pin_emojis, user_stats
+
+    gstats = guild_stats(
+        bot.data if isinstance(getattr(bot, "data", None), dict) else {},
+        int(guild_id or 0),
+    )
+    stats = user_stats(gstats, int(user_id))
+    tid = equipped_title_id(stats)
+    title_meta = SHOP_TITLES.get(tid or "") if tid else None
+    title = None
+    if title_meta:
+        title = {
+            "id": tid,
+            "label": title_meta.get("label") or "",
+            "pin": title_meta.get("pin") or "",
+            "emoji": title_meta.get("emoji") or "",
+        }
+    return {
+        "title": title,
+        "pins": owned_pin_emojis(stats),
+        "seed": int(user_id),
+    }
+
+
 async def _touch_spectator_presence(
     *,
     session_id: str,
@@ -1093,8 +1129,23 @@ async def _load_activity_spectate(
     resolved_guild = await _resolve_activity_guild_id(guild_id, viewer_id)
     session_id = _activity_session_id(resolved_guild, target_id)
     session = await get_watch_session_for_spectator(session_id)
+
+    def _target_cosmetics() -> dict | None:
+        try:
+            return _cosmetics_for_user(bot, int(resolved_guild), target_id)
+        except Exception as exc:  # noqa: BLE001
+            print(f"activity spectate cosmetics failed: {exc}")
+            return None
+
     if not session:
-        return {"ok": True, "session": None, "ended": True}
+        return {
+            "ok": True,
+            "session": None,
+            "ended": True,
+            "player_id": str(target_id),
+            "player_name": "Player",
+            "cosmetics": _target_cosmetics(),
+        }
 
     viewer_name = (
         user.get("global_name")
@@ -1114,14 +1165,30 @@ async def _load_activity_spectate(
 
     board = session.get("board")
     given = session.get("given")
+    cosmetics = _target_cosmetics()
     if not board or not isinstance(given, list) or len(given) != 9:
-        return {"ok": True, "session": None, "ended": False, "waiting": True}
+        waiting_snap = {
+            "spectating": True,
+            "player_name": str(session.get("name") or "Player"),
+            "player_id": str(session.get("user_id") or target_id),
+            "filled": int(session.get("filled") or 0),
+            "cosmetics": cosmetics,
+        }
+        return {
+            "ok": True,
+            "session": waiting_snap,
+            "ended": False,
+            "waiting": True,
+        }
 
     filled = int(session.get("filled") or 0)
     ended = bool(session.get("won_at")) or filled >= 81
+    snap = _client_spectate_session(session)
+    if cosmetics:
+        snap["cosmetics"] = cosmetics
     return {
         "ok": True,
-        "session": _client_spectate_session(session),
+        "session": snap,
         "ended": ended,
     }
 
