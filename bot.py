@@ -2103,6 +2103,87 @@ def make_daily_puzzle(
     return board, given, solution, diff_key
 
 
+def daily_session_has_player_progress(session: dict | None) -> bool:
+    """True if the player filled any non-clue cell on this daily board."""
+    if not session:
+        return False
+    board = session.get("board")
+    given = session.get("given")
+    if not isinstance(board, list) or not isinstance(given, list) or len(board) != 9:
+        return False
+    try:
+        for r in range(9):
+            for c in range(9):
+                is_given = bool(given[r][c]) if r < len(given) and c < len(given[r]) else False
+                if is_given:
+                    continue
+                cell = board[r][c]
+                val = int(cell.get("value", 0)) if isinstance(cell, dict) else int(cell or 0)
+                if val:
+                    return True
+                if isinstance(cell, dict) and (cell.get("pencil_marks") or []):
+                    return True
+    except (TypeError, ValueError, IndexError):
+        return False
+    return False
+
+
+def ensure_daily_session_schedule(session: dict) -> tuple[dict, bool]:
+    """Align a daily Activity session to today's weekday difficulty.
+
+    If the stored board was generated at the wrong tier and the player has not
+    progressed yet, regenerate the pineapple puzzle. Returns (session, changed).
+    """
+    if not session or session.get("session_kind") != "daily":
+        return session, False
+    day = str(session.get("daily_date") or utc_today())
+    expected = daily_difficulty_for_date(day)
+    stored, stored_idx = resolve_session_difficulty(session)
+    changed = False
+    if stored != expected:
+        if daily_session_has_player_progress(session):
+            # Keep the board they already played; stamp the real stored tier.
+            session["difficulty"] = stored
+            session["diff_index"] = stored_idx
+            session["daily_date"] = day
+            return session, False
+        try:
+            guild_id = int(session.get("guild_id") or 0)
+            user_id = int(session.get("user_id") or 0)
+        except (TypeError, ValueError):
+            guild_id, user_id = 0, 0
+        board, given, solution, diff_key = make_daily_puzzle(guild_id, day, user_id)
+        try:
+            diff_index = DIFF_KEYS_LIST.index(diff_key)
+        except ValueError:
+            diff_index = difficulty_index(diff_key)
+        session = {
+            **session,
+            "daily_date": day,
+            "difficulty": diff_key,
+            "diff_index": diff_index,
+            "board": board,
+            "given": given,
+            "solution": solution,
+            "filled": game_filled_count({"board": board}),
+            "elapsed": 0,
+            "hints_used": 0,
+            "hints_gary_used": 0,
+        }
+        changed = True
+    else:
+        # Canonicalize fields even when already correct.
+        if session.get("difficulty") != expected or session.get("diff_index") != stored_idx:
+            session["difficulty"] = expected
+            try:
+                session["diff_index"] = DIFF_KEYS_LIST.index(expected)
+            except ValueError:
+                session["diff_index"] = difficulty_index(expected)
+            session["daily_date"] = day
+            changed = True
+    return session, changed
+
+
 def get_guild_daily(data: dict, guild_id: int) -> dict:
     """Daily meta for a guild: date, difficulty schedule, and per-user results (no shared board)."""
     gstats = guild_stats(data, guild_id)
@@ -10500,6 +10581,12 @@ async def daily_cmd(interaction: discord.Interaction):
         if r.get("in_progress"):
             existing, _sid = await lookup_user_activity_session(guild_id, user_id)
             if existing and existing.get("session_kind") == "daily":
+                existing, repaired = ensure_daily_session_schedule(existing)
+                if repaired:
+                    try:
+                        await match_store.upsert_activity_session(existing)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"/daily in_progress repair failed: {exc}")
                 await _launch_activity_window(interaction)
                 return
             # Orphan lock (no recoverable session) — treat as forfeit, not a free retry
@@ -10570,6 +10657,12 @@ async def daily_cmd(interaction: discord.Interaction):
         and (existing_session.get("daily_date") or day) == day
         and not existing_session.get("won_at")
     ):
+        existing_session, repaired = ensure_daily_session_schedule(existing_session)
+        if repaired:
+            try:
+                await match_store.upsert_activity_session(existing_session)
+            except Exception as exc:  # noqa: BLE001
+                print(f"/daily repair schedule upsert failed: {exc}")
         daily["results"][uid] = {
             "won": False,
             "in_progress": True,

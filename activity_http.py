@@ -1929,6 +1929,29 @@ async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict
     doc, _sid = await _lookup_activity_session(bot, resolved_guild, uid)
     if not doc:
         return {"ok": True, "session": None}
+    if doc.get("session_kind") == "daily":
+        from bot import ensure_daily_session_schedule, match_store
+
+        doc, repaired = ensure_daily_session_schedule(doc)
+        if repaired:
+            try:
+                await match_store.merge_activity_session(
+                    str(doc.get("_id") or _sid),
+                    {
+                        "daily_date": doc.get("daily_date"),
+                        "difficulty": doc.get("difficulty"),
+                        "diff_index": doc.get("diff_index"),
+                        "board": doc.get("board"),
+                        "given": doc.get("given"),
+                        "solution": doc.get("solution"),
+                        "filled": doc.get("filled"),
+                        "elapsed": doc.get("elapsed"),
+                        "hints_used": doc.get("hints_used"),
+                        "hints_gary_used": doc.get("hints_gary_used"),
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"activity daily schedule repair failed: {exc}")
     return {"ok": True, "session": _client_activity_session(doc, strip_solution=True)}
 
 

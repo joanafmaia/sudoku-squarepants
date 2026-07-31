@@ -1227,6 +1227,18 @@ async function prefetchSessionBoard(session) {
   await saveSessionNow({ force: true, snap });
 }
 
+/** /daily may upsert Mongo a beat before the Activity window loads the session. */
+async function loadSavedSessionWithRetry(attempts = 4, delayMs = 350) {
+  let session = await loadSavedSession();
+  if (session?.board) return session;
+  for (let i = 1; i < attempts; i++) {
+    await new Promise((r) => setTimeout(r, delayMs));
+    session = await loadSavedSession();
+    if (session?.board) return session;
+  }
+  return session;
+}
+
 async function showGame() {
   if (bootEl) bootEl.hidden = true;
 
@@ -1245,7 +1257,7 @@ async function showGame() {
     gameHintEl.textContent = "Checking saved progress…";
   }
 
-  const session = await loadSavedSession();
+  const session = await loadSavedSessionWithRetry();
   if (session && (Number(session.filled) >= 81 || session.won)) {
     // Challenge/daily full boards still need /win — never replace with a fresh /play
     // puzzle while the race (or daily) is active (that caused not_solved toasts).
