@@ -330,7 +330,7 @@ SHOP_PINS = {
     "pin_hulk": {"label": "🧌 Hulk Pin", "pin": "Hulk", "emoji": "🧌", "cost": 820, "theme": "crew"},
     "pin_apex": {"label": "🐋 Apex Pin", "pin": "Apex", "emoji": "🐋", "cost": 1000, "theme": "crew"},
     "pin_fuzzy": {"label": "🔪 Fuzzy Pin", "pin": "Fuzzy", "emoji": "🔪", "cost": 880, "theme": "crew"},
-    "pin_xiao": {"label": "🐰 Xiao Pin", "pin": "Xiao", "emoji": "🐰", "cost": 540, "theme": "crew"},
+    "pin_xiao": {"label": "🐰 Cute Xiao Pin", "pin": "Xiao", "emoji": "🐰", "cost": 540, "theme": "crew"},
 }
 
 SHOP_BOOST_KEYS = frozenset({
@@ -340,7 +340,7 @@ SHOP_BOOST_KEYS = frozenset({
     "krabby_snack",
     "golden_spatula",
 })
-SHOP_BUNDLE_DISCOUNT = 0.5  # 50% off one pin per UTC day
+SHOP_BUNDLE_DISCOUNT = 0.5  # 50% off one pin + one title per UTC day
 SHOP_PAGE_SIZE = 11
 
 ACHIEVEMENTS = {
@@ -365,9 +365,43 @@ ACHIEVEMENTS = {
     "arena_ace": {"label": "🏆 Arena Ace", "desc": "Win 25 speedrun challenges"},
     # Cosmetics / career
     "pin_hoarder": {"label": "🎨 Pin Hoarder", "desc": "Own 8 border pins"},
+    "pin_collector": {"label": "🪸 Pin Collector", "desc": "Own 16 border pins"},
+    "pin_museum": {"label": "🏛️ Pin Museum", "desc": "Own 32 border pins"},
     "title_tour": {"label": "👑 Title Tour", "desc": "Own 5 shop titles"},
+    "title_wardrobe": {"label": "👗 Title Wardrobe", "desc": "Own 10 shop titles"},
     "xp_voyager": {"label": "⭐ XP Voyager", "desc": "Reach 5,000 career XP"},
+    "xp_reef": {"label": "🪸 XP Reef Walker", "desc": "Reach 15,000 career XP"},
+    "xp_king": {"label": "👑 XP King Tide", "desc": "Reach 40,000 career XP"},
+    "xp_neptune": {"label": "🔱 XP Neptune", "desc": "Reach 100,000 career XP"},
 }
+
+# ISO-week quests (UTC). Progress resets each Monday 00:00 UTC.
+WEEKLY_QUESTS: tuple[dict, ...] = (
+    {
+        "id": "daily_triple",
+        "label": "Clear 3 Daily Sudokus",
+        "emoji": "🍍",
+        "counter": "weekly_dailies",
+        "need": 3,
+        "reward": 75,
+    },
+    {
+        "id": "board_five",
+        "label": "Finish 5 boards (any mode)",
+        "emoji": "🧩",
+        "counter": "weekly_boards",
+        "need": 5,
+        "reward": 60,
+    },
+    {
+        "id": "race_win",
+        "label": "Win 1 speedrun challenge",
+        "emoji": "⚔️",
+        "counter": "weekly_challenges",
+        "need": 1,
+        "reward": 100,
+    },
+)
 
 # Career XP thresholds (XP mirrors sponge grants on win).
 # Curve stays friendly early, then accelerates so endgame is a long grind.
@@ -470,6 +504,11 @@ def build_stats_embed(stats: dict, *, avatar_url: str | None = None) -> discord.
             badge_emojis.append(emoji)
     badge_preview = " ".join(badge_emojis) if badge_emojis else "—"
 
+    ensure_weekly_progress(stats)
+    weekly_claimed = set(stats.get("weekly_claimed") or [])
+    weekly_done = sum(1 for q in WEEKLY_QUESTS if q["id"] in weekly_claimed)
+    weekly_total = len(WEEKLY_QUESTS)
+
     embed = paper_embed(f"{SPONGE} {display_name(stats)}")
     embed.description = (
         f"**{format_rank_compact(stats.get('xp', 0))}**\n"
@@ -481,6 +520,7 @@ def build_stats_embed(stats: dict, *, avatar_url: str | None = None) -> discord.
         f"{PINEAPPLE} **{int(stats.get('daily_wins', 0) or 0)}** · "
         f"{JELLY} **{int(stats.get('challenge_wins', 0) or 0)}** · "
         f"**{games_n}** boards · 🛡️ **{shields}**\n"
+        f"📅 Weekly **{weekly_done}/{weekly_total}** · `/weekly`\n"
         f"🏆 **{have}/{total}** {badge_preview} · `/achievements`"
     )
     return embed
@@ -561,6 +601,10 @@ def evaluate_user_achievements(stats: dict) -> list[str]:
     pin_count = len(owned_pin_ids(stats))
     if pin_count >= 8:
         unlocked.add("pin_hoarder")
+    if pin_count >= 16:
+        unlocked.add("pin_collector")
+    if pin_count >= 32:
+        unlocked.add("pin_museum")
 
     try:
         title_count = len(list(stats.get("owned_titles") or []))
@@ -568,6 +612,8 @@ def evaluate_user_achievements(stats: dict) -> list[str]:
         title_count = 0
     if title_count >= 5:
         unlocked.add("title_tour")
+    if title_count >= 10:
+        unlocked.add("title_wardrobe")
 
     try:
         xp_n = int(stats.get("xp") or 0)
@@ -575,6 +621,12 @@ def evaluate_user_achievements(stats: dict) -> list[str]:
         xp_n = 0
     if xp_n >= 5000:
         unlocked.add("xp_voyager")
+    if xp_n >= 15000:
+        unlocked.add("xp_reef")
+    if xp_n >= 40000:
+        unlocked.add("xp_king")
+    if xp_n >= 100000:
+        unlocked.add("xp_neptune")
 
     # Stable catalog order for known badges; keep any legacy ids at the end
     ordered = [b for b in ACHIEVEMENTS if b in unlocked]
@@ -1564,6 +1616,110 @@ def cosmetic_pin_text(meta: dict | None, *, fallback: str = "") -> str:
 
 def utc_today() -> str:
     return datetime.now(timezone.utc).date().isoformat()
+
+
+def utc_iso_week(day: str | None = None) -> str:
+    """UTC ISO week key, e.g. 2026-W31."""
+    raw = day or utc_today()
+    d = datetime.fromisoformat(str(raw)).date()
+    year, week, _ = d.isocalendar()
+    return f"{year}-W{week:02d}"
+
+
+def ensure_weekly_progress(stats: dict, *, day: str | None = None) -> str:
+    """Reset weekly counters when the ISO week rolls over. Returns current week key."""
+    week = utc_iso_week(day)
+    if stats.get("weekly_week") != week:
+        stats["weekly_week"] = week
+        stats["weekly_dailies"] = 0
+        stats["weekly_boards"] = 0
+        stats["weekly_challenges"] = 0
+        stats["weekly_claimed"] = []
+    stats.setdefault("weekly_dailies", 0)
+    stats.setdefault("weekly_boards", 0)
+    stats.setdefault("weekly_challenges", 0)
+    stats.setdefault("weekly_claimed", [])
+    return week
+
+
+def note_weekly_win(
+    stats: dict,
+    *,
+    is_daily: bool = False,
+    challenge_winner: bool = False,
+    day: str | None = None,
+) -> list[str]:
+    """Bump weekly counters and auto-claim any newly completed quests. Returns payout notes."""
+    ensure_weekly_progress(stats, day=day)
+    stats["weekly_boards"] = int(stats.get("weekly_boards") or 0) + 1
+    if is_daily:
+        stats["weekly_dailies"] = int(stats.get("weekly_dailies") or 0) + 1
+    if challenge_winner:
+        stats["weekly_challenges"] = int(stats.get("weekly_challenges") or 0) + 1
+    return claim_ready_weekly_quests(stats)
+
+
+def claim_ready_weekly_quests(stats: dict) -> list[str]:
+    """Pay out completed unclaimed weekly quests. Returns human-readable notes."""
+    ensure_weekly_progress(stats)
+    claimed = set(stats.get("weekly_claimed") or [])
+    notes: list[str] = []
+    for quest in WEEKLY_QUESTS:
+        qid = str(quest["id"])
+        if qid in claimed:
+            continue
+        progress = int(stats.get(str(quest["counter"])) or 0)
+        need = int(quest["need"])
+        if progress < need:
+            continue
+        reward = int(quest["reward"])
+        stats["coins"] = int(stats.get("coins") or 0) + reward
+        claimed.add(qid)
+        notes.append(
+            f"{quest['emoji']} {quest['label']} · {format_sponges(reward, signed=True)}"
+        )
+    stats["weekly_claimed"] = [q["id"] for q in WEEKLY_QUESTS if q["id"] in claimed]
+    return notes
+
+
+def weekly_progress_lines(stats: dict) -> list[str]:
+    """Status lines for /weekly and /stats."""
+    week = ensure_weekly_progress(stats)
+    claimed = set(stats.get("weekly_claimed") or [])
+    lines: list[str] = []
+    for quest in WEEKLY_QUESTS:
+        progress = int(stats.get(str(quest["counter"])) or 0)
+        need = int(quest["need"])
+        done = progress >= need
+        qid = str(quest["id"])
+        if qid in claimed:
+            mark = "✅"
+        elif done:
+            mark = "🎁"
+        else:
+            mark = "⬜"
+        shown = min(progress, need)
+        lines.append(
+            f"{mark} {quest['emoji']} **{quest['label']}** · "
+            f"{shown}/{need} · {format_sponges(int(quest['reward']))}"
+        )
+    lines.append(f"_Week `{week}` (resets Monday UTC)_")
+    return lines
+
+
+def build_weekly_embed(stats: dict, *, viewer_name: str | None = None) -> discord.Embed:
+    who = viewer_name or display_name(stats)
+    # Auto-claim anything already complete when opening /weekly.
+    notes = claim_ready_weekly_quests(stats)
+    embed = paper_embed(f"📅 Weekly Goals · {who}")
+    embed.description = "\n".join(weekly_progress_lines(stats))
+    if notes:
+        embed.add_field(
+            name="Claimed just now",
+            value="\n".join(notes),
+            inline=False,
+        )
+    return embed
 
 
 def apply_daily_calendar_streak(stats: dict, day: str) -> int:
@@ -3209,6 +3365,13 @@ def finish_win(
     elif normalize_game_mode(game.get("mode")) == "solo":
         stats["last_activity_win_at"] = time.time()
 
+    weekly_notes = note_weekly_win(
+        stats,
+        is_daily=is_daily,
+        challenge_winner=challenge_winner,
+        day=(game.get("daily_date") if is_daily else None) or utc_today(),
+    )
+
     save_data(data)
 
     rank = None
@@ -3246,12 +3409,16 @@ def finish_win(
         golden_spatula_remaining=golden_spatula_remaining if golden_spatula_used else None,
     )
 
+    weekly_line = ""
+    if weekly_notes:
+        weekly_line = "\n📅 **Weekly:** " + " · ".join(weekly_notes)
+
     embed = paper_embed(f"{badge} {user.mention} completed the {label}!")
     embed.description = (
         f"🏆 **Rank:** {format_rank_line(int(stats.get('xp') or 0))}\n"
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {stats['streak']}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
-        f"{boost_line}{badge_line}"
+        f"{boost_line}{badge_line}{weekly_line}"
     )
     return WinOutcome(
         embed=embed,
@@ -7597,7 +7764,7 @@ def daily_bundle_pin_id(day: str | None = None) -> str | None:
 
 
 def daily_bundle_pin(day: str | None = None) -> dict | None:
-    """Catalog-shaped daily deal entry, or None."""
+    """Catalog-shaped daily pin deal entry, or None."""
     day = day or utc_today()
     tid = daily_bundle_pin_id(day)
     if not tid:
@@ -7614,6 +7781,43 @@ def daily_bundle_pin(day: str | None = None) -> dict | None:
         "full_cost": full,
         "on_sale": True,
         "theme": meta.get("theme") or "ocean",
+        "pin": meta.get("pin") or cosmetic_pin_text(meta),
+        "bundle_day": day,
+    }
+
+
+def daily_bundle_title_id(day: str | None = None) -> str | None:
+    """Stable paid title id on sale for this UTC day (50% off)."""
+    day = day or utc_today()
+    paid = [
+        tid
+        for tid, meta in SHOP_TITLES.items()
+        if int(meta.get("cost") or 0) > 0
+    ]
+    if not paid:
+        return None
+    digest = hashlib.md5(f"thcoku-title-bundle:{day}".encode()).hexdigest()
+    return paid[int(digest, 16) % len(paid)]
+
+
+def daily_bundle_title(day: str | None = None) -> dict | None:
+    """Catalog-shaped daily title deal entry, or None."""
+    day = day or utc_today()
+    tid = daily_bundle_title_id(day)
+    if not tid:
+        return None
+    meta = SHOP_TITLES[tid]
+    full = int(meta["cost"])
+    sale = max(1, int(round(full * SHOP_BUNDLE_DISCOUNT)))
+    return {
+        "kind": "title",
+        "id": tid,
+        "label": meta["label"],
+        "emoji": meta.get("emoji", SPONGE),
+        "cost": sale,
+        "full_cost": full,
+        "on_sale": True,
+        "theme": None,
         "pin": meta.get("pin") or cosmetic_pin_text(meta),
         "bundle_day": day,
     }
@@ -7638,20 +7842,29 @@ def shop_catalog(kind: str) -> list[dict]:
             if tid in SHOP_BOOST_KEYS
         ]
     if kind == "titles":
-        return [
-            {
-                "kind": "title",
-                "id": tid,
-                "label": meta["label"],
-                "emoji": meta.get("emoji", SPONGE),
-                "cost": int(meta["cost"]),
-                "pin": meta.get("pin") or cosmetic_pin_text(meta),
-                "theme": None,
-                "on_sale": False,
-                "full_cost": int(meta["cost"]),
-            }
-            for tid, meta in SHOP_TITLES.items()
-        ]
+        bundle_id = daily_bundle_title_id()
+        items = []
+        for tid, meta in SHOP_TITLES.items():
+            full = int(meta["cost"])
+            on_sale = tid == bundle_id and full > 0
+            cost = max(1, int(round(full * SHOP_BUNDLE_DISCOUNT))) if on_sale else full
+            items.append(
+                {
+                    "kind": "title",
+                    "id": tid,
+                    "label": meta["label"],
+                    "emoji": meta.get("emoji", SPONGE),
+                    "cost": cost,
+                    "pin": meta.get("pin") or cosmetic_pin_text(meta),
+                    "theme": None,
+                    "on_sale": on_sale,
+                    "full_cost": full,
+                }
+            )
+        items.sort(
+            key=lambda it: (0 if it.get("on_sale") else 1, int(it.get("cost") or 0), it["label"])
+        )
+        return items
 
     bundle_id = daily_bundle_pin_id()
     items: list[dict] = []
@@ -7794,7 +8007,11 @@ def shop_page_embed(
         + f"\n👑 **Title:** {eq_title} · 🎨 **Pins:** {len(owned_pin_emojis(stats))}\n"
     )
 
-    deal = daily_bundle_pin() if kind == "pins" else None
+    deal = None
+    if kind == "pins":
+        deal = daily_bundle_pin()
+    elif kind == "titles":
+        deal = daily_bundle_title()
     deal_line = ""
     if deal:
         deal_line = (
@@ -7848,6 +8065,8 @@ def shop_page_embed(
         elif selected["kind"] == "title":
             sample = titled_header_line("Easy", selected.get("pin") or "Civilian", emoji=str(selected.get("emoji") or ""))
             detail += f"\nHeader flair: `{sample}`"
+            if selected.get("on_sale"):
+                detail += "\n🔥 *Today's title deal — 50% off!*"
         else:
             theme = (selected.get("theme") or "ocean").title()
             detail += f"\nBorder pin sticker: {selected['emoji']} · Theme: **{theme}**"
@@ -8917,6 +9136,7 @@ STATUS_ROTATION = [
     discord.Game(name=f"{WAVE} /daily · Pineapple puzzle"),
     discord.Game(name=f"{JELLY} /challenge · Jellyfish race"),
     discord.Game(name=f"{SPONGE} /shop · titles & pins"),
+    discord.Game(name=f"📅 /weekly · bonus sponges"),
 ]
 _status_i = 0
 
@@ -8947,15 +9167,30 @@ async def broadcast_daily_announcement(target_channel_id: int | None = None) -> 
     embed.add_field(name="Difficulty", value=f"**{label}**", inline=True)
     embed.add_field(name="Daily Bonus", value=f"**+{DAILY_BONUS} Sponges {SPONGE}**", inline=True)
     deal = daily_bundle_pin(now_date)
+    title_deal = daily_bundle_title(now_date)
+    deal_bits = []
     if deal:
+        deal_bits.append(
+            f"🎨 {deal['emoji']} **{deal['label']}** — {shop_item_price_text(deal)}"
+        )
+    if title_deal:
+        deal_bits.append(
+            f"👑 {title_deal['emoji']} **{title_deal['label']}** — {shop_item_price_text(title_deal)}"
+        )
+    if deal_bits:
         embed.add_field(
-            name="🏷️ Shop Deal of the Day",
+            name="🏷️ Shop Deals of the Day",
             value=(
-                f"{deal['emoji']} **{deal['label']}** — {shop_item_price_text(deal)}\n"
-                f"Open `/shop` → **Pins** (50% off until next UTC midnight)"
+                "\n".join(deal_bits)
+                + f"\nOpen `/shop` → **Pins** / **Titles** (50% off until next UTC midnight)"
             ),
             inline=False,
         )
+    embed.add_field(
+        name="📅 Weekly Goals",
+        value="Check `/weekly` — clear dailies, boards, and a challenge for bonus sponges.",
+        inline=False,
+    )
     embed.add_field(
         name="How to Play",
         value="Type `/daily` in chat or launch the game using the **Activity** button in Discord!",
@@ -9968,6 +10203,8 @@ async def help_cmd(interaction: discord.Interaction):
             f"· **Pins** — emoji stickers on the border\n"
             f"· Open `/shop` → pick from the menu → **Buy** / **Equip** "
             f"(filter All / Can buy / Owned · pages ◀ ▶)\n"
+            f"· Daily **50% off** one pin + one title (UTC midnight)\n"
+            f"· `/weekly` — 3 weekly goals for bonus sponges (resets Monday UTC)\n"
             f"Solve **{format_xp(BASE_WIN_REWARD, signed=True)}** + "
             f"**{format_sponges(BASE_WIN_REWARD, signed=True)}** · "
             f"Daily **+{DAILY_BONUS}** each · "
@@ -9983,7 +10220,7 @@ async def help_cmd(interaction: discord.Interaction):
     )
     embed.add_field(
         name=f"{PINEAPPLE} More",
-        value="`/shop` · `/stats` · `/achievements` · `/leaderboard` · `/recover` · `/cleargame` · `/quit`",
+        value="`/shop` · `/weekly` · `/stats` · `/achievements` · `/leaderboard` · `/recover` · `/cleargame` · `/quit`",
         inline=False,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -11470,6 +11707,31 @@ async def leaderboard_cmd(
     embed.description = f"{blurb}\n*{interaction.guild.name}*"
     field_name = "Top spenders" if mode == "whales" else "Top 10"
     embed.add_field(name=field_name, value="\n".join(lines), inline=False)
+    await interaction.response.send_message(embed=embed, silent=True)
+
+
+@bot.tree.command(
+    name="weekly",
+    description="This week's Bikini Bottom goals — bonus sponges",
+)
+@app_commands.describe(member="Peek at a neighbor's weekly progress")
+async def weekly_cmd(
+    interaction: discord.Interaction,
+    member: discord.Member | None = None,
+):
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+    target = member or interaction.user
+    gstats = guild_stats(bot.data, interaction.guild.id)
+    stats = user_stats(gstats, target.id)
+    stats["name"] = target.display_name
+    embed = build_weekly_embed(stats, viewer_name=target.display_name)
+    save_data(bot.data)
+    try:
+        await match_store.save_leaderboard(bot.data)
+    except Exception as exc:  # noqa: BLE001
+        print(f"/weekly save_leaderboard failed: {exc}")
     await interaction.response.send_message(embed=embed, silent=True)
 
 
