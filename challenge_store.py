@@ -189,6 +189,12 @@ class MatchStore:
     ) -> dict | None:
         raise NotImplementedError
 
+    async def list_activity_sessions_for_user(
+        self, user_id: str | int, *, guild_id: str | int | None = None
+    ) -> list[dict]:
+        """All activity sessions for a user (optional guild scope including orphans)."""
+        raise NotImplementedError
+
     async def find_activity_watch_session(
         self, user_id: str | int, *, guild_id: str | int | None = None
     ) -> dict | None:
@@ -468,6 +474,25 @@ class MemoryMatchStore(MatchStore):
                 best_with_board = doc
         chosen = best_with_board or best
         return _clone(chosen) if chosen else None
+
+    async def list_activity_sessions_for_user(
+        self, user_id: str | int, *, guild_id: str | int | None = None
+    ) -> list[dict]:
+        uid = str(user_id)
+        gid = (
+            str(guild_id)
+            if guild_id is not None and str(guild_id) not in ("", "0")
+            else None
+        )
+        out: list[dict] = []
+        for doc in self._activity.values():
+            if str(doc.get("user_id")) != uid:
+                continue
+            doc_gid = str(doc.get("guild_id") or "")
+            if gid is not None and doc_gid not in ("", "0", gid):
+                continue
+            out.append(_clone(doc))
+        return out
 
     async def list_idle_activity_watch_sessions(
         self, idle_sec: int
@@ -939,6 +964,24 @@ class MongoMatchStore(MatchStore):
         if doc:
             return doc
         return await self._activity.find_one(query, sort=sort)
+
+    async def list_activity_sessions_for_user(
+        self, user_id: str | int, *, guild_id: str | int | None = None
+    ) -> list[dict]:
+        if self._activity is None:
+            await self.connect()
+        query: dict = {"user_id": str(user_id)}
+        if guild_id is not None and str(guild_id) not in ("", "0"):
+            gid = str(guild_id)
+            query["$or"] = [
+                {"guild_id": gid},
+                {"guild_id": "0"},
+                {"guild_id": ""},
+                {"guild_id": None},
+                {"guild_id": {"$exists": False}},
+            ]
+        cursor = self._activity.find(query)
+        return [doc async for doc in cursor]
 
     async def list_idle_activity_watch_sessions(
         self, idle_sec: int

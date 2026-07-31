@@ -115,6 +115,7 @@ async def _lookup_activity_session(
     """Pick the best Activity doc for this user.
 
     Today's daily always beats a leftover /play board (guild=0 orphan race).
+    Lists all user docs — a single newest find_one can hide today's daily.
     """
     from bot import _pick_best_activity_session, match_store, utc_today
 
@@ -136,15 +137,26 @@ async def _lookup_activity_session(
         (session, primary),
         (orphan, orphan_id),
     ]
-
-    if gid not in ("", "0"):
-        found = await match_store.find_activity_session_by_user_id(uid, guild_id=gid)
-        if found:
-            candidates.append((found, str(found.get("_id") or primary)))
-    # Catch real-guild daily while the Activity client still reports guild 0.
-    any_doc = await match_store.find_activity_session_by_user_id(uid)
-    if any_doc:
-        candidates.append((any_doc, str(any_doc.get("_id") or "")))
+    seen = {primary, orphan_id}
+    try:
+        listed = await match_store.list_activity_sessions_for_user(
+            uid, guild_id=gid if gid not in ("", "0") else None
+        )
+    except Exception:
+        listed = []
+    if not listed or gid in ("", "0"):
+        try:
+            all_docs = await match_store.list_activity_sessions_for_user(uid)
+        except Exception:
+            all_docs = []
+        if all_docs:
+            listed = all_docs
+    for doc in listed or []:
+        sid = str(doc.get("_id") or "")
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        candidates.append((doc, sid))
 
     best, best_sid = _pick_best_activity_session(candidates, today=utc_today())
     if best and best_sid:
@@ -157,13 +169,24 @@ async def _resolve_activity_guild_id(guild_id: str | int, user_id: str | int) ->
     gid = str(guild_id if guild_id is not None else "0")
     if gid not in ("", "0"):
         return gid
-    from bot import match_store
+    from bot import _pick_best_activity_session, match_store, utc_today
 
     # Prefer orphan doc that already stored a real guild (partial SDK race).
     orphan = await match_store.get_activity_session(_activity_session_id("0", user_id))
     if orphan and orphan.get("guild_id") and str(orphan["guild_id"]) not in ("", "0"):
         return str(orphan["guild_id"])
-    # Session may already live under activity:{real}:{uid} after migration.
+    # Prefer today's daily (or best session) over newest play-only find_one.
+    try:
+        listed = await match_store.list_activity_sessions_for_user(user_id)
+    except Exception:
+        listed = []
+    if listed:
+        best, _ = _pick_best_activity_session(
+            [(d, str(d.get("_id") or "")) for d in listed],
+            today=utc_today(),
+        )
+        if best and best.get("guild_id") and str(best["guild_id"]) not in ("", "0"):
+            return str(best["guild_id"])
     recent = await match_store.find_activity_session_by_user_id(user_id)
     if recent and recent.get("guild_id") and str(recent["guild_id"]) not in ("", "0"):
         return str(recent["guild_id"])
@@ -594,15 +617,45 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
         # Prefer server-stored difficulty over client-supplied (anti-spoof),
         # and keep difficulty in sync with diff_index (Very Easy is index 0).
         from bot import (
-            daily_difficulty_for_date,
+            ensure_daily_session_schedule,
+            match_store as _ms,
             resolve_session_difficulty,
-            utc_today,
         )
 
-        difficulty, _diff_idx = resolve_session_difficulty(session)
         if session.get("session_kind") == "daily":
-            day = str(session.get("daily_date") or utc_today())
-            difficulty = daily_difficulty_for_date(day)
+            session, repaired = ensure_daily_session_schedule(session)
+            if repaired:
+                try:
+                    await _ms.merge_activity_session(
+                        str(session.get("_id") or session_id),
+                        {
+                            "daily_date": session.get("daily_date"),
+                            "difficulty": session.get("difficulty"),
+                            "diff_index": session.get("diff_index"),
+                            "board": session.get("board"),
+                            "given": session.get("given"),
+                            "solution": session.get("solution"),
+                            "filled": session.get("filled"),
+                            "elapsed": session.get("elapsed"),
+                            "hints_used": session.get("hints_used"),
+                            "hints_gary_used": session.get("hints_gary_used"),
+                        },
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"activity win daily repair persist failed: {exc}")
+                print(
+                    f"activity win rejected user={uid} guild={guild_id}: "
+                    "daily_rescheduled"
+                )
+                return {
+                    "ok": False,
+                    "error": "daily_rescheduled",
+                    "session": _client_activity_session(session, strip_solution=True),
+                }
+            given = _normalize_activity_given(session.get("given"), board)
+            solution = session.get("solution")
+
+        difficulty, _diff_idx = resolve_session_difficulty(session)
 
         if not _verify_activity_solve(board, solution=solution, given=given):
             print(f"activity win rejected user={uid} guild={guild_id}: not_solved")
@@ -951,27 +1004,10 @@ def _client_activity_session(doc: dict, *, strip_solution: bool = True) -> dict:
     from bot import HINT_SPONGE_COST, hint_gary_free_remaining
     # Frozen active seconds only — client restarts its run clock on load.
     elapsed_display = max(0, int(doc.get("elapsed") or 0))
-    difficulty = doc.get("difficulty") or "medium"
-    if session_kind == "daily":
-        from bot import DIFF_KEYS_LIST, daily_difficulty_for_date, utc_today
+    # Difficulty always follows the stored board (load/save call ensure first for daily).
+    from bot import resolve_session_difficulty
 
-        day = str(doc.get("daily_date") or utc_today())
-        difficulty = daily_difficulty_for_date(day)
-        try:
-            diff_index = DIFF_KEYS_LIST.index(difficulty)
-        except ValueError:
-            from bot import DEFAULT_DIFFICULTY
-
-            diff_index = (
-                DIFF_KEYS_LIST.index(DEFAULT_DIFFICULTY)
-                if DEFAULT_DIFFICULTY in DIFF_KEYS_LIST
-                else 0
-            )
-    else:
-        from bot import resolve_session_difficulty
-
-        # Keep difficulty + diff_index in sync (diff_index wins when present).
-        difficulty, diff_index = resolve_session_difficulty(doc)
+    difficulty, diff_index = resolve_session_difficulty(doc)
     payload: dict = {
         "difficulty": difficulty,
         "diff_index": diff_index,
@@ -1512,11 +1548,17 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
     started_at = time.time() - elapsed
     accepting_client_puzzle = True
     same_puzzle = False
+    daily_repaired = False
     if existing:
         session_kind = existing.get("session_kind") or "play"
         daily_date = existing.get("daily_date")
+        if session_kind == "daily":
+            from bot import ensure_daily_session_schedule
+
+            existing, daily_repaired = ensure_daily_session_schedule(existing)
+            daily_date = existing.get("daily_date") or daily_date
         prior_started = float(existing.get("started_at") or 0)
-        if prior_started > 0:
+        if prior_started > 0 and not daily_repaired:
             started_at = prior_started
         else:
             started_at = time.time() - elapsed
@@ -1531,7 +1573,21 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
                 solution = existing.get("solution")
                 difficulty, diff_index = resolve_session_difficulty(existing)
                 accepting_client_puzzle = False
-                elapsed = _resolve_active_play_elapsed(existing, elapsed)
+                # After schedule regen, discard client fills on the wrong-tier board.
+                if session_kind == "daily" and (
+                    daily_repaired or not same_puzzle
+                ):
+                    board = existing.get("board") or board
+                    given = existing.get("given") or given
+                    filled = sum(
+                        1 for r in range(9) for c in range(9) if board[r][c]["value"]
+                    )
+                    elapsed = max(0, int(existing.get("elapsed") or 0))
+                    started_at = time.time() - elapsed
+                    hints_used = int(existing.get("hints_used") or 0)
+                    hints_gary_used = int(existing.get("hints_gary_used") or 0)
+                else:
+                    elapsed = _resolve_active_play_elapsed(existing, elapsed)
             elif session_kind == "play":
                 # New play puzzle — reset clock, win claim, and hint/Gary counters.
                 started_at = time.time() - max(0, int(body.get("elapsed") or 0))
@@ -1547,21 +1603,14 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
             hints_gary_used = 0
 
     if session_kind == "daily":
-        from bot import DIFF_KEYS_LIST, daily_difficulty_for_date, utc_today
+        # Difficulty must match the stored (possibly just-repaired) board —
+        # never stamp the calendar label onto a mismatched clue set.
+        from bot import utc_today
 
         day = str(daily_date or (existing or {}).get("daily_date") or utc_today())
         daily_date = day
-        difficulty = daily_difficulty_for_date(day)
-        try:
-            diff_index = DIFF_KEYS_LIST.index(difficulty)
-        except ValueError:
-            from bot import DEFAULT_DIFFICULTY
-
-            diff_index = (
-                DIFF_KEYS_LIST.index(DEFAULT_DIFFICULTY)
-                if DEFAULT_DIFFICULTY in DIFF_KEYS_LIST
-                else 0
-            )
+        if existing:
+            difficulty, diff_index = resolve_session_difficulty(existing)
 
     # First save / new play puzzle: refuse forged or trivial client grids.
     if accepting_client_puzzle and session_kind == "play":
@@ -2189,15 +2238,27 @@ async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> di
             board and solution and is_solved(board, solution)
         )
         from bot import (
-            daily_difficulty_for_date,
+            ensure_daily_session_schedule,
             resolve_session_difficulty,
-            utc_today,
         )
 
         difficulty, _diff_idx = resolve_session_difficulty(session)
         if kind == "daily":
-            day = str(session.get("daily_date") or utc_today())
-            difficulty = daily_difficulty_for_date(day)
+            session, repaired = ensure_daily_session_schedule(session)
+            if repaired:
+                # Wrong-tier board — don't award/forfeit on the stale puzzle.
+                try:
+                    await match_store.upsert_activity_session(session)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"delete session daily repair failed: {exc}")
+                return {
+                    "ok": False,
+                    "error": "daily_rescheduled",
+                    "cleared": False,
+                    "message": "Daily difficulty was repaired — reopen the Activity.",
+                    "session": _client_activity_session(session, strip_solution=True),
+                }
+            difficulty, _diff_idx = resolve_session_difficulty(session)
 
         if kind == "daily" and gid:
             if solved:

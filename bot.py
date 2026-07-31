@@ -2128,18 +2128,49 @@ def daily_session_has_player_progress(session: dict | None) -> bool:
     return False
 
 
+def _session_given_clue_count(session: dict) -> int | None:
+    """Count clue cells from a session's given mask (bool or truthy cells)."""
+    given = session.get("given")
+    if not isinstance(given, list) or len(given) != 9:
+        return None
+    total = 0
+    for row in given:
+        if not isinstance(row, list) or len(row) != 9:
+            return None
+        for cell in row:
+            if cell:
+                total += 1
+    return total
+
+
+def _daily_board_matches_tier(session: dict, expected_key: str) -> bool:
+    """True when clue density looks like the scheduled tier (not just the label).
+
+    Labels alone can lie after a save that rewrote difficulty without regenerating.
+    Adjacent tiers are ~2–6 clues apart; allow ±3 generator variance.
+    """
+    clue_n = _session_given_clue_count(session)
+    if clue_n is None:
+        return True  # no board yet — don't force regen
+    expected_clues = difficulty_clues(expected_key)
+    return abs(clue_n - expected_clues) <= 3
+
+
 def ensure_daily_session_schedule(session: dict) -> tuple[dict, bool]:
     """Align a daily Activity session to today's weekday difficulty.
 
     Weekday schedule is authoritative — a Medium board on Friday is regenerated
-    to Very Hard (progress on the wrong-tier board is discarded).
+    to Very Hard (progress on the wrong-tier board is discarded). Also regenerates
+    when the label already says Very Hard but the clue count is still Medium.
     """
     if not session or session.get("session_kind") != "daily":
         return session, False
     day = str(session.get("daily_date") or utc_today())
     expected = daily_difficulty_for_date(day)
     stored, stored_idx = resolve_session_difficulty(session)
-    if stored == expected:
+    label_ok = stored == expected
+    board_ok = _daily_board_matches_tier(session, expected)
+    if label_ok and board_ok:
         changed = False
         if session.get("difficulty") != expected or session.get("diff_index") != stored_idx:
             session["difficulty"] = expected
@@ -5424,6 +5455,7 @@ async def lookup_user_activity_session(
     """Primary activity session for a user, including orphan fallback.
 
     Today's daily always beats a leftover /play board (common Activity guild=0 race).
+    Collects all user docs — find_one(newest) alone can hide today's daily behind play.
     """
     session_id = daily_watch_session_id(guild_id, user_id)
     session = await match_store.get_activity_session(session_id)
@@ -5439,13 +5471,24 @@ async def lookup_user_activity_session(
         (session, session_id),
         (orphan, orphan_id),
     ]
-    alt = await match_store.find_activity_session_by_user_id(user_id, guild_id=guild_id)
-    if alt:
-        candidates.append((alt, str(alt.get("_id") or session_id)))
-    # When guild lookup is ambiguous, also consider any other open doc for the user.
-    any_doc = await match_store.find_activity_session_by_user_id(user_id)
-    if any_doc:
-        candidates.append((any_doc, str(any_doc.get("_id") or "")))
+    seen_ids = {session_id, orphan_id}
+    try:
+        listed = await match_store.list_activity_sessions_for_user(
+            user_id, guild_id=guild_id if guild_id else None
+        )
+    except Exception:
+        listed = []
+    if not listed:
+        try:
+            listed = await match_store.list_activity_sessions_for_user(user_id)
+        except Exception:
+            listed = []
+    for doc in listed:
+        sid = str(doc.get("_id") or "")
+        if not sid or sid in seen_ids:
+            continue
+        seen_ids.add(sid)
+        candidates.append((doc, sid))
 
     best, best_sid = _pick_best_activity_session(candidates)
     if best and best_sid:
@@ -10939,18 +10982,29 @@ async def fixdaily_cmd(interaction: discord.Interaction, user: discord.Member):
         )
         return
 
-    # Remove the stuck in_progress lock
-    daily["results"].pop(uid, None)
-    save_data(bot.data)
-
-    # Also clear any orphaned Activity session and durable claim
-    sid = daily_watch_session_id(guild_id, user.id)
+    # Prefer full lookup (daily can live under guild=0 while play is newer).
     existing = None
+    sid = daily_watch_session_id(guild_id, user.id)
     try:
-        existing = await match_store.get_activity_session(sid)
+        existing, looked_up = await lookup_user_activity_session(guild_id, user.id)
+        if looked_up:
+            sid = looked_up
     except Exception:
-        existing = None
-    # If they still have today's daily at the wrong tier, repair in place (no streak hit).
+        try:
+            existing = await match_store.get_activity_session(sid)
+        except Exception:
+            existing = None
+
+    async def _clear_masking_play() -> None:
+        for play_sid in (f"activity:0:{user.id}",):
+            try:
+                play_doc = await match_store.get_activity_session(play_sid)
+                if play_doc and (play_doc.get("session_kind") or "play") == "play":
+                    await match_store.delete_activity_session(play_sid)
+            except Exception:
+                pass
+
+    # Healthy or wrong-tier same-day daily: repair/keep in place (no streak hit).
     if (
         existing
         and existing.get("session_kind") == "daily"
@@ -10958,38 +11012,48 @@ async def fixdaily_cmd(interaction: discord.Interaction, user: discord.Member):
         and not existing.get("won_at")
     ):
         existing, repaired = ensure_daily_session_schedule(existing)
-        if repaired:
-            try:
-                await match_store.upsert_activity_session(existing)
-            except Exception as exc:  # noqa: BLE001
-                print(f"fixdaily schedule repair failed: {exc}")
-            daily["results"][uid] = {
-                "won": False,
-                "in_progress": True,
-                "name": user.display_name,
-            }
-            save_data(bot.data)
+        try:
+            await match_store.upsert_activity_session(existing)
+        except Exception as exc:  # noqa: BLE001
+            print(f"fixdaily schedule repair failed: {exc}")
             await interaction.followup.send(
-                f"{PINEAPPLE} Repaired {user.mention}'s daily for `{day}` to "
-                f"**{difficulty_label(existing.get('difficulty'))}**. "
-                "They can reopen the Activity / run `/daily` — streak untouched.",
+                f"Could not repair {user.mention}'s daily session: `{exc}`",
                 ephemeral=True,
             )
             return
+        await _clear_masking_play()
+        # Keep in_progress — never wipe a recoverable same-day daily.
+        daily["results"][uid] = {
+            "won": False,
+            "in_progress": True,
+            "name": user.display_name,
+        }
+        save_data(bot.data)
+        if repaired:
+            msg = (
+                f"{PINEAPPLE} Repaired {user.mention}'s daily for `{day}` to "
+                f"**{difficulty_label(existing.get('difficulty'))}**. "
+                "They can reopen the Activity / run `/daily` — streak untouched."
+            )
+        else:
+            msg = (
+                f"{PINEAPPLE} {user.mention}'s daily for `{day}` is already "
+                f"**{difficulty_label(existing.get('difficulty'))}**. "
+                "Cleared leftover /play so Activity loads the daily — streak untouched."
+            )
+        await interaction.followup.send(msg, ephemeral=True)
+        return
+
+    # Truly stuck (no usable daily board): clear lock so they can /daily again.
+    daily["results"].pop(uid, None)
+    save_data(bot.data)
 
     try:
         await end_activity_watch(bot, sid, force=True)
     except Exception as _exc:  # noqa: BLE001
         pass
     await clear_activity_session(bot, sid)
-    # Clear leftover /play that can mask the daily after reopen.
-    for play_sid in (f"activity:0:{user.id}",):
-        try:
-            play_doc = await match_store.get_activity_session(play_sid)
-            if play_doc and (play_doc.get("session_kind") or "play") == "play":
-                await match_store.delete_activity_session(play_sid)
-        except Exception:
-            pass
+    await _clear_masking_play()
     try:
         await match_store.clear_daily_completions_for_user(guild_id, user.id, day)
     except Exception as exc:  # noqa: BLE001
