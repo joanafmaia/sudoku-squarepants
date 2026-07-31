@@ -271,6 +271,7 @@ SHOP_TITLES = {
     "hulk_r5": {"label": "🧌 Hulk Command", "cost": 1650, "pin": "Hulk", "emoji": "🧌"},
     "apex_whale": {"label": "🐋 Apex Whale", "cost": 2500, "pin": "Apex", "emoji": "🐋"},
     "fuzzy": {"label": "🔪 Fuzzy Wuzzy", "cost": 1750, "pin": "Fuzzy", "emoji": "🔪"},
+    "xiao": {"label": "🐰 Cute Xiao", "cost": 1050, "pin": "Xiao", "emoji": "🐰"},
 }
 
 # Pins = border stickers only. One free; paid pins scale up so cosmetics stay a chase.
@@ -308,6 +309,17 @@ SHOP_PINS = {
     "bucket": {"label": "🪣 Bucket Pin", "pin": "Bucket", "emoji": "🪣", "cost": 600, "theme": "ocean"},
     "sponge": {"label": "🧽 Sponge Pin", "pin": "Sponge", "emoji": "🧽", "cost": 720, "theme": "ocean"},
     "whirl": {"label": "🌀 Whirlpool Pin", "pin": "Whirlpool", "emoji": "🌀", "cost": 850, "theme": "ocean"},
+    # Later chase stickers
+    "fish": {"label": "🐠 Clownfish Pin", "pin": "Clownfish", "emoji": "🐠", "cost": 950, "theme": "ocean"},
+    "octopus": {"label": "🐙 Octopus Pin", "pin": "Octopus", "emoji": "🐙", "cost": 1100, "theme": "ocean"},
+    "hook": {"label": "🎣 Hook Pin", "pin": "Hook", "emoji": "🎣", "cost": 1250, "theme": "ocean"},
+    "kelp": {"label": "🌿 Kelp Pin", "pin": "Kelp", "emoji": "🌿", "cost": 1400, "theme": "ocean"},
+    "patty": {"label": "🥪 Patty Pin", "pin": "Patty", "emoji": "🥪", "cost": 1550, "theme": "ocean"},
+    "clarinet": {"label": "🎺 Clarinet Pin", "pin": "Clarinet", "emoji": "🎺", "cost": 1700, "theme": "ocean"},
+    "money": {"label": "💰 Money Pin", "pin": "Money", "emoji": "💰", "cost": 1850, "theme": "ocean"},
+    "formula": {"label": "🧪 Formula Pin", "pin": "Formula", "emoji": "🧪", "cost": 2000, "theme": "ocean"},
+    "glove": {"label": "🎢 Glove World Pin", "pin": "Glove World", "emoji": "🎢", "cost": 2200, "theme": "ocean"},
+    "moon": {"label": "🌙 Rock Bottom Pin", "pin": "Rock Bottom", "emoji": "🌙", "cost": 2500, "theme": "ocean"},
     # Crew tribute pins
     "pin_goof": {"label": "🦹 Thief Pin", "pin": "Thief", "emoji": "🦹", "cost": 250, "theme": "crew"},
     "pin_shadow": {"label": "👀 BehindYou Pin", "pin": "Behind You", "emoji": "👀", "cost": 380, "theme": "crew"},
@@ -318,6 +330,7 @@ SHOP_PINS = {
     "pin_hulk": {"label": "🧌 Hulk Pin", "pin": "Hulk", "emoji": "🧌", "cost": 820, "theme": "crew"},
     "pin_apex": {"label": "🐋 Apex Pin", "pin": "Apex", "emoji": "🐋", "cost": 1000, "theme": "crew"},
     "pin_fuzzy": {"label": "🔪 Fuzzy Pin", "pin": "Fuzzy", "emoji": "🔪", "cost": 880, "theme": "crew"},
+    "pin_xiao": {"label": "🐰 Xiao Pin", "pin": "Xiao", "emoji": "🐰", "cost": 540, "theme": "crew"},
 }
 
 SHOP_BOOST_KEYS = frozenset({
@@ -357,8 +370,8 @@ ACHIEVEMENTS = {
 }
 
 # Career XP thresholds (XP mirrors sponge grants on win).
-# Curve stays friendly early, then accelerates so King is a long grind.
-# Rough wins at ~100 XP/avg: L2≈3 · L5≈28 · L8≈140 · L10≈400
+# Curve stays friendly early, then accelerates so endgame is a long grind.
+# Rough wins at ~100 XP/avg: L2≈3 · L5≈28 · L8≈140 · L10≈400 · L12≈1000 · L15≈3200
 LEVEL_RANKS = [
     (0, 1, "🍔 Fry Cook"),
     (250, 2, "🍔 Senior Fry Cook"),
@@ -370,6 +383,11 @@ LEVEL_RANKS = [
     (14000, 8, "🍦 Goofy Goober Master"),
     (23000, 9, "🧜 Hero of Bikini Bottom"),
     (40000, 10, "👑 King of Bikini Bottom"),
+    (65000, 11, "🪸 Reef Warden"),
+    (100000, 12, "🪣 Chum Bucket Rival"),
+    (150000, 13, "👻 Dutchman's Crew"),
+    (220000, 14, "🍍 Pineapple Immortal"),
+    (320000, 15, "👑 Neptune's Heir"),
 ]
 
 
