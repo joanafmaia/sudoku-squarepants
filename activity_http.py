@@ -112,17 +112,16 @@ def _preserve_server_hint_progress(existing: dict | None, doc: dict) -> None:
 async def _lookup_activity_session(
     bot: Any, guild_id: str | int, user_id: str | int
 ) -> tuple[dict | None, str]:
-    """Primary key → orphan activity:0 (same guild or unset) → find-by-user scoped.
+    """Pick the best Activity doc for this user.
 
-    Preference-only primary docs (no board) do not shadow an orphan board.
+    Today's daily always beats a leftover /play board (guild=0 orphan race).
     """
-    from bot import match_store
+    from bot import _pick_best_activity_session, match_store, utc_today
 
     uid = int(user_id)
     gid = str(guild_id if guild_id is not None else "0")
     primary = _activity_session_id(gid, uid)
     session = await match_store.get_activity_session(primary)
-    primary_has_board = bool(session and (session.get("board") or session.get("solution")))
 
     orphan_id = _activity_session_id("0", uid)
     orphan = None
@@ -133,31 +132,23 @@ async def _lookup_activity_session(
             if orphan_gid not in ("", "0", gid):
                 orphan = None
 
-    orphan_has_board = bool(orphan and (orphan.get("board") or orphan.get("solution")))
-
-    # Prefer a real board: orphan wins over preference-only primary.
-    if primary_has_board:
-        return session, primary
-    if orphan_has_board:
-        return orphan, orphan_id
-    if session:
-        return session, primary
-    if orphan:
-        return orphan, orphan_id
+    candidates: list[tuple[dict | None, str]] = [
+        (session, primary),
+        (orphan, orphan_id),
+    ]
 
     if gid not in ("", "0"):
         found = await match_store.find_activity_session_by_user_id(uid, guild_id=gid)
         if found:
-            found_id = str(found.get("_id") or primary)
-            return found, found_id
-    else:
-        # Client still has guild 0 — prefer any real-guild session with a board.
-        found = await match_store.find_activity_session_by_user_id(uid)
-        if found:
-            found_id = str(found.get("_id") or "")
-            found_gid = str(found.get("guild_id") or "0")
-            if found_id and found_gid not in ("", "0"):
-                return found, found_id
+            candidates.append((found, str(found.get("_id") or primary)))
+    # Catch real-guild daily while the Activity client still reports guild 0.
+    any_doc = await match_store.find_activity_session_by_user_id(uid)
+    if any_doc:
+        candidates.append((any_doc, str(any_doc.get("_id") or "")))
+
+    best, best_sid = _pick_best_activity_session(candidates, today=utc_today())
+    if best and best_sid:
+        return best, best_sid
     return None, primary
 
 

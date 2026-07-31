@@ -2131,48 +2131,16 @@ def daily_session_has_player_progress(session: dict | None) -> bool:
 def ensure_daily_session_schedule(session: dict) -> tuple[dict, bool]:
     """Align a daily Activity session to today's weekday difficulty.
 
-    If the stored board was generated at the wrong tier and the player has not
-    progressed yet, regenerate the pineapple puzzle. Returns (session, changed).
+    Weekday schedule is authoritative — a Medium board on Friday is regenerated
+    to Very Hard (progress on the wrong-tier board is discarded).
     """
     if not session or session.get("session_kind") != "daily":
         return session, False
     day = str(session.get("daily_date") or utc_today())
     expected = daily_difficulty_for_date(day)
     stored, stored_idx = resolve_session_difficulty(session)
-    changed = False
-    if stored != expected:
-        if daily_session_has_player_progress(session):
-            # Keep the board they already played; stamp the real stored tier.
-            session["difficulty"] = stored
-            session["diff_index"] = stored_idx
-            session["daily_date"] = day
-            return session, False
-        try:
-            guild_id = int(session.get("guild_id") or 0)
-            user_id = int(session.get("user_id") or 0)
-        except (TypeError, ValueError):
-            guild_id, user_id = 0, 0
-        board, given, solution, diff_key = make_daily_puzzle(guild_id, day, user_id)
-        try:
-            diff_index = DIFF_KEYS_LIST.index(diff_key)
-        except ValueError:
-            diff_index = difficulty_index(diff_key)
-        session = {
-            **session,
-            "daily_date": day,
-            "difficulty": diff_key,
-            "diff_index": diff_index,
-            "board": board,
-            "given": given,
-            "solution": solution,
-            "filled": game_filled_count({"board": board}),
-            "elapsed": 0,
-            "hints_used": 0,
-            "hints_gary_used": 0,
-        }
-        changed = True
-    else:
-        # Canonicalize fields even when already correct.
+    if stored == expected:
+        changed = False
         if session.get("difficulty") != expected or session.get("diff_index") != stored_idx:
             session["difficulty"] = expected
             try:
@@ -2181,7 +2149,32 @@ def ensure_daily_session_schedule(session: dict) -> tuple[dict, bool]:
                 session["diff_index"] = difficulty_index(expected)
             session["daily_date"] = day
             changed = True
-    return session, changed
+        return session, changed
+
+    try:
+        guild_id = int(session.get("guild_id") or 0)
+        user_id = int(session.get("user_id") or 0)
+    except (TypeError, ValueError):
+        guild_id, user_id = 0, 0
+    board, given, solution, diff_key = make_daily_puzzle(guild_id, day, user_id)
+    try:
+        diff_index = DIFF_KEYS_LIST.index(diff_key)
+    except ValueError:
+        diff_index = difficulty_index(diff_key)
+    session = {
+        **session,
+        "daily_date": day,
+        "difficulty": diff_key,
+        "diff_index": diff_index,
+        "board": board,
+        "given": given,
+        "solution": solution,
+        "filled": game_filled_count({"board": board}),
+        "elapsed": 0,
+        "hints_used": 0,
+        "hints_gary_used": 0,
+    }
+    return session, True
 
 
 def get_guild_daily(data: dict, guild_id: int) -> dict:
@@ -5388,17 +5381,52 @@ def activity_session_elapsed(session: dict) -> int:
     return max(0, base)
 
 
+def _activity_session_priority(doc: dict | None, *, today: str) -> int:
+    """Higher wins when several Activity docs exist for the same user."""
+    if not doc:
+        return -1
+    kind = str(doc.get("session_kind") or "play")
+    has_board = bool(doc.get("board") or doc.get("solution"))
+    if kind == "daily":
+        day = str(doc.get("daily_date") or "")
+        if day and day != today:
+            return 20 if has_board else 5
+        return 100 if has_board else 60
+    if kind == "challenge":
+        return 90 if has_board else 40
+    return 50 if has_board else 10
+
+
+def _pick_best_activity_session(
+    candidates: list[tuple[dict | None, str]],
+    *,
+    today: str | None = None,
+) -> tuple[dict | None, str | None]:
+    day = today or utc_today()
+    best_doc: dict | None = None
+    best_sid: str | None = None
+    best_score = -1
+    for doc, sid in candidates:
+        if not doc:
+            continue
+        score = _activity_session_priority(doc, today=day)
+        if score > best_score:
+            best_score = score
+            best_doc = doc
+            best_sid = sid
+    return best_doc, best_sid
+
+
 async def lookup_user_activity_session(
     guild_id: int,
     user_id: int,
 ) -> tuple[dict | None, str | None]:
     """Primary activity session for a user, including orphan fallback.
 
-    Preference-only primary docs do not shadow an orphan board.
+    Today's daily always beats a leftover /play board (common Activity guild=0 race).
     """
     session_id = daily_watch_session_id(guild_id, user_id)
     session = await match_store.get_activity_session(session_id)
-    primary_has_board = bool(session and (session.get("board") or session.get("solution")))
 
     orphan_id = daily_watch_session_id(0, user_id)
     orphan = await match_store.get_activity_session(orphan_id)
@@ -5406,19 +5434,22 @@ async def lookup_user_activity_session(
         orphan_gid = str(orphan.get("guild_id") or "0")
         if orphan_gid not in ("", "0", str(guild_id)):
             orphan = None
-    orphan_has_board = bool(orphan and (orphan.get("board") or orphan.get("solution")))
 
-    if primary_has_board:
-        return session, session_id
-    if orphan_has_board:
-        return orphan, orphan_id
-    if session:
-        return session, session_id
-    if orphan:
-        return orphan, orphan_id
+    candidates: list[tuple[dict | None, str]] = [
+        (session, session_id),
+        (orphan, orphan_id),
+    ]
     alt = await match_store.find_activity_session_by_user_id(user_id, guild_id=guild_id)
     if alt:
-        return alt, str(alt.get("_id") or session_id)
+        candidates.append((alt, str(alt.get("_id") or session_id)))
+    # When guild lookup is ambiguous, also consider any other open doc for the user.
+    any_doc = await match_store.find_activity_session_by_user_id(user_id)
+    if any_doc:
+        candidates.append((any_doc, str(any_doc.get("_id") or "")))
+
+    best, best_sid = _pick_best_activity_session(candidates)
+    if best and best_sid:
+        return best, best_sid
     return None, None
 
 
@@ -10726,15 +10757,27 @@ async def daily_cmd(interaction: discord.Interaction):
         )
         save_data(bot.data)
         await match_store.upsert_activity_session(doc)
-        # Drop stale play orphans so they cannot shadow this daily on Activity load.
-        orphan_id = f"activity:0:{user_id}"
-        if orphan_id != session_id:
+        # Drop leftover /play sessions so they cannot shadow this daily on Activity load.
+        for play_sid in (f"activity:0:{user_id}",):
+            if play_sid == session_id:
+                continue
             try:
-                orphan = await match_store.get_activity_session(orphan_id)
-                if orphan and (orphan.get("session_kind") or "play") == "play":
-                    await match_store.delete_activity_session(orphan_id)
+                play_doc = await match_store.get_activity_session(play_sid)
+                if play_doc and (play_doc.get("session_kind") or "play") == "play":
+                    await match_store.delete_activity_session(play_sid)
             except Exception as orphan_exc:  # noqa: BLE001
                 print(f"clear play orphan after /daily failed: {orphan_exc}")
+        # Also clear a same-guild /play if somehow still present under another id.
+        try:
+            other = await match_store.find_activity_session_by_user_id(user_id)
+            if (
+                other
+                and (other.get("session_kind") or "play") == "play"
+                and str(other.get("_id") or "") != session_id
+            ):
+                await match_store.delete_activity_session(str(other["_id"]))
+        except Exception as other_exc:  # noqa: BLE001
+            print(f"clear extra play after /daily failed: {other_exc}")
         await _launch_activity_window(interaction)
     except Exception as exc:
         daily["results"].pop(uid, None)
@@ -10902,11 +10945,51 @@ async def fixdaily_cmd(interaction: discord.Interaction, user: discord.Member):
 
     # Also clear any orphaned Activity session and durable claim
     sid = daily_watch_session_id(guild_id, user.id)
+    existing = None
+    try:
+        existing = await match_store.get_activity_session(sid)
+    except Exception:
+        existing = None
+    # If they still have today's daily at the wrong tier, repair in place (no streak hit).
+    if (
+        existing
+        and existing.get("session_kind") == "daily"
+        and str(existing.get("daily_date") or day) == day
+        and not existing.get("won_at")
+    ):
+        existing, repaired = ensure_daily_session_schedule(existing)
+        if repaired:
+            try:
+                await match_store.upsert_activity_session(existing)
+            except Exception as exc:  # noqa: BLE001
+                print(f"fixdaily schedule repair failed: {exc}")
+            daily["results"][uid] = {
+                "won": False,
+                "in_progress": True,
+                "name": user.display_name,
+            }
+            save_data(bot.data)
+            await interaction.followup.send(
+                f"{PINEAPPLE} Repaired {user.mention}'s daily for `{day}` to "
+                f"**{difficulty_label(existing.get('difficulty'))}**. "
+                "They can reopen the Activity / run `/daily` — streak untouched.",
+                ephemeral=True,
+            )
+            return
+
     try:
         await end_activity_watch(bot, sid, force=True)
     except Exception as _exc:  # noqa: BLE001
         pass
     await clear_activity_session(bot, sid)
+    # Clear leftover /play that can mask the daily after reopen.
+    for play_sid in (f"activity:0:{user.id}",):
+        try:
+            play_doc = await match_store.get_activity_session(play_sid)
+            if play_doc and (play_doc.get("session_kind") or "play") == "play":
+                await match_store.delete_activity_session(play_sid)
+        except Exception:
+            pass
     try:
         await match_store.clear_daily_completions_for_user(guild_id, user.id, day)
     except Exception as exc:  # noqa: BLE001
@@ -10914,7 +10997,7 @@ async def fixdaily_cmd(interaction: discord.Interaction, user: discord.Member):
 
     await interaction.followup.send(
         f"{PINEAPPLE} Unblocked {user.mention} for today's daily (`{day}`). "
-        "They can now run `/daily` again.",
+        "They can now run `/daily` again — streak untouched.",
         ephemeral=True,
     )
 
