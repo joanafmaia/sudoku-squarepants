@@ -216,7 +216,8 @@ const BOARD_ORIGIN = { x: 64, y: 108 };
 const CELL = 64;
 const BOARD_SIZE = CELL * 9;
 const FRAME_PAD = 16;
-const PIN_RADIUS = 22;
+// Slightly smaller badges so half-cell spacing fits ~54 unique pins.
+const PIN_RADIUS = 16;
 
 const TITLE_HEADER_LINES = {
   "Very Easy": "Ahoy, {title}!",
@@ -663,13 +664,16 @@ export function startThcokuGame(canvas, options = {}) {
     const bottomY = Math.min(HEIGHT - PIN_RADIUS - 8, frameBottom + PIN_RADIUS + 6);
 
     const slots = [];
-    for (let i = 0; i < 9; i++) {
-      const y = oy + i * CELL + CELL / 2;
+    // Half-cell pitch (~18 per edge) → ~54 slots (was 27 at one-per-row).
+    const step = CELL / 2;
+    const count = 18;
+    for (let i = 0; i < count; i++) {
+      const y = oy + (i + 0.5) * step;
       slots.push({ x: leftX, y });
       slots.push({ x: rightX, y });
     }
-    for (let i = 0; i < 9; i++) {
-      slots.push({ x: ox + i * CELL + CELL / 2, y: bottomY });
+    for (let i = 0; i < count; i++) {
+      slots.push({ x: ox + (i + 0.5) * step, y: bottomY });
     }
     for (let i = slots.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
@@ -690,14 +694,14 @@ export function startThcokuGame(canvas, options = {}) {
       ctx.arc(slot.x, slot.y, PIN_RADIUS, 0, Math.PI * 2);
       ctx.fillStyle = RGB.pinFill;
       ctx.fill();
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 2.5;
       ctx.strokeStyle = RGB.gold;
       ctx.stroke();
       ctx.beginPath();
-      ctx.arc(slot.x - 5, slot.y - 6, 6, 0, Math.PI * 2);
+      ctx.arc(slot.x - 4, slot.y - 5, 5, 0, Math.PI * 2);
       ctx.fillStyle = RGB.pinShine;
       ctx.fill();
-      ctx.font = "32px Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol, sans-serif";
+      ctx.font = "24px Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(emoji, slot.x, slot.y + 1);

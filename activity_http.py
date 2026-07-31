@@ -1047,13 +1047,17 @@ def _client_spectate_session(doc: dict) -> dict:
 
 def _cosmetics_for_user(bot: Any, guild_id: int, user_id: int) -> dict:
     """Title + pin badges for the player being watched (not the spectator)."""
-    from bot import SHOP_TITLES, equipped_title_id, guild_stats, owned_pin_emojis, user_stats
-
-    gstats = guild_stats(
-        bot.data if isinstance(getattr(bot, "data", None), dict) else {},
-        int(guild_id or 0),
+    from bot import (
+        SHOP_TITLES,
+        equipped_title_id,
+        find_player_cosmetics_stats,
+        owned_pin_emojis,
     )
-    stats = user_stats(gstats, int(user_id))
+
+    data = bot.data if isinstance(getattr(bot, "data", None), dict) else {}
+    _gid, stats = find_player_cosmetics_stats(
+        data, int(user_id), prefer_guild=int(guild_id or 0)
+    )
     tid = equipped_title_id(stats)
     title_meta = SHOP_TITLES.get(tid or "") if tid else None
     title = None
@@ -2816,13 +2820,14 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                     HINT_SPONGE_COST,
                     equipped_title_id,
                     evaluate_user_achievements,
-                    guild_stats,
+                    find_player_cosmetics_stats,
                     owned_pin_emojis,
-                    user_stats,
                 )
 
-                gstats = guild_stats(bot.data if isinstance(getattr(bot, "data", None), dict) else {}, gid_key)
-                stats = user_stats(gstats, uid)
+                data = bot.data if isinstance(getattr(bot, "data", None), dict) else {}
+                gid_key, stats = find_player_cosmetics_stats(
+                    data, uid, prefer_guild=gid_key
+                )
                 badges = evaluate_user_achievements(stats)
                 tid = equipped_title_id(stats)
                 title_meta = SHOP_TITLES.get(tid or "") if tid else None

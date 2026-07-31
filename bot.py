@@ -263,7 +263,7 @@ SHOP_TITLES = {
     "neptune": {"label": "👑 King Neptune", "cost": 2200, "pin": "Neptune", "emoji": "👑"},
     # Crew tributes — Bikini Bottom shout-outs
     "darkstriker": {"label": "🦹 Dark Striker", "cost": 500, "pin": "Striker", "emoji": "🦹"},
-    "behindyou": {"label": "👀 Behind You", "cost": 750, "pin": "Shadow", "emoji": "👀"},
+    "behindyou": {"label": "👀 Behind You", "cost": 750, "pin": "Behind You", "emoji": "👀"},
     "glock_sheets": {"label": "📊 Glock Sheets", "cost": 900, "pin": "Sheets", "emoji": "📊"},
     "bookie": {"label": "📚 Book Queen", "cost": 1050, "pin": "Bookie", "emoji": "📚"},
     "stacked": {"label": "😎 Stacked Smooth", "cost": 1200, "pin": "Stacked", "emoji": "😎"},
@@ -320,13 +320,13 @@ SHOP_PINS = {
     "formula": {"label": "🧪 Formula Pin", "pin": "Formula", "emoji": "🧪", "cost": 2000, "theme": "ocean"},
     "glove": {"label": "🎢 Glove World Pin", "pin": "Glove World", "emoji": "🎢", "cost": 2200, "theme": "ocean"},
     "moon": {"label": "🌙 Rock Bottom Pin", "pin": "Rock Bottom", "emoji": "🌙", "cost": 2500, "theme": "ocean"},
-    # Crew tribute pins
-    "pin_goof": {"label": "🦹 Thief Pin", "pin": "Thief", "emoji": "🦹", "cost": 250, "theme": "crew"},
-    "pin_shadow": {"label": "👀 BehindYou Pin", "pin": "Behind You", "emoji": "👀", "cost": 380, "theme": "crew"},
-    "pin_sheets": {"label": "📊 Sheets Pin", "pin": "Sheets", "emoji": "📊", "cost": 460, "theme": "crew"},
-    "pin_book": {"label": "📚 Book Pin", "pin": "Book", "emoji": "📚", "cost": 540, "theme": "crew"},
+    # Crew tribute pins (ids/labels aligned with matching SHOP_TITLES)
+    "pin_striker": {"label": "🦹 Dark Striker Pin", "pin": "Striker", "emoji": "🦹", "cost": 250, "theme": "crew"},
+    "pin_shadow": {"label": "👀 Behind You Pin", "pin": "Behind You", "emoji": "👀", "cost": 380, "theme": "crew"},
+    "pin_sheets": {"label": "📊 Glock Sheets Pin", "pin": "Sheets", "emoji": "📊", "cost": 460, "theme": "crew"},
+    "pin_book": {"label": "📚 Book Queen Pin", "pin": "Bookie", "emoji": "📚", "cost": 540, "theme": "crew"},
     "pin_smooth": {"label": "😎 Stacked Pin", "pin": "Stacked", "emoji": "😎", "cost": 620, "theme": "crew"},
-    "pin_drea": {"label": "🫶 Drea Pin", "pin": "Drea", "emoji": "🫶", "cost": 700, "theme": "crew"},
+    "pin_drea": {"label": "🫶 Mama Drea Pin", "pin": "Mama", "emoji": "🫶", "cost": 700, "theme": "crew"},
     "pin_hulk": {"label": "🧌 Hulk Pin", "pin": "Hulk", "emoji": "🧌", "cost": 820, "theme": "crew"},
     "pin_apex": {"label": "🐋 Apex Pin", "pin": "Apex", "emoji": "🐋", "cost": 1000, "theme": "crew"},
     "pin_fuzzy": {"label": "🔪 Fuzzy Pin", "pin": "Fuzzy", "emoji": "🔪", "cost": 880, "theme": "crew"},
@@ -686,9 +686,11 @@ def achievement_catalog_embed(stats: dict, *, viewer_name: str | None = None) ->
 SHOP_PIN_ALIASES = {
     "jellyfish": "coral",
     "krusty": "crab",
-    "goober": "bubble",
+    # Old theme id "goober" was the ice-cream sticker (now pin_goober), not Bubble.
+    "goober": "pin_goober",
     "rock_bottom": "anchor",
     "chum": "bucket",
+    "pin_goof": "pin_striker",  # Thief Pin → Dark Striker Pin
 }
 
 intents = discord.Intents.default()
@@ -1512,6 +1514,60 @@ def owned_pin_emojis(stats: dict) -> list[str]:
             pins.append(emoji)
             seen.add(emoji)
     return pins
+
+
+def find_player_cosmetics_stats(
+    data: dict, user_id: int, *, prefer_guild: int | None = None
+) -> tuple[int, dict]:
+    """Pick guild player stats for cosmetics when Activity reports guild 0.
+
+    Prefers prefer_guild when that blob has inventory; otherwise the guild where
+    this user owns the most pins / titles / XP.
+    """
+    uid = str(user_id)
+    prefer = int(prefer_guild or 0)
+
+    def _score(stats: dict) -> int:
+        return (
+            len(owned_pin_ids(stats)) * 10_000
+            + len(list(stats.get("owned_titles") or [])) * 100
+            + int(stats.get("xp") or 0)
+            + int(stats.get("coins") or 0)
+        )
+
+    candidates: list[tuple[int, dict, int]] = []
+    for guild_key, gstats in list(data.items()):
+        if not isinstance(gstats, dict) or not str(guild_key).isdigit():
+            continue
+        if uid not in gstats:
+            continue
+        try:
+            gid = int(guild_key)
+        except ValueError:
+            continue
+        stats = user_stats(gstats, user_id)
+        candidates.append((gid, stats, _score(stats)))
+
+    if prefer > 0:
+        for gid, stats, score in candidates:
+            if gid == prefer and score > 0:
+                return gid, stats
+
+    if candidates:
+        # When client guild is unknown (0), use the richest inventory for this user.
+        if prefer <= 0:
+            best = max(candidates, key=lambda row: row[2])
+            return best[0], best[1]
+        # Preferred guild exists but empty — fall back to richest other guild.
+        best = max(candidates, key=lambda row: row[2])
+        if best[2] > 0:
+            return best[0], best[1]
+        for gid, stats, _score_v in candidates:
+            if gid == prefer:
+                return gid, stats
+
+    fallback = prefer if prefer > 0 else 0
+    return fallback, user_stats(guild_stats(data, fallback), user_id)
 
 
 def sync_title_to_active_games(user_id: int, guild_id: int, title_id: str | None) -> None:
@@ -2470,10 +2526,11 @@ def load_emoji_pin(emoji: str, size: int = PIN_EMOJI_SIZE) -> Image.Image | None
     path = EMOJI_PIN_DIR / f"{code}.png"
     if not path.exists():
         # Twemoji 14 misses newer glyphs (e.g. 🪼 U+1FABC); fall back to newer packs.
+        noto_code = code.replace("-", "_")
         urls = (
             f"https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/{code}.png",
             f"https://cdn.jsdelivr.net/npm/emoji-datasource-twitter@15.1.2/img/twitter/64/{code}.png",
-            f"https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/png/72/emoji_u{code}.png",
+            f"https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/png/72/emoji_u{noto_code}.png",
             f"https://cdn.jsdelivr.net/npm/emoji-datasource-google@15.1.2/img/google/64/{code}.png",
         )
         fetched = False
@@ -2483,7 +2540,7 @@ def load_emoji_pin(emoji: str, size: int = PIN_EMOJI_SIZE) -> Image.Image | None
                     url,
                     headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
                 )
-                with urllib.request.urlopen(req, timeout=1.5) as resp:
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
                     if resp.status == 200:
                         path.write_bytes(resp.read())
                         fetched = True
@@ -2491,6 +2548,7 @@ def load_emoji_pin(emoji: str, size: int = PIN_EMOJI_SIZE) -> Image.Image | None
             except Exception:
                 continue
         if not fetched:
+            print(f"emoji pin fetch missed code={code}")
             return None
     try:
         im = Image.open(path).convert("RGBA")
@@ -2516,21 +2574,42 @@ def _border_pin_slots(
 ) -> list[tuple[int, int]]:
     """Candidate top-left positions in the cream margin around the grid (no top — conflicts with header)."""
     slots: list[tuple[int, int]] = []
-    gap = pin_size + 6
-    # Bottom margin
+    # Tighter pitch so collectors can show 50+ unique stickers.
+    gap = max(12, pin_size - 2)
+
+    def _row(y: int, x0: int, x1: int) -> None:
+        if y < header_h + 2 or y + pin_size > canvas - 2:
+            return
+        for x in range(x0, x1 - pin_size + 1, gap):
+            slots.append((x, y))
+
+    def _col(x: int, y0: int, y1: int) -> None:
+        if x < 2 or x + pin_size > canvas - 2:
+            return
+        for y in range(y0, y1 - pin_size + 1, gap):
+            if y >= header_h + 2:
+                slots.append((x, y))
+
+    # Bottom margin (+ optional outer row)
     bottom_y = origin_y + grid + max(2, (canvas - (origin_y + grid) - pin_size) // 2)
-    if bottom_y + pin_size <= canvas - 2:
-        for x in range(origin_x, origin_x + grid - pin_size + 1, gap):
-            slots.append((x, bottom_y))
-    # Left margin
+    _row(bottom_y, origin_x, origin_x + grid)
+    bottom_outer = bottom_y + pin_size + 2
+    if bottom_outer + pin_size <= canvas - 2:
+        _row(bottom_outer, origin_x, origin_x + grid)
+
+    # Left / right (+ outer columns when the cream margin is wide enough)
     left_x = max(2, (origin_x - pin_size) // 2)
-    for y in range(origin_y, origin_y + grid - pin_size + 1, gap):
-        slots.append((left_x, y))
-    # Right margin
+    _col(left_x, origin_y, origin_y + grid)
+    left_outer = max(2, left_x - pin_size - 2)
+    if left_outer + pin_size <= left_x - 2:
+        _col(left_outer, origin_y, origin_y + grid)
+
     right_x = origin_x + grid + max(2, (canvas - (origin_x + grid) - pin_size) // 2)
-    if right_x + pin_size <= canvas - 2:
-        for y in range(origin_y, origin_y + grid - pin_size + 1, gap):
-            slots.append((right_x, y))
+    _col(right_x, origin_y, origin_y + grid)
+    right_outer = right_x + pin_size + 2
+    if right_outer + pin_size <= canvas - 2:
+        _col(right_outer, origin_y, origin_y + grid)
+
     return slots
 
 
@@ -8458,7 +8537,11 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
         "bought": True,
         "label": item["label"],
         "cost": cost,
-        "message": f"Bought pin **{item['label']}**!",
+        "message": (
+            f"Bought pin **{item['label']}**! "
+            "It sticks on your border — Discord boards refresh on the next move; "
+            "reopen Activity to see it right away."
+        ),
     }
 
 
