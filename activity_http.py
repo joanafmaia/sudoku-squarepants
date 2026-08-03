@@ -23,6 +23,34 @@ from typing import Any, Callable
 
 from activity_watchers import prune_watchers
 
+# Shared with bot.py login backoff — Render must not 503-restart while Discord
+# is globally rate-limiting static_login (that deepens the 429 block).
+_discord_gateway_status: dict[str, Any] = {
+    "login_state": "starting",  # starting | rate_limited | ready | error
+    "retry_after_s": 0.0,
+    "detail": "",
+    "updated_at": 0.0,
+}
+_discord_gateway_status_lock = threading.Lock()
+
+
+def set_discord_gateway_status(
+    login_state: str,
+    *,
+    retry_after_s: float = 0.0,
+    detail: str = "",
+) -> None:
+    with _discord_gateway_status_lock:
+        _discord_gateway_status["login_state"] = login_state
+        _discord_gateway_status["retry_after_s"] = max(0.0, float(retry_after_s or 0.0))
+        _discord_gateway_status["detail"] = detail or ""
+        _discord_gateway_status["updated_at"] = time.time()
+
+
+def get_discord_gateway_status() -> dict[str, Any]:
+    with _discord_gateway_status_lock:
+        return dict(_discord_gateway_status)
+
 
 async def _activity_challenge_pending_response(uid: int) -> dict | None:
     """Block play/daily Activity HTTP while the user waits on an unsettled race."""
@@ -2646,10 +2674,20 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                     user = str(bot.user)
             except Exception:
                 pass
+            gw = get_discord_gateway_status()
+            login_state = str(gw.get("login_state") or "starting")
+            retry_after_s = float(gw.get("retry_after_s") or 0.0)
+            # While Discord login is rate-limited we are intentionally alive and
+            # backing off. Returning 503 here makes Render restart the service,
+            # which immediately retries static_login and prolongs the block.
+            waiting_on_discord = login_state in {"starting", "rate_limited", "connecting"}
             aged_out = (time.monotonic() - started_at) >= ready_grace_s
-            status = 200 if ready or not aged_out else 503
+            status = 200 if ready or waiting_on_discord or not aged_out else 503
             label = "ok" if status == 200 else "not_ready"
-            body = f"{label} ready={ready} user={user}".encode()
+            body = (
+                f"{label} ready={ready} user={user} "
+                f"login={login_state} retry_after_s={retry_after_s:.0f}"
+            ).encode()
             self._send(status, body, "text/plain; charset=utf-8", extra={})
 
         def _serve_static(self, rel: str) -> bool:

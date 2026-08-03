@@ -9411,19 +9411,29 @@ def run_bot_with_rate_limit_backoff(token: str) -> None:
     Important: do not use ``async with bot`` here — on 429 that closes the aiohttp
     session and the next retry fails with ``RuntimeError: Session is closed``.
     """
+    from activity_http import set_discord_gateway_status
 
     async def _runner() -> None:
         delay = LOGIN_RATE_LIMIT_FLOOR_SEC
+        set_discord_gateway_status("starting", detail="logging_in")
         try:
             while True:
                 try:
+                    set_discord_gateway_status("connecting", detail="bot.start")
                     await bot.start(token)
+                    # start() only returns after a clean disconnect.
+                    set_discord_gateway_status("starting", detail="disconnected")
                     return
                 except discord.LoginFailure:
+                    set_discord_gateway_status("error", detail="login_failure")
                     raise
                 except Exception as exc:  # noqa: BLE001 — only swallow retryable login faults
                     rate_limited = _is_rate_limit_error(exc)
                     if not rate_limited and not _is_closed_session_error(exc):
+                        set_discord_gateway_status(
+                            "error",
+                            detail=f"{type(exc).__name__}: {exc}"[:180],
+                        )
                         raise
                     wait = delay
                     if rate_limited:
@@ -9441,10 +9451,20 @@ def run_bot_with_rate_limit_backoff(token: str) -> None:
                             f"Discord login rate-limited (429). "
                             f"Keeping /health up; retrying in {wait:.0f}s..."
                         )
+                        set_discord_gateway_status(
+                            "rate_limited",
+                            retry_after_s=wait,
+                            detail="static_login_429",
+                        )
                     else:
                         print(
                             f"Discord HTTP session was closed after a failed login. "
                             f"Resetting client; retrying in {wait:.0f}s..."
+                        )
+                        set_discord_gateway_status(
+                            "rate_limited",
+                            retry_after_s=wait,
+                            detail="session_closed",
                         )
                     await asyncio.sleep(wait)
                     _prepare_bot_for_relogin(bot)
@@ -10236,8 +10256,11 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
 
 @bot.event
 async def on_ready():
+    from activity_http import set_discord_gateway_status
+
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print(f"Activity watch channel id: {ACTIVITY_WATCH_CHANNEL_ID or 'unset'}")
+    set_discord_gateway_status("ready", detail=f"user={bot.user}")
     if not os.getenv("MONGODB_URI", "").strip():
         print(
             "WARNING: MONGODB_URI unset — in-memory store only; "
