@@ -117,8 +117,8 @@ LAUNCH_ACTIVITY_COOLDOWN_SEC = 5
 LAUNCH_ACTIVITY_RATE_LIMIT_FLOOR_SEC = 3.0
 LAUNCH_ACTIVITY_RATE_LIMIT_CAP_SEC = 60.0
 # Login 429s are often global blocks — wait longer and never crash-loop the process.
-LOGIN_RATE_LIMIT_FLOOR_SEC = 30.0
-LOGIN_RATE_LIMIT_CAP_SEC = 600.0
+LOGIN_RATE_LIMIT_FLOOR_SEC = 60.0
+LOGIN_RATE_LIMIT_CAP_SEC = 900.0
 INVITE_TIMEOUT_SEC = 5 * 60
 DAILY_EPOCH = datetime(2024, 1, 1, tzinfo=timezone.utc).date()
 # Optional: set to your server ID for instant slash-command updates (global sync can lag).
@@ -9380,19 +9380,30 @@ def start_health_server_early() -> None:
     start_unified_http_server(lambda: bot)
 
 
-def _prepare_bot_for_relogin(client: discord.Client) -> None:
+async def _prepare_bot_for_relogin(client: discord.Client) -> None:
     """Allow another login attempt after a failed/closed HTTP session.
+
+    discord.py's static_login() always builds a new ClientSession. After a 429 the
+    previous session is left open, so close it before retrying to avoid
+    ``Unclosed client session`` leaks that pile up during backoff.
 
     Do not recreate SudokuBot — slash commands are bound to the global instance.
     """
     http = client.http
+    session = getattr(http, "_HTTPClient__session", None)
+    if session is not None and session is not getattr(discord.utils, "MISSING", object()):
+        try:
+            if not getattr(session, "closed", True):
+                await session.close()
+        except Exception as close_exc:  # noqa: BLE001
+            print(f"login session close before retry failed: {close_exc}")
+        try:
+            setattr(http, "_HTTPClient__session", getattr(discord.utils, "MISSING", None))
+        except Exception:
+            pass
     clear = getattr(http, "clear", None)
     if callable(clear):
         clear()
-    else:
-        session = getattr(http, "_HTTPClient__session", None)
-        if session is not None and getattr(session, "closed", True):
-            setattr(http, "_HTTPClient__session", None)
     # Client.close() sets this; login/connect refuse to run while closed.
     if getattr(client, "_closed", False):
         client._closed = False
@@ -9467,7 +9478,7 @@ def run_bot_with_rate_limit_backoff(token: str) -> None:
                             detail="session_closed",
                         )
                     await asyncio.sleep(wait)
-                    _prepare_bot_for_relogin(bot)
+                    await _prepare_bot_for_relogin(bot)
                     delay = min(delay * 2, LOGIN_RATE_LIMIT_CAP_SEC)
         finally:
             if not bot.is_closed():
