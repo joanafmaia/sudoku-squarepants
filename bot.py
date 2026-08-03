@@ -116,9 +116,12 @@ LAUNCH_ACTIVITY_COOLDOWN_SEC = 5
 # Floor/ceiling when Discord omits or overstates Retry-After on global rate limits.
 LAUNCH_ACTIVITY_RATE_LIMIT_FLOOR_SEC = 3.0
 LAUNCH_ACTIVITY_RATE_LIMIT_CAP_SEC = 60.0
-# Login 429s are often global blocks — wait longer and never crash-loop the process.
+# Normal bucket 429s vs Cloudflare/Discord temporary API blocks (error code 0).
 LOGIN_RATE_LIMIT_FLOOR_SEC = 60.0
-LOGIN_RATE_LIMIT_CAP_SEC = 900.0
+LOGIN_RATE_LIMIT_CAP_SEC = 300.0
+# "You are being blocked from accessing our API temporarily..." needs silence.
+GLOBAL_API_BLOCK_FLOOR_SEC = 900.0  # 15 minutes
+GLOBAL_API_BLOCK_CAP_SEC = 3600.0  # 1 hour
 INVITE_TIMEOUT_SEC = 5 * 60
 DAILY_EPOCH = datetime(2024, 1, 1, tzinfo=timezone.utc).date()
 # Optional: set to your server ID for instant slash-command updates (global sync can lag).
@@ -4962,16 +4965,47 @@ def _is_rate_limit_error(exc: BaseException) -> bool:
     return "too many requests" in text or "rate limit" in text
 
 
+def _is_global_api_block(exc: BaseException) -> bool:
+    """Cloudflare/Discord temporary IP/token block — not a normal bucket 429."""
+    text = str(exc).lower()
+    if "blocked from accessing" in text or "exceeding global rate limits" in text:
+        return True
+    # discord.py raises HTTPException for these (no automatic sleep/retry).
+    return _http_status(exc) == 429 and getattr(exc, "code", None) == 0
+
+
+def _extract_retry_after(exc: BaseException | None) -> float | None:
+    if exc is None:
+        return None
+    retry_after = getattr(exc, "retry_after", None)
+    if isinstance(retry_after, (int, float)) and retry_after > 0:
+        return float(retry_after)
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) if response is not None else None
+    if headers:
+        raw = headers.get("Retry-After") or headers.get("retry-after")
+        if raw is not None:
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                pass
+    text = getattr(exc, "text", None)
+    if isinstance(text, dict):
+        raw = text.get("retry_after")
+        if isinstance(raw, (int, float)) and raw > 0:
+            return float(raw)
+    return None
+
+
 def _retry_after_seconds(
     exc: BaseException | None,
     *,
     floor: float = LAUNCH_ACTIVITY_RATE_LIMIT_FLOOR_SEC,
     cap: float = LAUNCH_ACTIVITY_RATE_LIMIT_CAP_SEC,
 ) -> float:
-    if exc is not None:
-        retry_after = getattr(exc, "retry_after", None)
-        if isinstance(retry_after, (int, float)) and retry_after > 0:
-            return min(cap, max(floor, float(retry_after)))
+    extracted = _extract_retry_after(exc)
+    if extracted is not None and extracted > 0:
+        return min(cap, max(floor, extracted))
     return floor
 
 
@@ -9436,77 +9470,140 @@ def _is_closed_session_error(exc: BaseException) -> bool:
 
 
 def run_bot_with_rate_limit_backoff(token: str) -> None:
-    """Start the Discord client; on login 429 wait and retry instead of exiting.
+    """Start the Discord client with a silence gate for global API blocks.
 
-    Render restart loops make global rate limits worse because each crash immediately
-    retries static_login. Keep /health alive in the background thread and back off.
+    Discord's ``blocked from accessing our API temporarily`` response is a
+    Cloudflare-style global block. discord.py does *not* auto-retry those; it
+    raises HTTPException. Hammering login every 30–120s (and redeploying) makes
+    the block last much longer.
 
-    Important: do not use ``async with bot`` here — on 429 that closes the aiohttp
-    session and the next retry fails with ``RuntimeError: Session is closed``.
+    Strategy:
+    1. Load any persisted gate (Mongo/file) and wait with **zero** Discord calls
+    2. Attempt login only when the gate is clear
+    3. On global block, engage a long silence window (15–60 min) and persist it
+    4. Keep /health up the whole time so Render does not restart-spam login
     """
-    from activity_http import set_discord_gateway_status
+    from activity_http import (
+        clear_discord_api_gate,
+        discord_api_gate_remaining,
+        load_discord_api_gate,
+        note_discord_api_block,
+        set_discord_gateway_status,
+    )
+
+    async def _sleep_gate(seconds: float, *, detail: str) -> None:
+        remaining = max(0.0, float(seconds))
+        if remaining <= 0:
+            return
+        print(
+            f"Discord API silence gate active ({detail}). "
+            f"No Discord calls for {remaining:.0f}s; /health stays up."
+        )
+        set_discord_gateway_status(
+            "rate_limited",
+            retry_after_s=remaining,
+            detail=detail,
+        )
+        # Chunked sleep so /health retry_after_s stays roughly accurate.
+        deadline = time.time() + remaining
+        while True:
+            left = deadline - time.time()
+            if left <= 0:
+                break
+            set_discord_gateway_status(
+                "rate_limited",
+                retry_after_s=left,
+                detail=detail,
+            )
+            await asyncio.sleep(min(30.0, left))
 
     async def _runner() -> None:
-        delay = LOGIN_RATE_LIMIT_FLOOR_SEC
+        bucket_delay = LOGIN_RATE_LIMIT_FLOOR_SEC
+        global_delay = GLOBAL_API_BLOCK_FLOOR_SEC
+        load_discord_api_gate()
         set_discord_gateway_status("starting", detail="logging_in")
         try:
             while True:
+                gated = discord_api_gate_remaining()
+                if gated > 0:
+                    await _sleep_gate(gated, detail="persisted_gate")
+                    continue
+
                 try:
+                    await _prepare_bot_for_relogin(bot)
                     set_discord_gateway_status("connecting", detail="bot.start")
                     await bot.start(token)
-                    # start() only returns after a clean disconnect.
+                    clear_discord_api_gate()
                     set_discord_gateway_status("starting", detail="disconnected")
                     return
                 except discord.LoginFailure:
                     set_discord_gateway_status("error", detail="login_failure")
                     raise
                 except Exception as exc:  # noqa: BLE001 — only swallow retryable login faults
+                    global_block = _is_global_api_block(exc)
                     rate_limited = _is_rate_limit_error(exc)
                     session_closed = _is_closed_session_error(exc)
-                    if not rate_limited and not session_closed:
+                    if not global_block and not rate_limited and not session_closed:
                         set_discord_gateway_status(
                             "error",
                             detail=f"{type(exc).__name__}: {exc}"[:180],
                         )
                         raise
 
-                    # Reset HTTP transport before sleeping so the next attempt is clean.
                     await _prepare_bot_for_relogin(bot)
 
-                    if rate_limited:
-                        wait = max(
-                            delay,
-                            _retry_after_seconds(
-                                exc,
-                                floor=LOGIN_RATE_LIMIT_FLOOR_SEC,
-                                cap=LOGIN_RATE_LIMIT_CAP_SEC,
-                            ),
-                        )
-                        wait = min(LOGIN_RATE_LIMIT_CAP_SEC, wait)
-                        print(
-                            f"Discord login rate-limited (429). "
-                            f"Keeping /health up; retrying in {wait:.0f}s..."
-                        )
-                        set_discord_gateway_status(
-                            "rate_limited",
-                            retry_after_s=wait,
-                            detail="static_login_429",
-                        )
-                        delay = min(delay * 2, LOGIN_RATE_LIMIT_CAP_SEC)
-                    else:
-                        # Local stale connector/session — not a Discord backoff signal.
-                        wait = 5.0
+                    if session_closed and not global_block and not rate_limited:
                         print(
                             "Discord HTTP session/connector was stale after a failed "
-                            f"login. Reset connector; retrying in {wait:.0f}s..."
+                            "login. Reset connector; retrying in 5s..."
                         )
                         set_discord_gateway_status(
                             "connecting",
-                            retry_after_s=wait,
+                            retry_after_s=5.0,
                             detail="session_closed_reset",
                         )
+                        await asyncio.sleep(5.0)
+                        continue
 
-                    await asyncio.sleep(wait)
+                    if global_block:
+                        wait = max(
+                            global_delay,
+                            _retry_after_seconds(
+                                exc,
+                                floor=GLOBAL_API_BLOCK_FLOOR_SEC,
+                                cap=GLOBAL_API_BLOCK_CAP_SEC,
+                            ),
+                        )
+                        wait = min(GLOBAL_API_BLOCK_CAP_SEC, wait)
+                        note_discord_api_block(
+                            wait_s=wait,
+                            detail="cloudflare_global_block",
+                        )
+                        print(
+                            "Discord GLOBAL API block (Cloudflare/temporary ban). "
+                            f"Stopping all Discord API traffic for {wait:.0f}s "
+                            "(persisted across deploys when Mongo is configured)."
+                        )
+                        global_delay = min(global_delay * 2, GLOBAL_API_BLOCK_CAP_SEC)
+                        await _sleep_gate(wait, detail="cloudflare_global_block")
+                        continue
+
+                    wait = max(
+                        bucket_delay,
+                        _retry_after_seconds(
+                            exc,
+                            floor=LOGIN_RATE_LIMIT_FLOOR_SEC,
+                            cap=LOGIN_RATE_LIMIT_CAP_SEC,
+                        ),
+                    )
+                    wait = min(LOGIN_RATE_LIMIT_CAP_SEC, wait)
+                    note_discord_api_block(wait_s=wait, detail="login_429")
+                    print(
+                        f"Discord login rate-limited (429). "
+                        f"Keeping /health up; retrying in {wait:.0f}s..."
+                    )
+                    bucket_delay = min(bucket_delay * 2, LOGIN_RATE_LIMIT_CAP_SEC)
+                    await _sleep_gate(wait, detail="login_429")
         finally:
             if not bot.is_closed():
                 await bot.close()
@@ -10299,6 +10396,12 @@ async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print(f"Activity watch channel id: {ACTIVITY_WATCH_CHANNEL_ID or 'unset'}")
     set_discord_gateway_status("ready", detail=f"user={bot.user}")
+    try:
+        from activity_http import clear_discord_api_gate
+
+        clear_discord_api_gate()
+    except Exception as gate_exc:  # noqa: BLE001
+        print(f"clear discord api gate on ready failed: {gate_exc}")
     if not os.getenv("MONGODB_URI", "").strip():
         print(
             "WARNING: MONGODB_URI unset — in-memory store only; "
@@ -12371,5 +12474,12 @@ if __name__ == "__main__":
         raise SystemExit(
             "Missing DISCORD_TOKEN. Put it in .env:\n  DISCORD_TOKEN=seu_token_aqui"
         )
+    # Load gate before opening HTTP so OAuth cannot deepen a Cloudflare block.
+    try:
+        from activity_http import load_discord_api_gate
+
+        load_discord_api_gate()
+    except Exception as boot_gate_exc:  # noqa: BLE001
+        print(f"boot discord api gate load failed: {boot_gate_exc}")
     start_health_server_early()
     run_bot_with_rate_limit_backoff(token)
