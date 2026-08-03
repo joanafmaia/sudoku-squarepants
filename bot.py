@@ -9390,17 +9390,19 @@ async def _prepare_bot_for_relogin(client: discord.Client) -> None:
     Do not recreate SudokuBot — slash commands are bound to the global instance.
     """
     http = client.http
+    missing = getattr(discord.utils, "MISSING", None)
     session = getattr(http, "_HTTPClient__session", None)
-    if session is not None and session is not getattr(discord.utils, "MISSING", object()):
+    if session is not None and (missing is None or session is not missing):
         try:
             if not getattr(session, "closed", True):
                 await session.close()
         except Exception as close_exc:  # noqa: BLE001
             print(f"login session close before retry failed: {close_exc}")
-        try:
-            setattr(http, "_HTTPClient__session", getattr(discord.utils, "MISSING", None))
-        except Exception:
-            pass
+        if missing is not None:
+            try:
+                setattr(http, "_HTTPClient__session", missing)
+            except Exception:
+                pass
     clear = getattr(http, "clear", None)
     if callable(clear):
         clear()
