@@ -111,6 +111,11 @@ CHALLENGE_LOSER_COINS = 15
 # Last standing when opponents forfeit — sponges only, no best_time / full win payout.
 CHALLENGE_FORFEIT_WIN_COINS = 40
 CHALLENGE_COOLDOWN_SEC = 60
+# Soft throttle for Activity launches — stops /play spam from stacking Discord 429s.
+LAUNCH_ACTIVITY_COOLDOWN_SEC = 5
+# Floor/ceiling when Discord omits or overstates Retry-After on global rate limits.
+LAUNCH_ACTIVITY_RATE_LIMIT_FLOOR_SEC = 3.0
+LAUNCH_ACTIVITY_RATE_LIMIT_CAP_SEC = 60.0
 INVITE_TIMEOUT_SEC = 5 * 60
 DAILY_EPOCH = datetime(2024, 1, 1, tzinfo=timezone.utc).date()
 # Optional: set to your server ID for instant slash-command updates (global sync can lag).
@@ -697,6 +702,8 @@ intents = discord.Intents.default()
 games: dict = {}
 pending_challenges: dict[int, dict] = {}  # invite message_id → meta
 challenge_cooldowns: dict[int, float] = {}  # user_id → last /challenge timestamp
+launch_activity_cooldowns: dict[int, float] = {}  # user_id → last Activity launch attempt
+_discord_launch_rate_limited_until = 0.0  # monotonic wall-clock backoff after 429s
 _challenge_live_tasks: dict[str, asyncio.Task] = {}
 _activity_notify_inflight: set[str] = set()
 _daily_finish_locks: dict[str, asyncio.Lock] = {}
@@ -4937,6 +4944,136 @@ def mark_challenge_cooldown(user_id: int) -> None:
     challenge_cooldowns[user_id] = time.time()
 
 
+def _http_status(exc: BaseException) -> int | None:
+    status = getattr(exc, "status", None)
+    return status if isinstance(status, int) else None
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    rate_limited_cls = getattr(discord, "RateLimited", None)
+    if rate_limited_cls is not None and isinstance(exc, rate_limited_cls):
+        return True
+    if _http_status(exc) == 429:
+        return True
+    text = str(exc).lower()
+    return "too many requests" in text or "rate limit" in text
+
+
+def _retry_after_seconds(exc: BaseException | None) -> float:
+    if exc is not None:
+        retry_after = getattr(exc, "retry_after", None)
+        if isinstance(retry_after, (int, float)) and retry_after > 0:
+            return min(
+                LAUNCH_ACTIVITY_RATE_LIMIT_CAP_SEC,
+                max(LAUNCH_ACTIVITY_RATE_LIMIT_FLOOR_SEC, float(retry_after)),
+            )
+    return LAUNCH_ACTIVITY_RATE_LIMIT_FLOOR_SEC
+
+
+def note_discord_launch_rate_limit(exc: BaseException | None = None) -> float:
+    """Record a Discord 429 backoff window; returns seconds remaining."""
+    global _discord_launch_rate_limited_until
+    wait = _retry_after_seconds(exc)
+    until = time.time() + wait
+    if until > _discord_launch_rate_limited_until:
+        _discord_launch_rate_limited_until = until
+    return max(0.0, _discord_launch_rate_limited_until - time.time())
+
+
+def discord_launch_backoff_remaining() -> float:
+    return max(0.0, _discord_launch_rate_limited_until - time.time())
+
+
+def launch_activity_cooldown_remaining(user_id: int) -> int:
+    last = launch_activity_cooldowns.get(user_id)
+    if last is None:
+        return 0
+    left = int(LAUNCH_ACTIVITY_COOLDOWN_SEC - (time.time() - last))
+    return max(0, left)
+
+
+def mark_launch_activity_cooldown(user_id: int) -> None:
+    launch_activity_cooldowns[user_id] = time.time()
+
+
+async def _reply_launch_notice(interaction: discord.Interaction, message: str) -> None:
+    """Best-effort interaction ack. Never retries on 429 — that worsens global limits."""
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except discord.HTTPException as send_exc:
+        if _is_rate_limit_error(send_exc):
+            note_discord_launch_rate_limit(send_exc)
+        print(f"launch_activity notice reply failed: {send_exc}")
+
+
+async def _prepare_launch_activity(interaction: discord.Interaction) -> bool:
+    """Gate Activity launches. Returns False after replying when blocked."""
+    backoff = discord_launch_backoff_remaining()
+    if backoff > 0:
+        wait = max(1, int(backoff + 0.999))
+        await _reply_launch_notice(
+            interaction,
+            f"Discord is rate-limiting Activity launches right now. "
+            f"Try again in **{wait}s**.",
+        )
+        return False
+
+    left = launch_activity_cooldown_remaining(interaction.user.id)
+    if left > 0:
+        await _reply_launch_notice(
+            interaction,
+            f"Wait **{left}s** before opening the Activity again.",
+        )
+        return False
+
+    mark_launch_activity_cooldown(interaction.user.id)
+    return True
+
+
+async def _execute_launch_activity(
+    interaction: discord.Interaction,
+    *,
+    tip: str,
+    tip_50234: str | None = None,
+    log_label: str = "launch_activity",
+) -> bool:
+    """Call launch_activity and only send tips when Discord is not rate-limiting."""
+    try:
+        await interaction.response.launch_activity()
+        print(
+            f"{log_label} ok user={interaction.user} "
+            f"guild={getattr(interaction.guild, 'id', None)} "
+            f"channel={getattr(interaction.channel, 'id', None)}"
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 — always acknowledge when safe
+        print(f"{log_label} failed: {type(exc).__name__}: {exc}")
+        if _is_rate_limit_error(exc):
+            wait = note_discord_launch_rate_limit(exc)
+            print(
+                f"{log_label} rate-limited; skipping fallback reply "
+                f"(backoff≈{wait:.1f}s)"
+            )
+            # Extra reply during a 429 almost always fails and deepens the block.
+            return False
+
+        code = getattr(exc, "code", None)
+        message = tip_50234 if code == 50234 and tip_50234 else tip
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except discord.HTTPException as send_exc:
+            if _is_rate_limit_error(send_exc):
+                note_discord_launch_rate_limit(send_exc)
+            print(f"{log_label} fallback reply failed: {send_exc}")
+        return False
+
+
 def challenge_board_filled(board_raw: list) -> int:
     board = normalize_board(board_raw or [])
     return sum(1 for r in range(9) for c in range(9) if cell_value(board, r, c) > 0)
@@ -6186,29 +6323,22 @@ async def open_activity_spectator_in_activity(
             ephemeral=True,
         )
         return
+    if not await _prepare_launch_activity(interaction):
+        return
     await match_store.set_spectate_intent(
         interaction.user.id,
         guild_id=resolved_guild,
         target_user_id=target_user_id,
     )
-    try:
-        await interaction.response.launch_activity()
-    except Exception as exc:  # noqa: BLE001
-        print(f"launch_activity spectate failed: {type(exc).__name__}: {exc}")
-        msg = "Couldn't open the Activity right now — try again in a moment."
-        code = getattr(exc, "code", None)
-        if code == 50234:
-            msg = (
-                "Activities aren't enabled for this app yet. "
-                "Ask the server owner to enable **Enable Activities** in the Developer Portal."
-            )
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(msg, ephemeral=True)
-        except discord.HTTPException:
-            pass
+    await _execute_launch_activity(
+        interaction,
+        tip="Couldn't open the Activity right now — try again in a moment.",
+        tip_50234=(
+            "Activities aren't enabled for this app yet. "
+            "Ask the server owner to enable **Enable Activities** in the Developer Portal."
+        ),
+        log_label="launch_activity spectate",
+    )
 
 
 class ActivityWatchMenuView(discord.ui.View):
@@ -10152,6 +10282,8 @@ async def _launch_activity_window(
     chosen difficulty; otherwise the old board (including activity:0 orphans)
     is cleared so Medium leftovers cannot shadow Very Easy, etc.
     """
+    if not await _prepare_launch_activity(interaction):
+        return
     # Write diff preference before launching so the Activity picks it up on load.
     if preferred_diff_index is not None and interaction.guild is not None:
         guild_id = interaction.guild.id
@@ -10230,42 +10362,26 @@ async def _launch_activity_window(
                     )
                 except Exception as alt_exc:  # noqa: BLE001
                     print(f"clear alt play session after /play pref failed: {alt_exc}")
-    try:
-        await interaction.response.launch_activity()
-        print(
-            f"launch_activity ok user={interaction.user} "
-            f"guild={getattr(interaction.guild, 'id', None)} "
-            f"channel={getattr(interaction.channel, 'id', None)}"
-        )
-        return
-    except Exception as exc:  # noqa: BLE001 — always acknowledge the interaction
-        print(f"launch_activity failed: {type(exc).__name__}: {exc}")
-        code = getattr(exc, "code", None)
-        if code == 50234:
-            tip = (
-                "A app ainda **não tem Activities/EMBEDDED** ligado.\n"
-                "No [Developer Portal](https://discord.com/developers/applications):\n"
-                "1. Escolhe a app **Thcoku**\n"
-                "2. **Activities → URL Mappings**: `/` → `sudoku-squarepants.onrender.com` "
-                "(sem `https://`)\n"
-                "3. Também `/pyscript` → `pyscript.net` e `/jsdelivr` → `cdn.jsdelivr.net`\n"
-                "4. **Activities → Settings** → ativa **Enable Activities**\n"
-                "5. Reinicia o Discord e tenta `/play` outra vez"
-            )
-        else:
-            tip = (
-                "Não consegui abrir a janela da Activity.\n"
-                "Confirma **Activities → Enable** e URL Mapping `/` → "
-                "`sudoku-squarepants.onrender.com`.\n"
-                "Ou inicia a Activity num **canal de voz** (ícone Actividades)."
-            )
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(tip, ephemeral=True)
-        else:
-            await interaction.response.send_message(tip, ephemeral=True)
-    except discord.HTTPException as send_exc:
-        print(f"launch_activity fallback reply failed: {send_exc}")
+    await _execute_launch_activity(
+        interaction,
+        tip=(
+            "Não consegui abrir a janela da Activity.\n"
+            "Confirma **Activities → Enable** e URL Mapping `/` → "
+            "`sudoku-squarepants.onrender.com`.\n"
+            "Ou inicia a Activity num **canal de voz** (ícone Actividades)."
+        ),
+        tip_50234=(
+            "A app ainda **não tem Activities/EMBEDDED** ligado.\n"
+            "No [Developer Portal](https://discord.com/developers/applications):\n"
+            "1. Escolhe a app **Thcoku**\n"
+            "2. **Activities → URL Mappings**: `/` → `sudoku-squarepants.onrender.com` "
+            "(sem `https://`)\n"
+            "3. Também `/pyscript` → `pyscript.net` e `/jsdelivr` → `cdn.jsdelivr.net`\n"
+            "4. **Activities → Settings** → ativa **Enable Activities**\n"
+            "5. Reinicia o Discord e tenta `/play` outra vez"
+        ),
+        log_label="launch_activity",
+    )
 
 
 @bot.tree.command(
