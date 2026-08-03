@@ -116,6 +116,9 @@ LAUNCH_ACTIVITY_COOLDOWN_SEC = 5
 # Floor/ceiling when Discord omits or overstates Retry-After on global rate limits.
 LAUNCH_ACTIVITY_RATE_LIMIT_FLOOR_SEC = 3.0
 LAUNCH_ACTIVITY_RATE_LIMIT_CAP_SEC = 60.0
+# Login 429s are often global blocks — wait longer and never crash-loop the process.
+LOGIN_RATE_LIMIT_FLOOR_SEC = 30.0
+LOGIN_RATE_LIMIT_CAP_SEC = 600.0
 INVITE_TIMEOUT_SEC = 5 * 60
 DAILY_EPOCH = datetime(2024, 1, 1, tzinfo=timezone.utc).date()
 # Optional: set to your server ID for instant slash-command updates (global sync can lag).
@@ -4959,15 +4962,17 @@ def _is_rate_limit_error(exc: BaseException) -> bool:
     return "too many requests" in text or "rate limit" in text
 
 
-def _retry_after_seconds(exc: BaseException | None) -> float:
+def _retry_after_seconds(
+    exc: BaseException | None,
+    *,
+    floor: float = LAUNCH_ACTIVITY_RATE_LIMIT_FLOOR_SEC,
+    cap: float = LAUNCH_ACTIVITY_RATE_LIMIT_CAP_SEC,
+) -> float:
     if exc is not None:
         retry_after = getattr(exc, "retry_after", None)
         if isinstance(retry_after, (int, float)) and retry_after > 0:
-            return min(
-                LAUNCH_ACTIVITY_RATE_LIMIT_CAP_SEC,
-                max(LAUNCH_ACTIVITY_RATE_LIMIT_FLOOR_SEC, float(retry_after)),
-            )
-    return LAUNCH_ACTIVITY_RATE_LIMIT_FLOOR_SEC
+            return min(cap, max(floor, float(retry_after)))
+    return floor
 
 
 def note_discord_launch_rate_limit(exc: BaseException | None = None) -> float:
@@ -9375,6 +9380,44 @@ def start_health_server_early() -> None:
     start_unified_http_server(lambda: bot)
 
 
+def run_bot_with_rate_limit_backoff(token: str) -> None:
+    """Start the Discord client; on login 429 wait and retry instead of exiting.
+
+    Render restart loops make global rate limits worse because each crash immediately
+    retries static_login. Keep /health alive in the background thread and back off.
+    """
+
+    async def _runner() -> None:
+        delay = LOGIN_RATE_LIMIT_FLOOR_SEC
+        while True:
+            try:
+                async with bot:
+                    await bot.start(token)
+                return
+            except discord.LoginFailure:
+                raise
+            except Exception as exc:  # noqa: BLE001 — only swallow rate limits
+                if not _is_rate_limit_error(exc):
+                    raise
+                wait = max(
+                    delay,
+                    _retry_after_seconds(
+                        exc,
+                        floor=LOGIN_RATE_LIMIT_FLOOR_SEC,
+                        cap=LOGIN_RATE_LIMIT_CAP_SEC,
+                    ),
+                )
+                wait = min(LOGIN_RATE_LIMIT_CAP_SEC, wait)
+                print(
+                    f"Discord login rate-limited (429). "
+                    f"Keeping /health up; retrying in {wait:.0f}s..."
+                )
+                await asyncio.sleep(wait)
+                delay = min(delay * 2, LOGIN_RATE_LIMIT_CAP_SEC)
+
+    asyncio.run(_runner())
+
+
 class SudokuBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents, help_command=None)
@@ -12230,4 +12273,4 @@ if __name__ == "__main__":
             "Missing DISCORD_TOKEN. Put it in .env:\n  DISCORD_TOKEN=seu_token_aqui"
         )
     start_health_server_early()
-    bot.run(token)
+    run_bot_with_rate_limit_backoff(token)
