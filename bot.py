@@ -9745,10 +9745,13 @@ STATUS_ROTATION = [
 _status_i = 0
 
 
-@tasks.loop(seconds=40)
+@tasks.loop(minutes=5)
 async def rotate_status():
     global _status_i
-    await bot.change_presence(activity=STATUS_ROTATION[_status_i % len(STATUS_ROTATION)])
+    try:
+        await bot.change_presence(activity=STATUS_ROTATION[_status_i % len(STATUS_ROTATION)])
+    except discord.HTTPException as exc:
+        print(f"rotate_status presence update skipped: {exc}")
     _status_i += 1
 
 
@@ -10399,7 +10402,8 @@ async def on_ready():
     try:
         from activity_http import clear_discord_api_gate
 
-        clear_discord_api_gate()
+        # Never block the gateway event loop on sync Mongo/file I/O.
+        await asyncio.to_thread(clear_discord_api_gate)
     except Exception as gate_exc:  # noqa: BLE001
         print(f"clear discord api gate on ready failed: {gate_exc}")
     if not os.getenv("MONGODB_URI", "").strip():
@@ -10418,6 +10422,22 @@ async def on_ready():
     await restore_challenge_watch_views(bot)
     await restore_activity_play_watch_views(bot)
     bot.add_view(ChallengeLaunchActivityView())
+    print("on_ready complete — slash commands should respond now")
+
+
+@bot.listen("on_interaction")
+async def _log_slash_interactions(interaction: discord.Interaction) -> None:
+    if interaction.type is not discord.InteractionType.application_command:
+        return
+    name = "-"
+    try:
+        name = (interaction.data or {}).get("name") or "-"
+    except Exception:
+        pass
+    print(
+        f"interaction recv /{name} user={interaction.user} "
+        f"guild={getattr(interaction.guild, 'id', None)}"
+    )
 
 
 @admin_group.command(
@@ -10515,6 +10535,49 @@ async def testboard_pin_autocomplete(
     return _catalog_autocomplete(current, SHOP_PINS)
 
 
+async def _cleanup_play_orphans_after_pref(
+    *,
+    session_id: str,
+    user_id: int,
+    existing_sid: str | None,
+    existing_kind: str,
+    has_board: bool,
+    idx: int,
+    diff_key: str,
+) -> None:
+    """Background cleanup — must not delay launch_activity ACK (<3s)."""
+    orphan_id = f"activity:0:{user_id}"
+    if orphan_id != session_id:
+        try:
+            orphan = await match_store.get_activity_session(orphan_id)
+            if orphan and (orphan.get("session_kind") or "play") == "play":
+                await match_store.delete_activity_session(orphan_id)
+        except Exception as orphan_exc:  # noqa: BLE001
+            print(f"clear play orphan after /play pref failed: {orphan_exc}")
+    if (
+        existing_sid
+        and existing_sid not in (session_id, orphan_id)
+        and existing_kind == "play"
+        and has_board
+    ):
+        try:
+            await match_store.merge_activity_session(
+                existing_sid,
+                {
+                    "board": None,
+                    "given": None,
+                    "solution": None,
+                    "won_at": None,
+                    "filled": 0,
+                    "diff_index": idx,
+                    "difficulty": diff_key,
+                    "session_kind": "play",
+                },
+            )
+        except Exception as alt_exc:  # noqa: BLE001
+            print(f"clear alt play session after /play pref failed: {alt_exc}")
+
+
 async def _launch_activity_window(
     interaction: discord.Interaction,
     *,
@@ -10526,7 +10589,11 @@ async def _launch_activity_window(
     tier. An in-progress /play board is kept only when it already matches the
     chosen difficulty; otherwise the old board (including activity:0 orphans)
     is cleared so Medium leftovers cannot shadow Very Easy, etc.
+
+    Critical: Discord requires launch_activity (or any ACK) within 3 seconds.
+    Keep the pre-launch path minimal; orphan cleanup runs in the background.
     """
+    t0 = time.monotonic()
     if not await _prepare_launch_activity(interaction):
         return
     # Write diff preference before launching so the Activity picks it up on load.
@@ -10539,7 +10606,14 @@ async def _launch_activity_window(
         except (TypeError, ValueError):
             idx = DIFF_KEYS_LIST.index(DEFAULT_DIFFICULTY)
         diff_key = DIFF_KEYS_LIST[idx]
-        existing, existing_sid = await lookup_user_activity_session(guild_id, user_id)
+        try:
+            existing, existing_sid = await asyncio.wait_for(
+                lookup_user_activity_session(guild_id, user_id),
+                timeout=1.2,
+            )
+        except Exception as lookup_exc:  # noqa: BLE001
+            print(f"/play preference lookup timed out/failed: {lookup_exc}")
+            existing, existing_sid = None, None
         has_board = bool(
             existing and (existing.get("board") or existing.get("solution"))
         )
@@ -10551,10 +10625,7 @@ async def _launch_activity_window(
             and existing_kind == "play"
             and existing_key == diff_key
         )
-        if same_play_board:
-            # Resume the matching in-progress /play puzzle.
-            pass
-        else:
+        if not same_play_board:
             # Preference / fresh start — never touch watch flags here. Clearing
             # them without deleting the Discord message orphans "is playing" posts.
             pref: dict = {
@@ -10573,40 +10644,26 @@ async def _launch_activity_window(
                 "hints_gary_used": 0,
                 "gary_wisdom_bonus": 0,
             }
-            await match_store.merge_activity_session(session_id, pref)
-            # Orphan activity:0 boards win over preference-only primary in lookup —
-            # drop stale play orphans so the new /play choice is not shadowed.
-            orphan_id = f"activity:0:{user_id}"
-            if orphan_id != session_id:
-                try:
-                    orphan = await match_store.get_activity_session(orphan_id)
-                    if orphan and (orphan.get("session_kind") or "play") == "play":
-                        await match_store.delete_activity_session(orphan_id)
-                except Exception as orphan_exc:  # noqa: BLE001
-                    print(f"clear play orphan after /play pref failed: {orphan_exc}")
-            # If lookup pointed at a non-canonical play doc with a board, clear it too.
-            if (
-                existing_sid
-                and existing_sid not in (session_id, orphan_id)
-                and existing_kind == "play"
-                and has_board
-            ):
-                try:
-                    await match_store.merge_activity_session(
-                        existing_sid,
-                        {
-                            "board": None,
-                            "given": None,
-                            "solution": None,
-                            "won_at": None,
-                            "filled": 0,
-                            "diff_index": idx,
-                            "difficulty": diff_key,
-                            "session_kind": "play",
-                        },
-                    )
-                except Exception as alt_exc:  # noqa: BLE001
-                    print(f"clear alt play session after /play pref failed: {alt_exc}")
+            try:
+                await asyncio.wait_for(
+                    match_store.merge_activity_session(session_id, pref),
+                    timeout=1.2,
+                )
+            except Exception as pref_exc:  # noqa: BLE001
+                print(f"/play preference write timed out/failed: {pref_exc}")
+            # Orphan cleanup must not steal the 3s interaction ACK budget.
+            asyncio.create_task(
+                _cleanup_play_orphans_after_pref(
+                    session_id=session_id,
+                    user_id=user_id,
+                    existing_sid=existing_sid,
+                    existing_kind=existing_kind,
+                    has_board=has_board,
+                    idx=idx,
+                    diff_key=diff_key,
+                )
+            )
+    print(f"launch_activity pre-ack {(time.monotonic() - t0) * 1000:.0f}ms")
     await _execute_launch_activity(
         interaction,
         tip=(
@@ -10639,37 +10696,43 @@ async def play_cmd(
     interaction: discord.Interaction,
     difficulty: app_commands.Choice[str],
 ):
+    t0 = time.monotonic()
     if interaction.guild is not None:
-        # Allow reopening an in-progress /play Activity (resume). Only daily
-        # shares the same window and must be finished or quit first.
-        blocking = await get_blocking_activity_session(
-            interaction.guild.id,
-            interaction.user.id,
-            kinds={"daily"},
-        )
+        guild_id = interaction.guild.id
+        user_id = interaction.user.id
+        # Parallelize independent gates — sequential Mongo round-trips blow the 3s ACK.
+        try:
+            blocking, daily_block, reconciled, challenge_block = await asyncio.wait_for(
+                asyncio.gather(
+                    get_blocking_activity_session(guild_id, user_id, kinds={"daily"}),
+                    daily_attempt_blocks_modes(guild_id, user_id),
+                    reconcile_challenge_game_for_user(user_id),
+                    challenge_blocks_user(user_id),
+                ),
+                timeout=2.0,
+            )
+        except Exception as gate_exc:  # noqa: BLE001
+            print(f"/play gate checks timed out/failed: {gate_exc}")
+            blocking = daily_block = reconciled = challenge_block = None
         if blocking:
             await interaction.response.send_message(
                 "Finish or `/quit` today's **daily** first — it uses the same game window.",
                 ephemeral=True,
             )
             return
-        daily_block = await daily_attempt_blocks_modes(
-            interaction.guild.id, interaction.user.id
-        )
         if daily_block:
             await interaction.response.send_message(daily_block, ephemeral=True)
             return
-        if await reconcile_challenge_game_for_user(interaction.user.id):
+        if reconciled:
             await interaction.response.send_message(
                 "Finish your speedrun challenge first.",
                 ephemeral=True,
             )
             return
-        block = await challenge_blocks_user(interaction.user.id)
-        if block:
-            await interaction.response.send_message(block, ephemeral=True)
+        if challenge_block:
+            await interaction.response.send_message(challenge_block, ephemeral=True)
             return
-        sk = solo_key(interaction.guild.id, interaction.user.id)
+        sk = solo_key(guild_id, user_id)
         if sk in games:
             existing = games[sk]
             await interaction.response.send_message(
@@ -10677,6 +10740,7 @@ async def play_cmd(
                 ephemeral=True,
             )
             return
+    print(f"/play gates {(time.monotonic() - t0) * 1000:.0f}ms")
     diff_idx = difficulty_index(difficulty.value)
     await _launch_activity_window(interaction, preferred_diff_index=diff_idx)
 
@@ -11933,6 +11997,8 @@ async def shop_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message("Server only.", ephemeral=True)
         return
+    # ACK first — never let disk/Mongo mirroring eat the 3s interaction window.
+    await interaction.response.defer(ephemeral=True)
     gstats = guild_stats(bot.data, interaction.guild.id)
     stats = user_stats(gstats, interaction.user.id)
     stats["name"] = interaction.user.display_name
@@ -11943,12 +12009,13 @@ async def shop_cmd(interaction: discord.Interaction):
         guild_id=interaction.guild.id,
         kind="boosts",
     )
-    await interaction.response.send_message(
+    msg = await interaction.followup.send(
         embed=view.build_embed(),
         view=view,
         ephemeral=True,
+        wait=True,
     )
-    view.message = await interaction.original_response()
+    view.message = msg
 
 
 @bot.tree.command(name="giftpin", description="Gift an owned border pin to another player")
