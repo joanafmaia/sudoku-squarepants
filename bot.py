@@ -9380,40 +9380,78 @@ def start_health_server_early() -> None:
     start_unified_http_server(lambda: bot)
 
 
+def _prepare_bot_for_relogin(client: discord.Client) -> None:
+    """Allow another login attempt after a failed/closed HTTP session.
+
+    Do not recreate SudokuBot — slash commands are bound to the global instance.
+    """
+    http = client.http
+    clear = getattr(http, "clear", None)
+    if callable(clear):
+        clear()
+    else:
+        session = getattr(http, "_HTTPClient__session", None)
+        if session is not None and getattr(session, "closed", True):
+            setattr(http, "_HTTPClient__session", None)
+    # Client.close() sets this; login/connect refuse to run while closed.
+    if getattr(client, "_closed", False):
+        client._closed = False
+
+
+def _is_closed_session_error(exc: BaseException) -> bool:
+    return isinstance(exc, RuntimeError) and "session is closed" in str(exc).lower()
+
+
 def run_bot_with_rate_limit_backoff(token: str) -> None:
     """Start the Discord client; on login 429 wait and retry instead of exiting.
 
     Render restart loops make global rate limits worse because each crash immediately
     retries static_login. Keep /health alive in the background thread and back off.
+
+    Important: do not use ``async with bot`` here — on 429 that closes the aiohttp
+    session and the next retry fails with ``RuntimeError: Session is closed``.
     """
 
     async def _runner() -> None:
         delay = LOGIN_RATE_LIMIT_FLOOR_SEC
-        while True:
-            try:
-                async with bot:
+        try:
+            while True:
+                try:
                     await bot.start(token)
-                return
-            except discord.LoginFailure:
-                raise
-            except Exception as exc:  # noqa: BLE001 — only swallow rate limits
-                if not _is_rate_limit_error(exc):
+                    return
+                except discord.LoginFailure:
                     raise
-                wait = max(
-                    delay,
-                    _retry_after_seconds(
-                        exc,
-                        floor=LOGIN_RATE_LIMIT_FLOOR_SEC,
-                        cap=LOGIN_RATE_LIMIT_CAP_SEC,
-                    ),
-                )
-                wait = min(LOGIN_RATE_LIMIT_CAP_SEC, wait)
-                print(
-                    f"Discord login rate-limited (429). "
-                    f"Keeping /health up; retrying in {wait:.0f}s..."
-                )
-                await asyncio.sleep(wait)
-                delay = min(delay * 2, LOGIN_RATE_LIMIT_CAP_SEC)
+                except Exception as exc:  # noqa: BLE001 — only swallow retryable login faults
+                    rate_limited = _is_rate_limit_error(exc)
+                    if not rate_limited and not _is_closed_session_error(exc):
+                        raise
+                    wait = delay
+                    if rate_limited:
+                        wait = max(
+                            delay,
+                            _retry_after_seconds(
+                                exc,
+                                floor=LOGIN_RATE_LIMIT_FLOOR_SEC,
+                                cap=LOGIN_RATE_LIMIT_CAP_SEC,
+                            ),
+                        )
+                    wait = min(LOGIN_RATE_LIMIT_CAP_SEC, wait)
+                    if rate_limited:
+                        print(
+                            f"Discord login rate-limited (429). "
+                            f"Keeping /health up; retrying in {wait:.0f}s..."
+                        )
+                    else:
+                        print(
+                            f"Discord HTTP session was closed after a failed login. "
+                            f"Resetting client; retrying in {wait:.0f}s..."
+                        )
+                    await asyncio.sleep(wait)
+                    _prepare_bot_for_relogin(bot)
+                    delay = min(delay * 2, LOGIN_RATE_LIMIT_CAP_SEC)
+        finally:
+            if not bot.is_closed():
+                await bot.close()
 
     asyncio.run(_runner())
 
