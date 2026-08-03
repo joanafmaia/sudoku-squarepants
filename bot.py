@@ -9383,14 +9383,17 @@ def start_health_server_early() -> None:
 async def _prepare_bot_for_relogin(client: discord.Client) -> None:
     """Allow another login attempt after a failed/closed HTTP session.
 
-    discord.py's static_login() always builds a new ClientSession. After a 429 the
-    previous session is left open, so close it before retrying to avoid
-    ``Unclosed client session`` leaks that pile up during backoff.
+    discord.py's static_login() always builds a new ClientSession. Closing that
+    session also closes its owned TCPConnector; static_login only creates a new
+    connector when ``http.connector is MISSING``. If we leave a closed connector
+    in place, every later retry fails with ``RuntimeError: Session is closed``
+    and never reaches Discord again.
 
     Do not recreate SudokuBot — slash commands are bound to the global instance.
     """
     http = client.http
     missing = getattr(discord.utils, "MISSING", None)
+
     session = getattr(http, "_HTTPClient__session", None)
     if session is not None and (missing is None or session is not missing):
         try:
@@ -9403,6 +9406,20 @@ async def _prepare_bot_for_relogin(client: discord.Client) -> None:
                 setattr(http, "_HTTPClient__session", missing)
             except Exception:
                 pass
+
+    connector = getattr(http, "connector", None)
+    if connector is not None and (missing is None or connector is not missing):
+        try:
+            if not getattr(connector, "closed", True):
+                await connector.close()
+        except Exception as close_exc:  # noqa: BLE001
+            print(f"login connector close before retry failed: {close_exc}")
+        if missing is not None:
+            try:
+                http.connector = missing
+            except Exception:
+                pass
+
     clear = getattr(http, "clear", None)
     if callable(clear):
         clear()
@@ -9412,7 +9429,10 @@ async def _prepare_bot_for_relogin(client: discord.Client) -> None:
 
 
 def _is_closed_session_error(exc: BaseException) -> bool:
-    return isinstance(exc, RuntimeError) and "session is closed" in str(exc).lower()
+    text = str(exc).lower()
+    return isinstance(exc, RuntimeError) and (
+        "session is closed" in text or "connector is closed" in text
+    )
 
 
 def run_bot_with_rate_limit_backoff(token: str) -> None:
@@ -9442,13 +9462,17 @@ def run_bot_with_rate_limit_backoff(token: str) -> None:
                     raise
                 except Exception as exc:  # noqa: BLE001 — only swallow retryable login faults
                     rate_limited = _is_rate_limit_error(exc)
-                    if not rate_limited and not _is_closed_session_error(exc):
+                    session_closed = _is_closed_session_error(exc)
+                    if not rate_limited and not session_closed:
                         set_discord_gateway_status(
                             "error",
                             detail=f"{type(exc).__name__}: {exc}"[:180],
                         )
                         raise
-                    wait = delay
+
+                    # Reset HTTP transport before sleeping so the next attempt is clean.
+                    await _prepare_bot_for_relogin(bot)
+
                     if rate_limited:
                         wait = max(
                             delay,
@@ -9458,8 +9482,7 @@ def run_bot_with_rate_limit_backoff(token: str) -> None:
                                 cap=LOGIN_RATE_LIMIT_CAP_SEC,
                             ),
                         )
-                    wait = min(LOGIN_RATE_LIMIT_CAP_SEC, wait)
-                    if rate_limited:
+                        wait = min(LOGIN_RATE_LIMIT_CAP_SEC, wait)
                         print(
                             f"Discord login rate-limited (429). "
                             f"Keeping /health up; retrying in {wait:.0f}s..."
@@ -9469,19 +9492,21 @@ def run_bot_with_rate_limit_backoff(token: str) -> None:
                             retry_after_s=wait,
                             detail="static_login_429",
                         )
+                        delay = min(delay * 2, LOGIN_RATE_LIMIT_CAP_SEC)
                     else:
+                        # Local stale connector/session — not a Discord backoff signal.
+                        wait = 5.0
                         print(
-                            f"Discord HTTP session was closed after a failed login. "
-                            f"Resetting client; retrying in {wait:.0f}s..."
+                            "Discord HTTP session/connector was stale after a failed "
+                            f"login. Reset connector; retrying in {wait:.0f}s..."
                         )
                         set_discord_gateway_status(
-                            "rate_limited",
+                            "connecting",
                             retry_after_s=wait,
-                            detail="session_closed",
+                            detail="session_closed_reset",
                         )
+
                     await asyncio.sleep(wait)
-                    await _prepare_bot_for_relogin(bot)
-                    delay = min(delay * 2, LOGIN_RATE_LIMIT_CAP_SEC)
         finally:
             if not bot.is_closed():
                 await bot.close()
