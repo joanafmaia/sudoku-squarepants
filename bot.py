@@ -261,6 +261,13 @@ SHOP_TITLES = {
     "mermaid": {"label": "🧜 Mermaid Man", "cost": 1450, "pin": "Mermaid Man", "emoji": "🧜"},
     "legend": {"label": "🍍 Pineapple Legend", "cost": 1800, "pin": "Legend", "emoji": "🍍"},
     "neptune": {"label": "👑 King Neptune", "cost": 2200, "pin": "Neptune", "emoji": "👑"},
+    # Mid / late career — grind titles (full price; never on daily sale)
+    "kelp_shake": {"label": "🥤 Kelp Shake Ace", "cost": 980, "pin": "Kelp Shake", "emoji": "🥤"},
+    "karate": {"label": "🥊 Karate Island", "cost": 1320, "pin": "Karate", "emoji": "🥊"},
+    "bubble_bass": {"label": "🐡 Bubble Bass", "cost": 1580, "pin": "Bass", "emoji": "🐡"},
+    "fancy": {"label": "🎩 Fancy Living", "cost": 1920, "pin": "Fancy", "emoji": "🎩"},
+    "time_closet": {"label": "⏰ Time Closet", "cost": 2080, "pin": "Time Closet", "emoji": "⏰"},
+    "hash_slinging": {"label": "🪓 Hash-Slinging Slasher", "cost": 2350, "pin": "Slasher", "emoji": "🪓"},
     # Crew tributes — Bikini Bottom shout-outs
     "darkstriker": {"label": "🦹 Dark Striker", "cost": 500, "pin": "Striker", "emoji": "🦹"},
     "behindyou": {"label": "👀 Behind You", "cost": 750, "pin": "Behind You", "emoji": "👀"},
@@ -1655,6 +1662,39 @@ def push_cosmetics_sync(user_id: int, guild_id: int, stats: dict) -> None:
         title_id=title_id,
         pin_emojis=pins,
     )
+    schedule_live_board_cosmetics_refresh(user_id, guild_id)
+
+
+async def refresh_live_board_cosmetics(user_id: int, guild_id: int) -> None:
+    """Re-render open Discord solo boards so new title/pins show without a move."""
+    for key, game in list(games.items()):
+        if int(game.get("owner_id") or 0) != int(user_id):
+            continue
+        if int(game.get("guild_id") or 0) != int(guild_id):
+            continue
+        mid = game.get("message_id")
+        ch_id = game.get("channel_id")
+        if not mid or not ch_id:
+            continue
+        try:
+            channel = bot.get_channel(int(ch_id))
+            if channel is None:
+                channel = await bot.fetch_channel(int(ch_id))
+            msg = await channel.fetch_message(int(mid))
+            view = SudokuView(key, bot)
+            content, file = board_file_for(game)
+            await msg.edit(content=content, attachments=[file], view=view)
+            view.message = msg
+        except Exception as exc:  # noqa: BLE001
+            print(f"live board cosmetics refresh failed key={key}: {exc}")
+
+
+def schedule_live_board_cosmetics_refresh(user_id: int, guild_id: int) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(refresh_live_board_cosmetics(user_id, guild_id))
+    except RuntimeError:
+        pass
 
 
 def cosmetic_pin_text(meta: dict | None, *, fallback: str = "") -> str:
@@ -8265,12 +8305,18 @@ def shop_page_embed(
             detail += "\n🥇 *+50% career XP only — sponges unchanged (3 wins).*"
         elif selected["kind"] == "title":
             sample = titled_header_line("Easy", selected.get("pin") or "Civilian", emoji=str(selected.get("emoji") or ""))
-            detail += f"\nHeader flair: `{sample}`"
+            detail += f"\n👑 **Title** = header flair only (not a border sticker)."
+            detail += f"\nPreview sample: `{sample}`"
+            detail += "\nUse **Preview** to see it on a sample board header."
         else:
             theme = (selected.get("theme") or "ocean").title()
-            detail += f"\nBorder pin sticker: {selected['emoji']} · Theme: **{theme}**"
+            detail += (
+                f"\n🎨 **Pin** = border sticker on the frame "
+                f"({selected['emoji']} · Theme: **{theme}**)."
+            )
             if selected.get("on_sale"):
                 detail += "\n🔥 *Today's pin deal — 50% off!*"
+            detail += "\nUse **Preview** to see it on the moldura."
             detail += "\nGift owned pins with `/giftpin` or the **Gift** button."
 
         embed.add_field(
@@ -8305,7 +8351,10 @@ def apply_shop_equip(bot: "SudokuBot", guild_id: int, user_id: int, item: dict) 
     push_cosmetics_sync(user_id, guild_id, stats)
     return {
         "ok": True,
-        "message": f"Equipped **{item['label']}**. Active boards pick it up on the next move.",
+        "message": (
+            f"Equipped **{item['label']}** as header flair. "
+            "Live boards / Activity update in a moment."
+        ),
     }
 
 
@@ -8341,7 +8390,10 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
             "bought": True,
             "label": item["label"],
             "cost": cost,
-            "message": f"Bought **{item['label']}**!",
+            "message": (
+                f"Bought **{item['label']}**! Equipped as **header flair** "
+                "(not a border pin). Live boards / Activity update in a moment."
+            ),
         }
 
     tid = item["id"]
@@ -8504,8 +8556,8 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
         "cost": cost,
         "message": (
             f"Bought pin **{item['label']}**! "
-            "It sticks on your border — Discord boards refresh on the next move; "
-            "reopen Activity to see it right away."
+            "It sticks on your **border** — live Discord boards and Activity "
+            "refresh in a moment."
         ),
     }
 
@@ -8561,12 +8613,15 @@ def apply_gift_pin(
 
 
 def shop_preview_file(stats: dict, item: dict) -> discord.File:
-    """Easy board preview for a Pins catalog item (Lagoon colors + border pins)."""
+    """Sample board: titles change header flair; pins add a border sticker."""
     board, given, solution = make_puzzle("easy")
     title_id = equipped_title_id(stats)
     pins = list(owned_pin_emojis(stats))
-    # Show the browsed pin even if not owned yet
-    if item.get("kind") == "pin":
+    kind = item.get("kind")
+    if kind == "title" and item.get("id") in SHOP_TITLES:
+        # Preview the browsed title on the header — never as a border pin.
+        title_id = item["id"]
+    elif kind == "pin":
         emoji = item.get("emoji")
         if emoji and emoji not in pins:
             pins = pins + [emoji]
@@ -8969,7 +9024,7 @@ class KrustyShopView(discord.ui.View):
             action.callback = self.on_buy
             self.add_item(action)
 
-        if self.kind == "pins":
+        if self.kind in ("pins", "titles"):
             preview = discord.ui.Button(
                 label="Preview",
                 style=discord.ButtonStyle.secondary,
@@ -9161,9 +9216,9 @@ class KrustyShopView(discord.ui.View):
         )
 
     async def on_preview(self, interaction: discord.Interaction) -> None:
-        if self.kind != "pins":
+        if self.kind not in ("pins", "titles"):
             await interaction.response.send_message(
-                "Preview is for Pins — switch tabs.",
+                "Preview is for Titles and Pins — switch tabs.",
                 ephemeral=True,
             )
             return
@@ -9180,8 +9235,12 @@ class KrustyShopView(discord.ui.View):
                 f"Couldn't render preview: {exc}", ephemeral=True
             )
             return
+        if item.get("kind") == "title":
+            hint = "👑 header flair (not a border sticker)"
+        else:
+            hint = "🎨 border sticker on the moldura"
         await interaction.followup.send(
-            content=f"{BUBBLE} Preview · **{item['label']}** (not a real game)",
+            content=f"{BUBBLE} Preview · **{item['label']}** — {hint}",
             file=file,
             ephemeral=True,
         )

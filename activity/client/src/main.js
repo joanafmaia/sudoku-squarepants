@@ -29,6 +29,7 @@ const resumeNewBtn = document.getElementById("resume-new");
 let gameStarted = false;
 let gameApi = null;
 let autosaveTimer = null;
+let cosmeticsTimer = null;
 let saving = false;
 let pendingSaveSnap = null;
 let saveSeq = 0;
@@ -851,8 +852,12 @@ function startAutosave() {
   stopAutosave();
   autosaveTimer = setInterval(() => {
     saveSessionNow();
-    refreshCosmeticsIfPlaying();
   }, 4000);
+  // Cosmetics poll faster than saves so shop buys show up without reopening.
+  if (cosmeticsTimer) clearInterval(cosmeticsTimer);
+  cosmeticsTimer = setInterval(() => {
+    refreshCosmeticsIfPlaying();
+  }, 2000);
   if (exitHooksBound) return;
   exitHooksBound = true;
   document.addEventListener("visibilitychange", () => {
@@ -862,6 +867,7 @@ function startAutosave() {
     } else {
       gameApi?.resumeTimer?.();
       reportSessionActive();
+      refreshCosmeticsIfPlaying();
     }
   });
   window.addEventListener("pagehide", (event) => {
@@ -950,6 +956,10 @@ function stopAutosave() {
   if (autosaveTimer) {
     clearInterval(autosaveTimer);
     autosaveTimer = null;
+  }
+  if (cosmeticsTimer) {
+    clearInterval(cosmeticsTimer);
+    cosmeticsTimer = null;
   }
 }
 
