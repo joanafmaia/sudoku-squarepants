@@ -340,7 +340,8 @@ SHOP_BOOST_KEYS = frozenset({
     "krabby_snack",
     "golden_spatula",
 })
-SHOP_BUNDLE_DISCOUNT = 0.5  # 50% off one pin + one title per UTC day
+SHOP_BUNDLE_DISCOUNT = 0.5  # 50% off one pin per UTC day (titles stay full price)
+
 SHOP_PAGE_SIZE = 11
 
 ACHIEVEMENTS = {
@@ -8021,40 +8022,13 @@ def daily_bundle_pin(day: str | None = None) -> dict | None:
 
 
 def daily_bundle_title_id(day: str | None = None) -> str | None:
-    """Stable paid title id on sale for this UTC day (50% off)."""
-    day = day or utc_today()
-    paid = [
-        tid
-        for tid, meta in SHOP_TITLES.items()
-        if int(meta.get("cost") or 0) > 0
-    ]
-    if not paid:
-        return None
-    digest = hashlib.md5(f"thcoku-title-bundle:{day}".encode()).hexdigest()
-    return paid[int(digest, 16) % len(paid)]
+    """Titles are never on daily sale (kept rare); always returns None."""
+    return None
 
 
 def daily_bundle_title(day: str | None = None) -> dict | None:
-    """Catalog-shaped daily title deal entry, or None."""
-    day = day or utc_today()
-    tid = daily_bundle_title_id(day)
-    if not tid:
-        return None
-    meta = SHOP_TITLES[tid]
-    full = int(meta["cost"])
-    sale = max(1, int(round(full * SHOP_BUNDLE_DISCOUNT)))
-    return {
-        "kind": "title",
-        "id": tid,
-        "label": meta["label"],
-        "emoji": meta.get("emoji", SPONGE),
-        "cost": sale,
-        "full_cost": full,
-        "on_sale": True,
-        "theme": None,
-        "pin": meta.get("pin") or cosmetic_pin_text(meta),
-        "bundle_day": day,
-    }
+    """Titles are never on daily sale (kept rare); always returns None."""
+    return None
 
 
 def shop_catalog(kind: str) -> list[dict]:
@@ -8076,28 +8050,23 @@ def shop_catalog(kind: str) -> list[dict]:
             if tid in SHOP_BOOST_KEYS
         ]
     if kind == "titles":
-        bundle_id = daily_bundle_title_id()
         items = []
         for tid, meta in SHOP_TITLES.items():
             full = int(meta["cost"])
-            on_sale = tid == bundle_id and full > 0
-            cost = max(1, int(round(full * SHOP_BUNDLE_DISCOUNT))) if on_sale else full
             items.append(
                 {
                     "kind": "title",
                     "id": tid,
                     "label": meta["label"],
                     "emoji": meta.get("emoji", SPONGE),
-                    "cost": cost,
+                    "cost": full,
                     "pin": meta.get("pin") or cosmetic_pin_text(meta),
                     "theme": None,
-                    "on_sale": on_sale,
+                    "on_sale": False,
                     "full_cost": full,
                 }
             )
-        items.sort(
-            key=lambda it: (0 if it.get("on_sale") else 1, int(it.get("cost") or 0), it["label"])
-        )
+        items.sort(key=lambda it: (int(it.get("cost") or 0), it["label"]))
         return items
 
     bundle_id = daily_bundle_pin_id()
@@ -8244,8 +8213,6 @@ def shop_page_embed(
     deal = None
     if kind == "pins":
         deal = daily_bundle_pin()
-    elif kind == "titles":
-        deal = daily_bundle_title()
     deal_line = ""
     if deal:
         deal_line = (
@@ -8299,13 +8266,11 @@ def shop_page_embed(
         elif selected["kind"] == "title":
             sample = titled_header_line("Easy", selected.get("pin") or "Civilian", emoji=str(selected.get("emoji") or ""))
             detail += f"\nHeader flair: `{sample}`"
-            if selected.get("on_sale"):
-                detail += "\n🔥 *Today's title deal — 50% off!*"
         else:
             theme = (selected.get("theme") or "ocean").title()
             detail += f"\nBorder pin sticker: {selected['emoji']} · Theme: **{theme}**"
             if selected.get("on_sale"):
-                detail += "\n🔥 *Today's bundle deal — 50% off!*"
+                detail += "\n🔥 *Today's pin deal — 50% off!*"
             detail += "\nGift owned pins with `/giftpin` or the **Gift** button."
 
         embed.add_field(
@@ -9379,10 +9344,13 @@ STATUS_ROTATION = [
 _status_i = 0
 
 
-@tasks.loop(seconds=40)
+@tasks.loop(minutes=5)
 async def rotate_status():
     global _status_i
-    await bot.change_presence(activity=STATUS_ROTATION[_status_i % len(STATUS_ROTATION)])
+    try:
+        await bot.change_presence(activity=STATUS_ROTATION[_status_i % len(STATUS_ROTATION)])
+    except discord.HTTPException as exc:
+        print(f"rotate_status presence update skipped: {exc}")
     _status_i += 1
 
 
@@ -9405,22 +9373,12 @@ async def broadcast_daily_announcement(target_channel_id: int | None = None) -> 
     embed.add_field(name="Difficulty", value=f"**{label}**", inline=True)
     embed.add_field(name="Daily Bonus", value=f"**+{DAILY_BONUS} Sponges {SPONGE}**", inline=True)
     deal = daily_bundle_pin(now_date)
-    title_deal = daily_bundle_title(now_date)
-    deal_bits = []
     if deal:
-        deal_bits.append(
-            f"🎨 {deal['emoji']} **{deal['label']}** — {shop_item_price_text(deal)}"
-        )
-    if title_deal:
-        deal_bits.append(
-            f"👑 {title_deal['emoji']} **{title_deal['label']}** — {shop_item_price_text(title_deal)}"
-        )
-    if deal_bits:
         embed.add_field(
-            name="🏷️ Shop Deals of the Day",
+            name="🏷️ Pin Deal of the Day",
             value=(
-                "\n".join(deal_bits)
-                + f"\nOpen `/shop` → **Pins** / **Titles** (50% off until next UTC midnight)"
+                f"🎨 {deal['emoji']} **{deal['label']}** — {shop_item_price_text(deal)}\n"
+                f"Open `/shop` → **Pins** (50% off until next UTC midnight)"
             ),
             inline=False,
         )
@@ -10043,6 +10001,22 @@ async def on_ready():
     await restore_challenge_watch_views(bot)
     await restore_activity_play_watch_views(bot)
     bot.add_view(ChallengeLaunchActivityView())
+    print("on_ready complete — slash commands should respond now")
+
+
+@bot.listen("on_interaction")
+async def _log_slash_interactions(interaction: discord.Interaction) -> None:
+    if interaction.type is not discord.InteractionType.application_command:
+        return
+    name = "-"
+    try:
+        name = (interaction.data or {}).get("name") or "-"
+    except Exception:
+        pass
+    print(
+        f"interaction recv /{name} user={interaction.user} "
+        f"guild={getattr(interaction.guild, 'id', None)}"
+    )
 
 
 @admin_group.command(
@@ -10140,6 +10114,49 @@ async def testboard_pin_autocomplete(
     return _catalog_autocomplete(current, SHOP_PINS)
 
 
+async def _cleanup_play_orphans_after_pref(
+    *,
+    session_id: str,
+    user_id: int,
+    existing_sid: str | None,
+    existing_kind: str,
+    has_board: bool,
+    idx: int,
+    diff_key: str,
+) -> None:
+    """Background cleanup — must not delay launch_activity ACK (<3s)."""
+    orphan_id = f"activity:0:{user_id}"
+    if orphan_id != session_id:
+        try:
+            orphan = await match_store.get_activity_session(orphan_id)
+            if orphan and (orphan.get("session_kind") or "play") == "play":
+                await match_store.delete_activity_session(orphan_id)
+        except Exception as orphan_exc:  # noqa: BLE001
+            print(f"clear play orphan after /play pref failed: {orphan_exc}")
+    if (
+        existing_sid
+        and existing_sid not in (session_id, orphan_id)
+        and existing_kind == "play"
+        and has_board
+    ):
+        try:
+            await match_store.merge_activity_session(
+                existing_sid,
+                {
+                    "board": None,
+                    "given": None,
+                    "solution": None,
+                    "won_at": None,
+                    "filled": 0,
+                    "diff_index": idx,
+                    "difficulty": diff_key,
+                    "session_kind": "play",
+                },
+            )
+        except Exception as alt_exc:  # noqa: BLE001
+            print(f"clear alt play session after /play pref failed: {alt_exc}")
+
+
 async def _launch_activity_window(
     interaction: discord.Interaction,
     *,
@@ -10151,7 +10168,11 @@ async def _launch_activity_window(
     tier. An in-progress /play board is kept only when it already matches the
     chosen difficulty; otherwise the old board (including activity:0 orphans)
     is cleared so Medium leftovers cannot shadow Very Easy, etc.
+
+    Critical: Discord requires launch_activity (or any ACK) within 3 seconds.
+    Keep the pre-launch path minimal; orphan cleanup runs in the background.
     """
+    t0 = time.monotonic()
     # Write diff preference before launching so the Activity picks it up on load.
     if preferred_diff_index is not None and interaction.guild is not None:
         guild_id = interaction.guild.id
@@ -10162,7 +10183,14 @@ async def _launch_activity_window(
         except (TypeError, ValueError):
             idx = DIFF_KEYS_LIST.index(DEFAULT_DIFFICULTY)
         diff_key = DIFF_KEYS_LIST[idx]
-        existing, existing_sid = await lookup_user_activity_session(guild_id, user_id)
+        try:
+            existing, existing_sid = await asyncio.wait_for(
+                lookup_user_activity_session(guild_id, user_id),
+                timeout=1.2,
+            )
+        except Exception as lookup_exc:  # noqa: BLE001
+            print(f"/play preference lookup timed out/failed: {lookup_exc}")
+            existing, existing_sid = None, None
         has_board = bool(
             existing and (existing.get("board") or existing.get("solution"))
         )
@@ -10174,10 +10202,7 @@ async def _launch_activity_window(
             and existing_kind == "play"
             and existing_key == diff_key
         )
-        if same_play_board:
-            # Resume the matching in-progress /play puzzle.
-            pass
-        else:
+        if not same_play_board:
             # Preference / fresh start — never touch watch flags here. Clearing
             # them without deleting the Discord message orphans "is playing" posts.
             pref: dict = {
@@ -10196,40 +10221,26 @@ async def _launch_activity_window(
                 "hints_gary_used": 0,
                 "gary_wisdom_bonus": 0,
             }
-            await match_store.merge_activity_session(session_id, pref)
-            # Orphan activity:0 boards win over preference-only primary in lookup —
-            # drop stale play orphans so the new /play choice is not shadowed.
-            orphan_id = f"activity:0:{user_id}"
-            if orphan_id != session_id:
-                try:
-                    orphan = await match_store.get_activity_session(orphan_id)
-                    if orphan and (orphan.get("session_kind") or "play") == "play":
-                        await match_store.delete_activity_session(orphan_id)
-                except Exception as orphan_exc:  # noqa: BLE001
-                    print(f"clear play orphan after /play pref failed: {orphan_exc}")
-            # If lookup pointed at a non-canonical play doc with a board, clear it too.
-            if (
-                existing_sid
-                and existing_sid not in (session_id, orphan_id)
-                and existing_kind == "play"
-                and has_board
-            ):
-                try:
-                    await match_store.merge_activity_session(
-                        existing_sid,
-                        {
-                            "board": None,
-                            "given": None,
-                            "solution": None,
-                            "won_at": None,
-                            "filled": 0,
-                            "diff_index": idx,
-                            "difficulty": diff_key,
-                            "session_kind": "play",
-                        },
-                    )
-                except Exception as alt_exc:  # noqa: BLE001
-                    print(f"clear alt play session after /play pref failed: {alt_exc}")
+            try:
+                await asyncio.wait_for(
+                    match_store.merge_activity_session(session_id, pref),
+                    timeout=1.2,
+                )
+            except Exception as pref_exc:  # noqa: BLE001
+                print(f"/play preference write timed out/failed: {pref_exc}")
+            # Orphan cleanup must not steal the 3s interaction ACK budget.
+            asyncio.create_task(
+                _cleanup_play_orphans_after_pref(
+                    session_id=session_id,
+                    user_id=user_id,
+                    existing_sid=existing_sid,
+                    existing_kind=existing_kind,
+                    has_board=has_board,
+                    idx=idx,
+                    diff_key=diff_key,
+                )
+            )
+    print(f"launch_activity pre-ack {(time.monotonic() - t0) * 1000:.0f}ms")
     try:
         await interaction.response.launch_activity()
         print(
@@ -10278,37 +10289,43 @@ async def play_cmd(
     interaction: discord.Interaction,
     difficulty: app_commands.Choice[str],
 ):
+    t0 = time.monotonic()
     if interaction.guild is not None:
-        # Allow reopening an in-progress /play Activity (resume). Only daily
-        # shares the same window and must be finished or quit first.
-        blocking = await get_blocking_activity_session(
-            interaction.guild.id,
-            interaction.user.id,
-            kinds={"daily"},
-        )
+        guild_id = interaction.guild.id
+        user_id = interaction.user.id
+        # Parallelize independent gates — sequential Mongo round-trips blow the 3s ACK.
+        try:
+            blocking, daily_block, reconciled, challenge_block = await asyncio.wait_for(
+                asyncio.gather(
+                    get_blocking_activity_session(guild_id, user_id, kinds={"daily"}),
+                    daily_attempt_blocks_modes(guild_id, user_id),
+                    reconcile_challenge_game_for_user(user_id),
+                    challenge_blocks_user(user_id),
+                ),
+                timeout=2.0,
+            )
+        except Exception as gate_exc:  # noqa: BLE001
+            print(f"/play gate checks timed out/failed: {gate_exc}")
+            blocking = daily_block = reconciled = challenge_block = None
         if blocking:
             await interaction.response.send_message(
                 "Finish or `/quit` today's **daily** first — it uses the same game window.",
                 ephemeral=True,
             )
             return
-        daily_block = await daily_attempt_blocks_modes(
-            interaction.guild.id, interaction.user.id
-        )
         if daily_block:
             await interaction.response.send_message(daily_block, ephemeral=True)
             return
-        if await reconcile_challenge_game_for_user(interaction.user.id):
+        if reconciled:
             await interaction.response.send_message(
                 "Finish your speedrun challenge first.",
                 ephemeral=True,
             )
             return
-        block = await challenge_blocks_user(interaction.user.id)
-        if block:
-            await interaction.response.send_message(block, ephemeral=True)
+        if challenge_block:
+            await interaction.response.send_message(challenge_block, ephemeral=True)
             return
-        sk = solo_key(interaction.guild.id, interaction.user.id)
+        sk = solo_key(guild_id, user_id)
         if sk in games:
             existing = games[sk]
             await interaction.response.send_message(
@@ -10316,6 +10333,7 @@ async def play_cmd(
                 ephemeral=True,
             )
             return
+        print(f"/play gates {(time.monotonic() - t0) * 1000:.0f}ms")
     diff_idx = difficulty_index(difficulty.value)
     await _launch_activity_window(interaction, preferred_diff_index=diff_idx)
 
@@ -10441,7 +10459,7 @@ async def help_cmd(interaction: discord.Interaction):
             f"· **Pins** — emoji stickers on the border\n"
             f"· Open `/shop` → pick from the menu → **Buy** / **Equip** "
             f"(filter All / Can buy / Owned · pages ◀ ▶)\n"
-            f"· Daily **50% off** one pin + one title (UTC midnight)\n"
+            f"· Daily **50% off** one pin (UTC midnight) — titles stay full price\n"
             f"· `/weekly` — 3 weekly goals for bonus sponges (resets Monday UTC)\n"
             f"Solve **{format_xp(BASE_WIN_REWARD, signed=True)}** + "
             f"**{format_sponges(BASE_WIN_REWARD, signed=True)}** · "
@@ -11572,6 +11590,8 @@ async def shop_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message("Server only.", ephemeral=True)
         return
+    # ACK first — never let disk/Mongo mirroring eat the 3s interaction window.
+    await interaction.response.defer(ephemeral=True)
     gstats = guild_stats(bot.data, interaction.guild.id)
     stats = user_stats(gstats, interaction.user.id)
     stats["name"] = interaction.user.display_name
@@ -11582,12 +11602,13 @@ async def shop_cmd(interaction: discord.Interaction):
         guild_id=interaction.guild.id,
         kind="boosts",
     )
-    await interaction.response.send_message(
+    msg = await interaction.followup.send(
         embed=view.build_embed(),
         view=view,
         ephemeral=True,
+        wait=True,
     )
-    view.message = await interaction.original_response()
+    view.message = msg
 
 
 @bot.tree.command(name="giftpin", description="Gift an owned border pin to another player")
