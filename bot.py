@@ -9517,24 +9517,55 @@ async def _wait_prune_idle_watch_ready():
     await bot.wait_until_ready()
 
 
-@tasks.loop(minutes=2)
+@tasks.loop(minutes=1)
 async def check_daily_announcement():
+    """Announce the new daily only near 00:00 UTC — never on mid-day redeploys."""
     global _last_announced_daily_date
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    last_announced = (
-        bot.data.get("last_announced_daily_date")
-        if hasattr(bot, "data") and isinstance(bot.data, dict)
-        else _last_announced_daily_date
-    )
+    now = datetime.now(timezone.utc)
+    today_str = now.strftime("%Y-%m-%d")
+    last_announced = None
+    if hasattr(bot, "data") and isinstance(bot.data, dict):
+        raw = bot.data.get("last_announced_daily_date")
+        if raw:
+            last_announced = str(raw)
+    if not last_announced:
+        last_announced = _last_announced_daily_date
 
-    if last_announced != today_str:
-        _last_announced_daily_date = today_str
+    def _remember(day: str) -> None:
+        global _last_announced_daily_date
+        _last_announced_daily_date = day
         if hasattr(bot, "data") and isinstance(bot.data, dict):
-            bot.data["last_announced_daily_date"] = today_str
+            bot.data["last_announced_daily_date"] = day
             save_data(bot.data)
-        print(f"[DailyAnnouncement] New UTC day detected: {today_str}. Broadcasting daily announcement...")
-        sent = await broadcast_daily_announcement()
-        print(f"[DailyAnnouncement] Broadcast complete. Sent to {sent} channel(s).")
+
+    if last_announced == today_str:
+        return
+
+    if last_announced is None:
+        # Boot / wiped marker — remember today so deploys don't spam the channel.
+        _remember(today_str)
+        print(
+            f"[DailyAnnouncement] Seeded last_announced={today_str} on boot "
+            "(no broadcast)."
+        )
+        return
+
+    # Day changed. Only announce in the first ~20 minutes after UTC midnight so
+    # Render restarts at noon never re-send "New Daily Sudoku Available!".
+    in_midnight_window = now.hour == 0 and now.minute < 20
+    if not in_midnight_window:
+        _remember(today_str)
+        print(
+            f"[DailyAnnouncement] Day is {today_str} (was {last_announced}) but "
+            f"{now.strftime('%H:%M')} UTC is outside the midnight window — "
+            "marked without broadcast."
+        )
+        return
+
+    _remember(today_str)
+    print(f"[DailyAnnouncement] Midnight window — broadcasting {today_str}...")
+    sent = await broadcast_daily_announcement()
+    print(f"[DailyAnnouncement] Broadcast complete. Sent to {sent} channel(s).")
 
 
 @check_daily_announcement.before_loop
