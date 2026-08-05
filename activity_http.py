@@ -962,12 +962,20 @@ def _hints_max_for_session(session_kind: str | None, doc: dict | None = None) ->
 
     Expertttt is hard-capped (play / daily / challenge). Gary free tips still count
     toward the same total. Other difficulties stay unlimited (sponges / Gary only).
+    Challenge races can set no_hints → hard zero.
     """
     _ = session_kind
     from bot import hints_max_for_difficulty, resolve_session_difficulty
 
     if not doc:
         return None
+    if doc.get("no_hints"):
+        return 0
+    if doc.get("hints_max") is not None:
+        try:
+            return max(0, int(doc.get("hints_max")))
+        except (TypeError, ValueError):
+            pass
     difficulty, _idx = resolve_session_difficulty(doc)
     return hints_max_for_difficulty(difficulty)
 
@@ -1032,6 +1040,7 @@ def _client_activity_session(doc: dict, *, strip_solution: bool = True) -> dict:
         "gary_wisdom_bonus": int(doc.get("gary_wisdom_bonus") or 0),
         "gary_free_left": hint_gary_free_remaining(doc),
         "hint_sponge_cost": HINT_SPONGE_COST,
+        "no_hints": bool(doc.get("no_hints")),
     }
     started = float(doc.get("started_at") or 0)
     if started > 0:
@@ -1118,8 +1127,28 @@ async def _load_activity_watchers(
     if session:
         session_id = str(session.get("_id") or session_id)
     watchers = prune_watchers((session or {}).get("watchers"))
+    now = time.time()
+    inbox = list((session or {}).get("gg_inbox") or [])
+    fresh_ggs = [
+        {
+            "from_id": str(g.get("from_id") or ""),
+            "from_name": str(g.get("from_name") or "Spectator"),
+            "at": float(g.get("at") or 0),
+            "reaction": str(g.get("reaction") or "gg"),
+            "emoji": str(g.get("emoji") or "👏"),
+            "label": str(g.get("label") or "GG"),
+        }
+        for g in inbox
+        if now - float(g.get("at") or 0) <= 45
+    ]
+    merge_fields: dict = {}
     if session and watchers != (session.get("watchers") or {}):
-        await match_store.merge_activity_session(session_id, {"watchers": watchers})
+        merge_fields["watchers"] = watchers
+    if session and inbox:
+        # Drain delivered GGs so the player toast sees each once.
+        merge_fields["gg_inbox"] = []
+    if session and merge_fields:
+        await match_store.merge_activity_session(session_id, merge_fields)
     rows = [
         {"user_id": viewer_id, "name": meta.get("name") or "Player"}
         for viewer_id, meta in sorted(
@@ -1127,7 +1156,117 @@ async def _load_activity_watchers(
             key=lambda item: str(item[1].get("name") or ""),
         )
     ]
-    return {"ok": True, "watchers": rows, "count": len(rows)}
+    return {
+        "ok": True,
+        "watchers": rows,
+        "count": len(rows),
+        "ggs": fresh_ggs,
+    }
+
+
+GG_COOLDOWN_SEC = 5.0
+GG_INBOX_MAX = 12
+
+# Spectator reaction allowlist (id → emoji + short toast label).
+SPECTATE_REACTIONS: dict[str, tuple[str, str]] = {
+    "gg": ("👏", "GG"),
+    "oh_ow": ("😮", "Oh-ow"),
+    "oh_no": ("😱", "Oh no"),
+    "yayyy": ("🎉", "Yayyy"),
+    "heart": ("❤️", "Love"),
+}
+
+
+async def _post_spectate_gg(
+    bot: Any,
+    *,
+    user: dict,
+    body: dict,
+) -> dict:
+    """Spectator sends a cheap reaction toast to the player being watched."""
+    from bot import match_store, get_watch_session_for_spectator
+
+    viewer_id = int(user["id"])
+    viewer_name = (
+        str(user.get("global_name") or user.get("username") or "Spectator").strip()
+        or "Spectator"
+    )
+    try:
+        target_id = int(body.get("target_user_id"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "invalid_target"}
+    if target_id == viewer_id:
+        return {"ok": False, "error": "self_react"}
+
+    reaction_raw = str(body.get("reaction") or body.get("emoji") or "gg").strip().lower()
+    # Accept legacy bare emoji posts that only meant GG.
+    if reaction_raw in ("👏", "gg!"):
+        reaction_raw = "gg"
+    reaction_raw = reaction_raw.replace("-", "_").replace(" ", "_")
+    aliases = {
+        "ohow": "oh_ow",
+        "ohno": "oh_no",
+        "yay": "yayyy",
+        "yayy": "yayyy",
+        "love": "heart",
+        "coracao": "heart",
+        "coração": "heart",
+        "❤️": "heart",
+        "❤": "heart",
+    }
+    reaction_raw = aliases.get(reaction_raw, reaction_raw)
+    if reaction_raw not in SPECTATE_REACTIONS:
+        return {"ok": False, "error": "invalid_reaction"}
+    emoji, label = SPECTATE_REACTIONS[reaction_raw]
+
+    guild_raw = str(body.get("guild_id") or "0")
+    resolved_guild = await _resolve_activity_guild_id(guild_raw, viewer_id)
+    session_id = _activity_session_id(resolved_guild, target_id)
+    session = await get_watch_session_for_spectator(session_id)
+    if not session:
+        session = await match_store.find_activity_session_by_user_id(
+            target_id, guild_id=resolved_guild
+        )
+    if not session:
+        return {"ok": False, "error": "no_session"}
+
+    session_id = str(session.get("_id") or session_id)
+    now = time.time()
+    cooldown = dict(session.get("gg_cooldown") or {})
+    last = float(cooldown.get(str(viewer_id)) or 0)
+    if now - last < GG_COOLDOWN_SEC:
+        return {
+            "ok": False,
+            "error": "cooldown",
+            "retry_after": max(1, int(GG_COOLDOWN_SEC - (now - last))),
+        }
+
+    inbox = [
+        g
+        for g in list(session.get("gg_inbox") or [])
+        if now - float(g.get("at") or 0) <= 60
+    ]
+    inbox.append(
+        {
+            "from_id": str(viewer_id),
+            "from_name": viewer_name[:32],
+            "at": now,
+            "reaction": reaction_raw,
+            "emoji": emoji,
+            "label": label,
+        }
+    )
+    inbox = inbox[-GG_INBOX_MAX:]
+    cooldown[str(viewer_id)] = now
+    # Drop stale cooldown entries
+    cooldown = {
+        k: v for k, v in cooldown.items() if now - float(v or 0) < 120
+    }
+    await match_store.merge_activity_session(
+        session_id,
+        {"gg_inbox": inbox, "gg_cooldown": cooldown},
+    )
+    return {"ok": True, "reaction": reaction_raw, "emoji": emoji, "label": label}
 
 
 async def _consume_spectate_intent(bot: Any, *, user: dict, guild_id: str) -> dict:
@@ -1952,6 +2091,7 @@ async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict
                     "hints_used": int(game.get("hints_used") or 0),
                     "hints_gary_used": int(game.get("hints_gary_used") or 0),
                     "gary_wisdom_bonus": int(game.get("gary_wisdom_bonus") or 0),
+                    "no_hints": bool(game.get("no_hints")),
                     "started_at": float(game.get("started_at") or time.time()),
                     "match_id": game.get("match_id"),
                     "player_slot": game.get("player_slot"),
@@ -2102,10 +2242,16 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
 
         hints_max = _hints_max_for_session(session_kind, charge_container or session or game)
         if hints_max is not None and hints_used >= hints_max:
+            msg = (
+                "No hints in this race."
+                if (charge_container or session or game or {}).get("no_hints")
+                or hints_max == 0
+                else f"Expertttt allows only {hints_max} hints this puzzle."
+            )
             return {
                 "ok": False,
                 "error": "hints_exhausted",
-                "message": f"Expertttt allows only {hints_max} hints this puzzle.",
+                "message": msg,
                 "hints_used": hints_used,
                 "hints_max": hints_max,
                 "hints_gary_used": int(charge_container.get("hints_gary_used") or 0),
@@ -2761,6 +2907,9 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
             if path in ("/api/activity/session", "/activity/session"):
                 self._activity_session_save()
                 return
+            if path in ("/api/activity/spectate/gg", "/activity/spectate/gg"):
+                self._activity_spectate_gg()
+                return
             self._send_json(404, {"error": "not_found", "path": path})
 
         def do_DELETE(self) -> None:  # noqa: N802
@@ -3036,6 +3185,29 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 )
             except Exception as exc:  # noqa: BLE001
                 self._send_json(500, {"error": "watchers_load_failed", "message": str(exc)})
+                return
+            self._send_json(200, result)
+
+        def _activity_spectate_gg(self) -> None:
+            bot = bot_getter()
+            user = _discord_user_from_bearer(self.headers.get("Authorization"), bot=bot)
+            if not user or not user.get("id"):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            try:
+                body = self._read_json()
+            except Exception:
+                self._send_json(400, {"error": "invalid_json"})
+                return
+            try:
+                result = _run_coro(
+                    bot, _post_spectate_gg(bot, user=user, body=body or {})
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._send_json(500, {"error": "gg_failed", "message": str(exc)})
+                return
+            if not result.get("ok"):
+                self._send_json(400, result)
                 return
             self._send_json(200, result)
 

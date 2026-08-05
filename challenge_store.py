@@ -153,6 +153,12 @@ class MatchStore:
     async def list_daily_completions(self) -> list[dict]:
         return []
 
+    async def list_recent_daily_completions(
+        self, guild_id: int, user_id: int, *, days: int = 7
+    ) -> list[dict]:
+        """Recent daily win/forfeit docs for one user (newest date first)."""
+        return []
+
     async def clear_daily_completions_for_day(self, guild_id: int, day: str) -> int:
         """Delete durable daily win/forfeit claims for a guild+day. Returns deleted count."""
         return 0
@@ -689,6 +695,30 @@ class MemoryMatchStore(MatchStore):
 
     async def list_daily_completions(self) -> list[dict]:
         return [_clone(d) for d in self._daily.values()]
+
+    async def list_recent_daily_completions(
+        self, guild_id: int, user_id: int, *, days: int = 7
+    ) -> list[dict]:
+        from datetime import datetime, timedelta, timezone
+
+        today = datetime.now(timezone.utc).date()
+        wanted = {
+            (today - timedelta(days=i)).isoformat() for i in range(max(1, int(days)))
+        }
+        out: list[dict] = []
+        for doc in self._daily.values():
+            try:
+                g = int(doc.get("guild_id"))
+                u = int(doc.get("user_id"))
+            except (TypeError, ValueError):
+                continue
+            if g != int(guild_id) or u != int(user_id):
+                continue
+            if str(doc.get("date") or "") not in wanted:
+                continue
+            out.append(_clone(doc))
+        out.sort(key=lambda d: str(d.get("date") or ""), reverse=True)
+        return out
 
     async def clear_daily_completions_for_day(self, guild_id: int, day: str) -> int:
         prefix = f"{guild_id}:{day}:"
@@ -1275,6 +1305,55 @@ class MongoMatchStore(MatchStore):
         cursor = self._daily.find({})
         return await cursor.to_list(length=5000)
 
+    async def list_recent_daily_completions(
+        self, guild_id: int, user_id: int, *, days: int = 7
+    ) -> list[dict]:
+        from datetime import datetime, timedelta, timezone
+
+        if self._daily is None:
+            await self.connect()
+        if self._daily is None:
+            return []
+        today = datetime.now(timezone.utc).date()
+        dates = [
+            (today - timedelta(days=i)).isoformat() for i in range(max(1, int(days)))
+        ]
+        id_keys = [f"{guild_id}:{d}:{user_id}" for d in dates]
+        cursor = self._daily.find(
+            {
+                "$or": [
+                    {
+                        "guild_id": guild_id,
+                        "user_id": user_id,
+                        "date": {"$in": dates},
+                    },
+                    {
+                        "guild_id": str(guild_id),
+                        "user_id": str(user_id),
+                        "date": {"$in": dates},
+                    },
+                    {
+                        "guild_id": guild_id,
+                        "user_id": str(user_id),
+                        "date": {"$in": dates},
+                    },
+                    {
+                        "guild_id": str(guild_id),
+                        "user_id": user_id,
+                        "date": {"$in": dates},
+                    },
+                    {"_id": {"$in": id_keys}},
+                ]
+            }
+        )
+        docs = await cursor.to_list(length=max(1, int(days)) * 4)
+        by_date: dict[str, dict] = {}
+        for doc in docs:
+            day = str(doc.get("date") or "")
+            if day and day not in by_date:
+                by_date[day] = _clone(doc)
+        return [by_date[d] for d in sorted(by_date.keys(), reverse=True)]
+
     async def clear_daily_completions_for_day(self, guild_id: int, day: str) -> int:
         if self._daily is None:
             await self.connect()
@@ -1352,6 +1431,7 @@ def new_match_document(
     solution: list,
     difficulty: str,
     player_names: list[str] | None = None,
+    no_hints: bool = False,
 ) -> dict:
     if len(player_ids) < 2:
         raise ValueError("Challenge needs at least 2 players")
@@ -1367,6 +1447,7 @@ def new_match_document(
         "channel_id": channel_id,
         "status": "active",
         "difficulty": difficulty,
+        "no_hints": bool(no_hints),
         "solution": _clone(solution),
         "given": _clone(given),
         "board_template": template,

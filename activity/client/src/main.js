@@ -38,8 +38,19 @@ let sessionOpenedAt = 0;
 let spectating = false;
 let spectatorPollTimer = null;
 let watcherPollTimer = null;
+let spectateTargetUserId = null;
+let reactSending = false;
 const SPECTATOR_POLL_MS = 3500;
 const WATCHERS_POLL_MS = 5000;
+const spectateReactEl = document.getElementById("spectate-react");
+
+const SPECTATE_REACT_META = {
+  gg: { emoji: "👏", label: "GG" },
+  oh_ow: { emoji: "😮", label: "Oh-ow" },
+  oh_no: { emoji: "😱", label: "Oh no" },
+  yayyy: { emoji: "🎉", label: "Yayyy" },
+  heart: { emoji: "❤️", label: "Love" },
+};
 
 function setStatus(message) {
   if (statusEl) statusEl.textContent = message;
@@ -1077,12 +1088,97 @@ async function fetchWatchers() {
     );
     if (!res?.ok) return [];
     const data = await res.json();
+    const ggs = Array.isArray(data?.ggs) ? data.ggs : [];
+    for (const gg of ggs) {
+      const who = String(gg?.from_name || "Spectator").trim() || "Spectator";
+      const emoji = String(gg?.emoji || "👏").trim() || "👏";
+      const label = String(gg?.label || "GG").trim() || "GG";
+      showWinToast(`${emoji} ${who} · ${label}!`);
+    }
     return Array.isArray(data?.watchers) ? data.watchers : [];
   } catch (err) {
     console.warn("[Thcoku] watchers poll failed", err);
     return [];
   }
 }
+
+function setSpectateReactVisible(visible) {
+  if (!spectateReactEl) return;
+  spectateReactEl.hidden = !visible;
+  if (!visible) {
+    reactSending = false;
+    spectateReactEl.querySelectorAll(".react-btn").forEach((btn) => {
+      btn.disabled = false;
+    });
+  }
+}
+
+function setSpectateReactDisabled(disabled) {
+  if (!spectateReactEl) return;
+  spectateReactEl.querySelectorAll(".react-btn").forEach((btn) => {
+    btn.disabled = Boolean(disabled);
+  });
+}
+
+async function sendSpectateReaction(reactionId) {
+  const key = String(reactionId || "gg");
+  const meta = SPECTATE_REACT_META[key] || SPECTATE_REACT_META.gg;
+  if (!spectating || !spectateTargetUserId || reactSending) return;
+  if (!window.__DISCORD_ACCESS_TOKEN__) {
+    showWinToast("Reactions need Discord auth.");
+    return;
+  }
+  reactSending = true;
+  setSpectateReactDisabled(true);
+  try {
+    const gid = await resolveGuildId();
+    const res = await apiFetch("/api/activity/spectate/gg", {
+      method: "POST",
+      body: JSON.stringify({
+        guild_id: gid,
+        target_user_id: String(spectateTargetUserId),
+        reaction: key,
+      }),
+    });
+    const data = await res?.json().catch(() => ({}));
+    if (!res?.ok || !data?.ok) {
+      if (data?.error === "cooldown") {
+        showWinToast(`Easy — wait ${data.retry_after || 5}s before another reaction.`);
+      } else if (data?.error === "no_session") {
+        showWinToast("Player left — reaction didn't go through.");
+      } else if (data?.error === "invalid_reaction") {
+        showWinToast("That reaction isn't available.");
+      } else {
+        showWinToast("Could not send reaction.");
+      }
+      return;
+    }
+    const emoji = data.emoji || meta.emoji;
+    const label = data.label || meta.label;
+    showWinToast(`${emoji} ${label} sent!`);
+  } catch (err) {
+    console.warn("[Thcoku] reaction failed", err);
+    showWinToast("Could not send reaction.");
+  } finally {
+    reactSending = false;
+    setTimeout(() => {
+      if (spectating) setSpectateReactDisabled(false);
+    }, 1800);
+  }
+}
+
+function bindSpectateReact() {
+  if (!spectateReactEl) return;
+  spectateReactEl.addEventListener("click", (e) => {
+    const btn = e.target?.closest?.(".react-btn");
+    if (!btn || !spectateReactEl.contains(btn)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    void sendSpectateReaction(btn.getAttribute("data-reaction") || "gg");
+  });
+}
+
+bindSpectateReact();
 
 function startWatcherPolling() {
   stopWatcherPolling();
@@ -1153,10 +1249,12 @@ function startSpectatorPolling(targetUserId) {
 
 async function beginSpectate(targetUserId) {
   spectating = true;
+  spectateTargetUserId = String(targetUserId);
   stopWatcherPolling();
   stopAutosave();
   if (bootEl) bootEl.hidden = true;
   if (gameHintEl) gameHintEl.hidden = true;
+  setSpectateReactVisible(true);
 
   startGameOnce(null, { autoStart: false, spectatorMode: true });
 
@@ -1172,6 +1270,9 @@ async function beginSpectate(targetUserId) {
 
 async function beginPlay({ resumeSession = null, initialDiffIndex = null } = {}) {
   sessionOpenedAt = Date.now();
+  spectating = false;
+  spectateTargetUserId = null;
+  setSpectateReactVisible(false);
   const sessionKind = resumeSession?.session_kind ?? "play";
   const sessionMeta = {
     sessionKind,
@@ -1210,6 +1311,21 @@ async function beginPlay({ resumeSession = null, initialDiffIndex = null } = {})
 
   const cosmetics = await loadCosmetics();
   if (cosmetics && gameApi?.setCosmetics) gameApi.setCosmetics(cosmetics);
+  maybeShowCosmeticsTip();
+}
+
+function maybeShowCosmeticsTip() {
+  try {
+    if (localStorage.getItem("thcoku_tip_title_pins_v1")) return;
+  } catch {
+    return;
+  }
+  showWinToast("Tip: titles live in the header · pins sit on the board border.");
+  try {
+    localStorage.setItem("thcoku_tip_title_pins_v1", "1");
+  } catch {
+    /* ignore — tip may show again next boot */
+  }
 }
 
 async function prefetchSessionBoard(session) {

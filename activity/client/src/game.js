@@ -626,6 +626,7 @@ export function startThcokuGame(canvas, options = {}) {
     spectatorMode: Boolean(options.spectatorMode),
     spectatorName: "",
     spectatorTargetId: null,
+    noHints: false,
     watchers: [],
   };
 
@@ -801,6 +802,7 @@ export function startThcokuGame(canvas, options = {}) {
       hints_max: state.hintsMax,
       hints_gary_used: state.hintsGaryUsed,
       gary_wisdom_bonus: state.garyWisdomBonus,
+      no_hints: Boolean(state.noHints),
       // Original open time (metadata only) — elapsed is active screen time.
       started_at: (state.sessionStartedAt || Date.now()) / 1000,
       timer_active: Boolean(state.runStartedAt) && !state.won && !state.spectatorMode,
@@ -823,10 +825,16 @@ export function startThcokuGame(canvas, options = {}) {
     state.hintsUsed = Number(snap.hints_used) || 0;
     state.hintsGaryUsed = Number(snap.hints_gary_used) || 0;
     state.garyWisdomBonus = Number(snap.gary_wisdom_bonus) || 0;
-    if (snap.hints_max == null || snap.hints_max === "" || Number(snap.hints_max) <= 0) {
+    if (snap.no_hints) {
+      state.noHints = true;
+      state.hintsMax = 0;
+    } else if (snap.hints_max == null || snap.hints_max === "") {
+      state.noHints = false;
       state.hintsMax = null;
     } else {
-      state.hintsMax = Number(snap.hints_max);
+      state.noHints = false;
+      const n = Number(snap.hints_max);
+      state.hintsMax = Number.isFinite(n) ? Math.max(0, n) : null;
     }
     if (snap.hint_sponge_cost != null) {
       state.hintSpongeCost = Number(snap.hint_sponge_cost) || 15;
@@ -848,7 +856,7 @@ export function startThcokuGame(canvas, options = {}) {
       state.diffIndex = idx >= 0 ? idx : Math.max(0, DIFF_KEYS.indexOf(DEFAULT_DIFFICULTY));
       if (DIFF_KEYS[state.diffIndex]) state.difficulty = DIFF_KEYS[state.diffIndex];
     }
-    if (state.hintsMax == null) {
+    if (state.hintsMax == null && !snap.no_hints) {
       state.hintsMax = hintsMaxForDifficulty(state.difficulty);
     }
     state.selected = [0, 0];
@@ -890,6 +898,8 @@ export function startThcokuGame(canvas, options = {}) {
     if (snap.board && snap.given) {
       loadSnapshot(snap);
     }
+    // Don't leave a default [0,0] selection wash on the watched board.
+    state.selected = [-1, -1];
     if (snap.cosmetics) {
       setCosmetics({
         title: snap.cosmetics.title || null,
@@ -940,11 +950,17 @@ export function startThcokuGame(canvas, options = {}) {
       state.garyWisdomBonus =
         state.hintsGaryUsed + (Number(meta.gary_free_left) || 0);
     }
-    if ("hints_max" in meta) {
-      if (meta.hints_max == null || meta.hints_max === "" || Number(meta.hints_max) <= 0) {
+    if ("hints_max" in meta || meta.no_hints) {
+      if (meta.no_hints) {
+        state.noHints = true;
+        state.hintsMax = 0;
+      } else if (meta.hints_max == null || meta.hints_max === "") {
+        state.noHints = false;
         state.hintsMax = null;
       } else {
-        state.hintsMax = Number(meta.hints_max);
+        state.noHints = false;
+        const n = Number(meta.hints_max);
+        state.hintsMax = Number.isFinite(n) ? Math.max(0, n) : null;
       }
     }
     if (meta.pocket != null) state.pocketSponges = Number(meta.pocket) || 0;
@@ -959,7 +975,7 @@ export function startThcokuGame(canvas, options = {}) {
     if (!hintBtn || state.spectatorMode) return;
     const garyFree = Math.max(0, state.garyWisdomBonus - state.hintsGaryUsed);
     const unlimited =
-      state.hintsMax == null || !Number.isFinite(Number(state.hintsMax)) || Number(state.hintsMax) <= 0;
+      state.hintsMax == null || !Number.isFinite(Number(state.hintsMax));
     const exhausted = !unlimited && state.hintsUsed >= state.hintsMax;
     const progress = unlimited ? String(state.hintsUsed) : `${state.hintsUsed}/${state.hintsMax}`;
     hintBtn.disabled = Boolean(state.hintInFlight);
@@ -1122,6 +1138,7 @@ export function startThcokuGame(canvas, options = {}) {
       state.hintsGaryUsed = 0;
       state.garyWisdomBonus = 0;
       state.hintsMax = hintsMaxForDifficulty(state.difficulty);
+      state.noHints = false;
       state.serverHints = false;
       const user = discordUsername();
       state.status = user ? `Hey, ${user}! I'm ready!` : "Tap a cell — I'm ready!";
@@ -1490,6 +1507,7 @@ export function startThcokuGame(canvas, options = {}) {
   }
 
   function handleBoardPointer(x, y) {
+    if (state.spectatorMode) return;
     const cell = cellAt(x, y);
     if (!cell) return;
     if (state.won && Date.now() - state.winAt > 800) {
@@ -1667,7 +1685,14 @@ export function startThcokuGame(canvas, options = {}) {
     ctx.translate(-WIDTH / 2, -HEIGHT / 2);
 
     const conflicts = findConflicts(state.board);
-    const [sr, sc] = state.selected;
+    // Spectators: no cell selection / peer wash — keep the board readable.
+    const sel = state.selected;
+    const highlightSel =
+      !state.spectatorMode &&
+      Array.isArray(sel) &&
+      Number(sel[0]) >= 0 &&
+      Number(sel[1]) >= 0;
+    const [sr, sc] = highlightSel ? sel : [-1, -1];
     const ox = BOARD_ORIGIN.x;
     const oy = BOARD_ORIGIN.y;
 
@@ -1912,7 +1937,9 @@ export function startThcokuGame(canvas, options = {}) {
       }
       if (typeof options.onQuit === "function") options.onQuit();
     }
-    else if (evt.key === "ArrowLeft") {
+    else if (state.spectatorMode) {
+      /* arrows / selection disabled while watching */
+    } else if (evt.key === "ArrowLeft") {
       state.selected[1] = (state.selected[1] + 8) % 9;
       draw();
     } else if (evt.key === "ArrowRight") {

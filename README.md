@@ -19,9 +19,16 @@ Free tip: keep the service awake with **UptimeRobot** → `https://YOUR-SERVICE.
 
 ## Features
 
-- **`/play`** — opens the Discord Activity window (like Wordle)
-- **`/daily`** · **`/challenge`** · **`/shop`** · **`/leaderboard`** · **`/stats`**
-- Activity wins write XP/sponges to the same Mongo leaderboard as the bot
+- **`/play`** — Discord Activity window (Canvas Sudoku) or classic panel boards
+- **`/daily`** — shared UTC daily puzzle; streak + Pineapple wins
+- **`/challenge`** — head-to-head speedrun races (optional **no hints** variant)
+- **`/shop`** — sponges for power-ups, **titles** (header flair), and **pins** (board border; favorite / hide)
+- **`/weekly`** — ISO-week quests (auto-claim sponges)
+- **`/stats`** — rank, streak, weekly progress, season XP, PBs by difficulty, last-7 daily times
+- **`/leaderboard`** — XP · today's daily · streak · weekly · season month · shop whales
+- **`/achievements`** · **`/quit`**
+- Activity: themes, cosmetics, same-number highlight, spectate reactions (GG / Oh-ow / Oh no / Yayyy / Love), session resume
+- Wins write XP/sponges to the same Mongo leaderboard as the bot
 - HTTP `/health` for Render + UptimeRobot
 
 ## Setup (local bot)
@@ -78,6 +85,7 @@ If you already created a **Python** service, change it to **Docker** (or recreat
 - `POST /api/token` (also `/token`)
 - `GET /api/leaderboard` (also `/leaderboard`)
 - `POST /api/activity/win` (also `/activity/win`)
+- Activity session / cosmetics / hint / spectate endpoints under `/api/activity/*`
 
 ## Environment
 
@@ -93,4 +101,4 @@ Never commit `.env`.
 
 ## Commands
 
-`/help` · `/play` · `/daily` · `/challenge` · `/shop` · `/quit` · `/leaderboard` · `/stats` · `/z-admin testboard`
+`/help` · `/play` · `/daily` · `/challenge` · `/shop` · `/weekly` · `/quit` · `/leaderboard` · `/stats` · `/achievements` · `/z-admin …`

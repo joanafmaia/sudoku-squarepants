@@ -184,6 +184,7 @@ RGB_EMPTY = "#FFFEF5"             # empty cells
 RGB_GIVEN_CELL = "#FEF3C7"        # soft sand wash for locked clues
 RGB_SELECT = "#FDE047"            # selected cell — sponge yellow
 RGB_BOX_HL = "#A5F3FC"            # selected 3×3 wash — bubble blue
+RGB_MATCH_HL = "#BBF7D0"          # same digit as selected — soft kelp green
 RGB_CONFLICT = "#FDA4AF"          # soft coral conflict wash
 RGB_LINE = "#94A3B8"              # soft sea-gray cell lines
 RGB_THICK = "#0F766E"             # deep lagoon 3×3 borders
@@ -204,6 +205,7 @@ DEFAULT_BOARD_PALETTE = {
     "given_cell": RGB_GIVEN_CELL,
     "select": RGB_SELECT,
     "box_hl": RGB_BOX_HL,
+    "match_hl": RGB_MATCH_HL,
     "conflict": RGB_CONFLICT,
     "line": RGB_LINE,
     "thick": RGB_THICK,
@@ -491,7 +493,72 @@ def format_rank_compact(xp: int) -> str:
     return f"L{lvl} {title} · {xp_n}/{nxt}"
 
 
-def build_stats_embed(stats: dict, *, avatar_url: str | None = None) -> discord.Embed:
+def weekly_progress_compact(stats: dict) -> str:
+    """One-line weekly quest snapshot for /stats (marks match /weekly)."""
+    ensure_weekly_progress(stats)
+    claimed = set(stats.get("weekly_claimed") or [])
+    bits: list[str] = []
+    for quest in WEEKLY_QUESTS:
+        progress = int(stats.get(str(quest["counter"])) or 0)
+        need = int(quest["need"])
+        shown = min(progress, need)
+        qid = str(quest["id"])
+        if qid in claimed:
+            bits.append(f"{quest['emoji']}✅")
+        elif progress >= need:
+            bits.append(f"{quest['emoji']}🎁")
+        else:
+            bits.append(f"{quest['emoji']}{shown}/{need}")
+    done = sum(1 for q in WEEKLY_QUESTS if q["id"] in claimed)
+    return f"**{done}/{len(WEEKLY_QUESTS)}** · " + " · ".join(bits)
+
+
+def format_time_compact(seconds: float) -> str:
+    """Short clock for dense UI (3:42 / 1h05) — not the verbose format_time()."""
+    total = max(0, int(seconds))
+    m, s = divmod(total, 60)
+    if m >= 60:
+        h, m = divmod(m, 60)
+        return f"{h}h{m:02d}"
+    return f"{m}:{s:02d}"
+
+
+_WEEKDAY_SHORT = ("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
+
+
+def format_daily_history_line(completions: list[dict], *, days: int = 7) -> str:
+    """Compact last-N daily results (Mo:3:42 · Tu:❌ · We:—). Locale-stable labels."""
+    by_date: dict[str, dict] = {}
+    for doc in completions or []:
+        day = str(doc.get("date") or "")
+        if day and day not in by_date:
+            by_date[day] = doc
+    today = datetime.fromisoformat(utc_today()).date()
+    parts: list[str] = []
+    for i in range(max(1, int(days)) - 1, -1, -1):
+        day_date = today - timedelta(days=i)
+        day = day_date.isoformat()
+        label = _WEEKDAY_SHORT[day_date.weekday()]
+        doc = by_date.get(day)
+        if not doc:
+            parts.append(f"{label}:—")
+        elif doc.get("forfeit"):
+            parts.append(f"{label}:❌")
+        else:
+            try:
+                elapsed = int(float(doc.get("elapsed")))
+                parts.append(f"{label}:{format_time_compact(elapsed)}")
+            except (TypeError, ValueError):
+                parts.append(f"{label}:✅")
+    return " · ".join(parts)
+
+
+def build_stats_embed(
+    stats: dict,
+    *,
+    avatar_url: str | None = None,
+    daily_history: list[dict] | None = None,
+) -> discord.Embed:
     """Compact player card — description-only so Discord mobile stays short."""
     _ = avatar_url  # intentionally unused (thumbnail eats phone width)
     best = (
@@ -527,10 +594,14 @@ def build_stats_embed(stats: dict, *, avatar_url: str | None = None) -> discord.
             badge_emojis.append(emoji)
     badge_preview = " ".join(badge_emojis) if badge_emojis else "—"
 
-    ensure_weekly_progress(stats)
-    weekly_claimed = set(stats.get("weekly_claimed") or [])
-    weekly_done = sum(1 for q in WEEKLY_QUESTS if q["id"] in weekly_claimed)
-    weekly_total = len(WEEKLY_QUESTS)
+    weekly_line = weekly_progress_compact(stats)
+    history_line = format_daily_history_line(daily_history or [])
+    month_key = ensure_monthly_progress(stats)
+    month_xp = int(stats.get("month_xp") or 0)
+    try:
+        month_label = datetime.fromisoformat(f"{month_key}-01").strftime("%b %Y")
+    except ValueError:
+        month_label = month_key
 
     embed = paper_embed(f"{SPONGE} {display_name(stats)}")
     embed.description = (
@@ -540,10 +611,13 @@ def build_stats_embed(stats: dict, *, avatar_url: str | None = None) -> discord.
         f"spent {int(stats.get('sponges_spent', 0) or 0)} · "
         f"{format_xp(stats.get('xp', 0))}\n"
         f"**{wins}**W–**{losses}**L ({win_rate}) · best **{best}** · longest **{longest}**\n"
+        f"PBs · {format_best_times_by_difficulty(stats)}\n"
         f"{PINEAPPLE} **{int(stats.get('daily_wins', 0) or 0)}** · "
         f"{JELLY} **{int(stats.get('challenge_wins', 0) or 0)}** · "
         f"**{games_n}** boards · 🛡️ **{shields}**\n"
-        f"📅 Weekly **{weekly_done}/{weekly_total}** · `/weekly`\n"
+        f"📆 Season **{month_label}** · **{format_xp(month_xp)}** · `/leaderboard`\n"
+        f"📅 Weekly {weekly_line} · `/weekly`\n"
+        f"Last 7 · {history_line}\n"
         f"🏆 **{have}/{total}** {badge_preview} · `/achievements`"
     )
     return embed
@@ -1190,6 +1264,9 @@ def user_stats(gstats: dict, user_id: int) -> dict:
     s.setdefault("games", 0)
     s.setdefault("best_time", None)
     s.setdefault("longest_time", None)
+    s.setdefault("best_times", {})
+    if not isinstance(s.get("best_times"), dict):
+        s["best_times"] = {}
     # Seed longest from known best when we only ever tracked fastest before.
     if s.get("longest_time") is None and s.get("best_time") is not None:
         try:
@@ -1205,6 +1282,12 @@ def user_stats(gstats: dict, user_id: int) -> dict:
     # Pins used to be sold as "themes"; keep owned_themes as the storage key
     s.setdefault("owned_themes", [])
     s.setdefault("owned_pins", s.get("owned_themes") or [])
+    s.setdefault("favorite_pin_ids", [])
+    s.setdefault("hidden_pin_ids", [])
+    if not isinstance(s.get("favorite_pin_ids"), list):
+        s["favorite_pin_ids"] = []
+    if not isinstance(s.get("hidden_pin_ids"), list):
+        s["hidden_pin_ids"] = []
     # Merge legacy owned_themes into owned_pins once
     if s.get("owned_themes"):
         merged = list(dict.fromkeys([*(s.get("owned_pins") or []), *s["owned_themes"]]))
@@ -1526,17 +1609,83 @@ def owned_pin_ids(stats: dict) -> list[str]:
     return out
 
 
+def favorite_pin_ids(stats: dict) -> list[str]:
+    """Favorite pins that are still owned (stable order)."""
+    owned = set(owned_pin_ids(stats))
+    out: list[str] = []
+    seen: set[str] = set()
+    for tid in list(stats.get("favorite_pin_ids") or []):
+        resolved = resolve_pin_id(str(tid))
+        if resolved and resolved in owned and resolved not in seen:
+            out.append(resolved)
+            seen.add(resolved)
+    return out
+
+
+def hidden_pin_ids(stats: dict) -> list[str]:
+    """Owned pins excluded from border rotation (still owned)."""
+    owned = set(owned_pin_ids(stats))
+    out: list[str] = []
+    seen: set[str] = set()
+    for tid in list(stats.get("hidden_pin_ids") or []):
+        resolved = resolve_pin_id(str(tid))
+        if resolved and resolved in owned and resolved not in seen:
+            out.append(resolved)
+            seen.add(resolved)
+    return out
+
+
 def owned_pin_emojis(stats: dict) -> list[str]:
-    """Border emojis from the Pins catalog only (titles are header flair, not pins)."""
+    """Border emojis from owned pins — favorites first, hidden omitted."""
     pins: list[str] = []
     seen: set[str] = set()
-    for tid in owned_pin_ids(stats):
+    hidden = set(hidden_pin_ids(stats))
+    ordered = list(
+        dict.fromkeys([*favorite_pin_ids(stats), *owned_pin_ids(stats)])
+    )
+    for tid in ordered:
+        if tid in hidden:
+            continue
         meta = SHOP_PINS.get(tid)
         emoji = (meta or {}).get("emoji")
         if emoji and emoji not in seen:
             pins.append(emoji)
             seen.add(emoji)
     return pins
+
+
+def toggle_favorite_pin(stats: dict, pin_id: str) -> bool:
+    """Toggle favorite. Returns True if now favorited."""
+    resolved = resolve_pin_id(str(pin_id))
+    if not resolved or resolved not in owned_pin_ids(stats):
+        return False
+    favs = favorite_pin_ids(stats)
+    if resolved in favs:
+        favs = [p for p in favs if p != resolved]
+        stats["favorite_pin_ids"] = favs
+        return False
+    favs.append(resolved)
+    stats["favorite_pin_ids"] = favs
+    # Favoriting unhides so the pin can show on the border.
+    stats["hidden_pin_ids"] = [p for p in hidden_pin_ids(stats) if p != resolved]
+    return True
+
+
+def toggle_hidden_pin(stats: dict, pin_id: str) -> bool:
+    """Toggle hide-from-border. Returns True if now hidden."""
+    resolved = resolve_pin_id(str(pin_id))
+    if not resolved or resolved not in owned_pin_ids(stats):
+        return False
+    hidden = hidden_pin_ids(stats)
+    if resolved in hidden:
+        hidden = [p for p in hidden if p != resolved]
+        stats["hidden_pin_ids"] = hidden
+        return False
+    hidden.append(resolved)
+    stats["hidden_pin_ids"] = hidden
+    # Hiding drops favorite (can't be both).
+    stats["favorite_pin_ids"] = [p for p in favorite_pin_ids(stats) if p != resolved]
+    return True
 
 
 def find_player_cosmetics_stats(
@@ -1752,6 +1901,43 @@ def ensure_weekly_progress(stats: dict, *, day: str | None = None) -> str:
     stats.setdefault("weekly_challenges", 0)
     stats.setdefault("weekly_claimed", [])
     return week
+
+
+def utc_month_key(day: str | None = None) -> str:
+    """UTC calendar month key, e.g. 2026-08."""
+    raw = day or utc_today()
+    return str(raw)[:7]
+
+
+def ensure_monthly_progress(stats: dict, *, day: str | None = None) -> str:
+    """Reset month_xp when the UTC month rolls over. Returns current month key."""
+    key = utc_month_key(day)
+    if stats.get("month_key") != key:
+        stats["month_key"] = key
+        stats["month_xp"] = 0
+    stats.setdefault("month_xp", 0)
+    return key
+
+
+def note_monthly_xp(stats: dict, xp: int, *, day: str | None = None) -> None:
+    """Add career XP earned this win toward the light monthly season board."""
+    ensure_monthly_progress(stats, day=day)
+    try:
+        gained = max(0, int(xp))
+    except (TypeError, ValueError):
+        gained = 0
+    stats["month_xp"] = int(stats.get("month_xp") or 0) + gained
+
+
+def weekly_score(stats: dict) -> int:
+    """Sort key for weekly leaderboard — boards + weighted dailies/races."""
+    ensure_weekly_progress(stats)
+    return (
+        int(stats.get("weekly_boards") or 0)
+        + int(stats.get("weekly_dailies") or 0) * 2
+        + int(stats.get("weekly_challenges") or 0) * 3
+        + len(stats.get("weekly_claimed") or []) * 5
+    )
 
 
 def note_weekly_win(
@@ -2432,8 +2618,13 @@ def format_time(seconds: float) -> str:
     return f"{m}m {s:02d}s"
 
 
-def record_solve_times(stats: dict, elapsed: float | int | None) -> None:
-    """Update career fastest (`best_time`) and longest (`longest_time`) solve times."""
+def record_solve_times(
+    stats: dict,
+    elapsed: float | int | None,
+    *,
+    difficulty: str | None = None,
+) -> None:
+    """Update career fastest/longest plus per-difficulty personal bests."""
     if elapsed is None:
         return
     try:
@@ -2448,14 +2639,54 @@ def record_solve_times(stats: dict, elapsed: float | int | None) -> None:
     longest = stats.get("longest_time")
     if longest is None or t > float(longest):
         stats["longest_time"] = t
+    key = difficulty_key_from_label(str(difficulty)) if difficulty else None
+    if key and key in DIFFICULTY_TIERS:
+        times = stats.setdefault("best_times", {})
+        if not isinstance(times, dict):
+            times = {}
+            stats["best_times"] = times
+        prev = times.get(key)
+        try:
+            prev_n = int(float(prev)) if prev is not None else None
+        except (TypeError, ValueError):
+            prev_n = None
+        if prev_n is None or t < prev_n:
+            times[key] = t
 
 
 def clear_solve_times(stats: dict) -> None:
     """Wipe career best/longest solve times (and speed badges tied to them)."""
     stats["best_time"] = None
     stats["longest_time"] = None
+    stats["best_times"] = {}
     badges = [b for b in (stats.get("badges") or []) if b not in ("speed_demon", "jelly_flash")]
     stats["badges"] = badges
+
+
+_PB_DIFF_SHORT = {
+    "very_easy": "VE",
+    "easy": "E",
+    "medium": "M",
+    "hard": "H",
+    "very_hard": "VH",
+    "expertttt": "X",
+}
+
+
+def format_best_times_by_difficulty(stats: dict) -> str:
+    """Compact PBs: M:3:42 · H:8:05 · X:—"""
+    raw = stats.get("best_times") if isinstance(stats.get("best_times"), dict) else {}
+    parts: list[str] = []
+    for key in DIFFICULTY_TIERS:
+        label = _PB_DIFF_SHORT.get(key, key[:2].upper())
+        val = raw.get(key)
+        if val is None:
+            continue
+        try:
+            parts.append(f"{label}:{format_time_compact(int(float(val)))}")
+        except (TypeError, ValueError):
+            continue
+    return " · ".join(parts) if parts else "—"
 
 
 def win_reward(
@@ -2883,16 +3114,25 @@ def render_board(
             for j in range(3):
                 box_cells.add((br * 3 + i, bc * 3 + j))
 
+    match_digit = 0
+    if selected is not None:
+        match_digit = int(cell_value(board, selected[0], selected[1]) or 0)
+
     for r in range(9):
         for c in range(9):
             x0 = origin_x + c * cell
             y0 = origin_y + r * cell
             x1, y1 = x0 + cell, y0 + cell
 
+            is_match = (
+                match_digit != 0 and int(cell_value(board, r, c) or 0) == match_digit
+            )
             if (r, c) in conflicts:
                 fill = pal["conflict"]
             elif selected == (r, c):
                 fill = pal["select"]
+            elif is_match:
+                fill = pal.get("match_hl") or pal["box_hl"]
             elif (r, c) in box_cells:
                 fill = pal["box_hl"]
             elif given[r][c]:
@@ -3240,6 +3480,7 @@ def new_game_state(
     owner_title: str | None = None,
     pin_emojis: list[str] | None = None,
     pin_seed: int | None = None,
+    no_hints: bool = False,
 ) -> dict:
     # Persist the canonical difficulty key (e.g. "expertttt"); labels are for display only.
     diff_key = difficulty_key_from_label(difficulty or DEFAULT_DIFFICULTY)
@@ -3264,6 +3505,7 @@ def new_game_state(
         "participants": {owner_id},
         "started_at": time.time() if started_at is None else float(started_at),
         "hints_used": 0,
+        "no_hints": bool(no_hints),
         "daily_date": daily_date,
         "message_id": None,
         "pin_emojis": list(pin_emojis or []),
@@ -3557,7 +3799,7 @@ def finish_win(
         day = game.get("daily_date") or utc_today()
         apply_daily_calendar_streak(stats, day)
     # /play and challenge use the current daily streak for bonus, but do not advance it.
-    record_solve_times(stats, elapsed)
+    record_solve_times(stats, elapsed, difficulty=game.get("difficulty"))
 
     coins = win_reward(
         int(stats.get("streak") or 0),
@@ -3591,6 +3833,11 @@ def finish_win(
 
     stats["coins"] += coins
     stats["xp"] = int(stats.get("xp") or 0) + xp
+    note_monthly_xp(
+        stats,
+        xp,
+        day=(game.get("daily_date") if is_daily else None) or utc_today(),
+    )
 
     if is_daily:
         stats["daily_wins"] += 1
@@ -4849,6 +5096,7 @@ async def launch_challenge_match(
     interaction: discord.Interaction,
     players: list[discord.Member],
     difficulty: str,
+    no_hints: bool = False,
 ) -> bool:
     """Start a challenge. Caller must already have deferred the interaction.
 
@@ -4887,6 +5135,7 @@ async def launch_challenge_match(
             solution=solution,
             difficulty=difficulty_key_from_label(difficulty),
             player_names=player_names,
+            no_hints=no_hints,
         )
         match_id = await match_store.insert_match(doc)
         match = await match_store.get_match(match_id)
@@ -4901,12 +5150,13 @@ async def launch_challenge_match(
 
         names = " · ".join(m.display_name for m in players)
         roster = ", ".join(m.mention for m in players)
+        variant_bit = " · **No hints**" if no_hints else ""
 
         # One shared Play button in the text channel (Discord blocks Activities in threads).
         # No per-player private threads / Play spam.
         try:
             launch_msg = await home.send(
-                f"🏁 Speedrun · **{tier}** ({len(players)} players)\n"
+                f"🏁 Speedrun · **{tier}** ({len(players)} players){variant_bit}\n"
                 f"{roster}\n"
                 f"Field: {names}\n"
                 f"Same puzzle — fastest wins. Tap **Play in Activity** below!",
@@ -4944,6 +5194,7 @@ async def launch_challenge_match(
                 difficulty=difficulty,
                 started_at=start_time,
                 pin_emojis=owned_pin_emojis(pstats),
+                no_hints=no_hints,
             )
             attach_gary_wisdom_to_game(pstats, games[key])
             games[key]["message_id"] = launch_message_id
@@ -4954,7 +5205,7 @@ async def launch_challenge_match(
 
         save_data(bot.data)
         await interaction.followup.send(
-            f"Challenge started · **{tier}** — one Play button in {home.mention}.",
+            f"Challenge started · **{tier}**{variant_bit} — one Play button in {home.mention}.",
             ephemeral=True,
         )
         fresh = await match_store.get_match(match_id)
@@ -6374,6 +6625,7 @@ class ChallengeInviteView(discord.ui.View):
         guild_id: int,
         channel_id: int,
         difficulty: str,
+        no_hints: bool = False,
     ):
         super().__init__(timeout=INVITE_TIMEOUT_SEC)
         self.challenger_id = challenger_id
@@ -6382,6 +6634,7 @@ class ChallengeInviteView(discord.ui.View):
         self.guild_id = guild_id
         self.channel_id = channel_id
         self.difficulty = difficulty
+        self.no_hints = bool(no_hints)
         self._launching = False
         self.message: discord.Message | None = None
 
@@ -6484,6 +6737,7 @@ class ChallengeInviteView(discord.ui.View):
             interaction=interaction,
             players=members,
             difficulty=self.difficulty,
+            no_hints=self.no_hints,
         )
         if not ok:
             await _abort("Challenge failed to start — lobby reopened.")
@@ -6606,6 +6860,7 @@ class OpenChallengeLobbyView(discord.ui.View):
         guild_id: int,
         channel_id: int,
         difficulty: str,
+        no_hints: bool = False,
     ):
         super().__init__(timeout=INVITE_TIMEOUT_SEC)
         self.challenger_id = challenger_id
@@ -6613,15 +6868,17 @@ class OpenChallengeLobbyView(discord.ui.View):
         self.guild_id = guild_id
         self.channel_id = channel_id
         self.difficulty = difficulty
+        self.no_hints = bool(no_hints)
         self._launching = False
         self.message: discord.Message | None = None
 
     def _roster_text(self, header: str) -> str:
         roster = ", ".join(f"<@{uid}>" for uid in self.joined_ids)
+        variant = " · **No hints**" if self.no_hints else ""
         return (
             f"{header}\n"
             f"Players ({len(self.joined_ids)}/{MAX_CHALLENGE_PLAYERS}): {roster}\n"
-            f"Difficulty: **{difficulty_label(self.difficulty)}**"
+            f"Difficulty: **{difficulty_label(self.difficulty)}**{variant}"
         )
 
     def _disable(self) -> None:
@@ -6778,6 +7035,7 @@ class OpenChallengeLobbyView(discord.ui.View):
             interaction=interaction,
             players=members,
             difficulty=self.difficulty,
+            no_hints=self.no_hints,
         )
         if not ok:
             self._launching = False
@@ -8169,7 +8427,13 @@ def shop_item_status_text(stats: dict, item: dict) -> str:
         return "🔮 Power-Up"
     owned = shop_item_owned(stats, item)
     if item["kind"] == "pin":
-        return "🟢 Owned" if owned else "🔒 Locked"
+        if not owned:
+            return "🔒 Locked"
+        if item["id"] in hidden_pin_ids(stats):
+            return "🙈 Hidden"
+        if item["id"] in favorite_pin_ids(stats):
+            return "⭐ Favorite"
+        return "🟢 Owned"
     if shop_item_equipped(stats, item):
         return "✨ Equipped"
     if owned:
@@ -8211,7 +8475,17 @@ def shop_filter_catalog(
 ) -> list[dict]:
     """filt: all | afford | owned | ocean | crew"""
     if filt == "owned":
-        return [it for it in items if shop_item_owned(stats, it)]
+        owned = [it for it in items if shop_item_owned(stats, it)]
+        if items and items[0].get("kind") == "pin":
+            favs = set(favorite_pin_ids(stats))
+            owned.sort(
+                key=lambda it: (
+                    0 if it["id"] in favs else 1,
+                    int(it.get("cost") or 0),
+                    it["label"],
+                )
+            )
+        return owned
     if filt == "afford":
         return [it for it in items if shop_item_can_buy(stats, it)]
     if filt in ("ocean", "crew"):
@@ -9004,13 +9278,30 @@ class KrustyShopView(discord.ui.View):
             return
         if owned:
             if selected["kind"] == "pin":
-                action = discord.ui.Button(
-                    label="Owned ✓",
-                    style=discord.ButtonStyle.success,
+                is_fav = selected["id"] in favorite_pin_ids(stats)
+                is_hid = selected["id"] in hidden_pin_ids(stats)
+                fav_btn = discord.ui.Button(
+                    label="⭐ Unfav" if is_fav else "⭐ Fav",
+                    style=(
+                        discord.ButtonStyle.success
+                        if is_fav
+                        else discord.ButtonStyle.secondary
+                    ),
                     row=4,
-                    disabled=True,
                 )
-                self.add_item(action)
+                fav_btn.callback = self.on_favorite_pin
+                self.add_item(fav_btn)
+                hide_btn = discord.ui.Button(
+                    label="Unhide" if is_hid else "Hide",
+                    style=(
+                        discord.ButtonStyle.primary
+                        if is_hid
+                        else discord.ButtonStyle.secondary
+                    ),
+                    row=4,
+                )
+                hide_btn.callback = self.on_hide_pin
+                self.add_item(hide_btn)
                 gift = discord.ui.Button(
                     label="Gift",
                     style=discord.ButtonStyle.primary,
@@ -9167,6 +9458,64 @@ class KrustyShopView(discord.ui.View):
             embed=self.build_embed(), view=self, attachments=[]
         )
         await interaction.followup.send(result["message"], ephemeral=True)
+
+    async def on_favorite_pin(self, interaction: discord.Interaction) -> None:
+        item = self.selected_item()
+        if not item or item.get("kind") != "pin":
+            await interaction.response.send_message("Select a pin first.", ephemeral=True)
+            return
+        stats = self._stats()
+        if not shop_item_owned(stats, item):
+            await interaction.response.send_message("You don't own that pin.", ephemeral=True)
+            return
+        now_fav = toggle_favorite_pin(stats, item["id"])
+        save_data(self.bot.data)
+        push_cosmetics_sync(self.owner_id, self.guild_id, stats)
+        await sync_cosmetics_to_activity_sessions(
+            self.owner_id,
+            self.guild_id,
+            title_id=equipped_title_id(stats),
+            pin_emojis=owned_pin_emojis(stats),
+        )
+        self._rebuild()
+        await interaction.response.edit_message(
+            embed=self.build_embed(), view=self, attachments=[]
+        )
+        await interaction.followup.send(
+            f"{'⭐ Favorited' if now_fav else 'Removed favorite'} **{item['label']}**.",
+            ephemeral=True,
+        )
+
+    async def on_hide_pin(self, interaction: discord.Interaction) -> None:
+        item = self.selected_item()
+        if not item or item.get("kind") != "pin":
+            await interaction.response.send_message("Select a pin first.", ephemeral=True)
+            return
+        stats = self._stats()
+        if not shop_item_owned(stats, item):
+            await interaction.response.send_message("You don't own that pin.", ephemeral=True)
+            return
+        now_hid = toggle_hidden_pin(stats, item["id"])
+        save_data(self.bot.data)
+        push_cosmetics_sync(self.owner_id, self.guild_id, stats)
+        await sync_cosmetics_to_activity_sessions(
+            self.owner_id,
+            self.guild_id,
+            title_id=equipped_title_id(stats),
+            pin_emojis=owned_pin_emojis(stats),
+        )
+        self._rebuild()
+        await interaction.response.edit_message(
+            embed=self.build_embed(), view=self, attachments=[]
+        )
+        await interaction.followup.send(
+            (
+                f"🙈 **{item['label']}** hidden from the board border."
+                if now_hid
+                else f"**{item['label']}** is back on the border."
+            ),
+            ephemeral=True,
+        )
 
     async def on_buy(self, interaction: discord.Interaction) -> None:
         item = self.selected_item()
@@ -9664,6 +10013,7 @@ async def restore_challenge_games_from_match(bot: "SudokuBot", match: dict) -> b
             continue
         key = challenge_game_key(mid, uid)
         if key in games:
+            games[key]["no_hints"] = bool(match.get("no_hints"))
             restored_any = True
             continue
 
@@ -9693,6 +10043,7 @@ async def restore_challenge_games_from_match(bot: "SudokuBot", match: dict) -> b
             difficulty=diff,
             started_at=start_time,
             pin_emojis=owned_pin_emojis(pstats),
+            no_hints=bool(match.get("no_hints")),
         )
         if player.get("thread_id"):
             games[key]["thread_id"] = int(player["thread_id"])
@@ -10604,6 +10955,7 @@ async def help_cmd(interaction: discord.Interaction):
     opponent4="Optional fourth opponent",
     open_lobby="Anyone can Join; you press Start (ignores opponent list)",
     difficulty="Shared puzzle difficulty",
+    no_hints="No hints allowed (Gary + paid) — pure speedrun",
 )
 @app_commands.choices(difficulty=DIFFICULTY_CHOICES)
 async def challenge_cmd(
@@ -10614,6 +10966,7 @@ async def challenge_cmd(
     opponent4: discord.Member | None = None,
     open_lobby: bool = False,
     difficulty: app_commands.Choice[str] | None = None,
+    no_hints: bool = False,
 ):
     if interaction.guild is None or challenge_home_channel(interaction.channel) is None:
         await interaction.response.send_message(
@@ -10676,6 +11029,7 @@ async def challenge_cmd(
 
     diff_key = difficulty.value if difficulty else DEFAULT_DIFFICULTY
     tier = difficulty_label(diff_key)
+    variant_bit = " · **No hints**" if no_hints else ""
 
     if open_lobby:
         mark_challenge_cooldown(interaction.user.id)
@@ -10684,10 +11038,12 @@ async def challenge_cmd(
             guild_id=interaction.guild.id,
             channel_id=interaction.channel.id,
             difficulty=diff_key,
+            no_hints=no_hints,
         )
         await interaction.response.send_message(
             view._roster_text(
-                f"🏁 {interaction.user.mention} opened a **{tier}** jellyfishing race! "
+                f"🏁 {interaction.user.mention} opened a **{tier}** jellyfishing race"
+                f"{variant_bit}! "
                 f"Press **Join**, then challenger presses **Start**. I'm ready!"
             ),
             view=view,
@@ -10766,11 +11122,12 @@ async def challenge_cmd(
         guild_id=interaction.guild.id,
         channel_id=interaction.channel.id,
         difficulty=diff_key,
+        no_hints=no_hints,
     )
     n = len(invitees) + 1
     await interaction.response.send_message(
         f"{mentions} — {interaction.user.mention} challenges you to a "
-        f"**{tier}** speedrun (**{n} players**). Everyone must Accept — "
+        f"**{tier}** speedrun{variant_bit} (**{n} players**). Everyone must Accept — "
         "same puzzle, fastest wins. Challenger can Cancel.",
         view=view,
     )
@@ -12047,13 +12404,16 @@ async def quit_cmd(interaction: discord.Interaction):
 
 @bot.tree.command(
     name="leaderboard",
-    description="Bikini Bottom rankings — XP, daily today, shop whales",
+    description="Bikini Bottom rankings — XP, daily, streak, weekly, season, whales",
 )
 @app_commands.describe(board="Which leaderboard to show")
 @app_commands.choices(
     board=[
         app_commands.Choice(name="XP (career)", value="xp"),
         app_commands.Choice(name="Today's daily", value="daily_today"),
+        app_commands.Choice(name="Streak", value="streak"),
+        app_commands.Choice(name="Weekly goals", value="weekly"),
+        app_commands.Choice(name="Season (month XP)", value="season"),
         app_commands.Choice(name="Shop whales", value="whales"),
     ]
 )
@@ -12135,6 +12495,60 @@ async def leaderboard_cmd(
         empty_msg = (
             f"{BUBBLE} Nobody's emptied their pockets yet — the Krusty Shop is waiting."
         )
+        field_name = "Top spenders"
+    elif mode == "streak":
+        ranked = sorted(
+            players,
+            key=lambda item: (
+                int(item[1].get("streak") or 0),
+                int(item[1].get("best_streak") or 0),
+            ),
+            reverse=True,
+        )[:10]
+        title = f"{STAR} Daily streaks"
+        blurb = "Who's keeping the pineapple grill hot? (Current streak, then best.)"
+        fmt = lambda s: (
+            f"**{int(s.get('streak') or 0)}** day"
+            f"{'' if int(s.get('streak') or 0) == 1 else 's'} · "
+            f"best **{int(s.get('best_streak') or 0)}**"
+        )
+        nonempty = lambda s: int(s.get("streak") or 0) > 0 or int(s.get("best_streak") or 0) > 0
+        empty_msg = f"{BUBBLE} No streaks yet — clear a `/daily` to light the grill."
+        field_name = "Top streaks"
+    elif mode == "weekly":
+        for _, s in players:
+            ensure_weekly_progress(s)
+        ranked = sorted(players, key=lambda item: weekly_score(item[1]), reverse=True)[:10]
+        title = "📅 Weekly goals"
+        blurb = "This week's hustle — boards, dailies, and race wins. Resets Monday UTC."
+        fmt = lambda s: (
+            f"score **{weekly_score(s)}** · {weekly_progress_compact(s)}"
+        )
+        nonempty = lambda s: weekly_score(s) > 0
+        empty_msg = f"{BUBBLE} Quiet week — finish a board or `/daily` to climb."
+        field_name = "Top this week"
+    elif mode == "season":
+        for _, s in players:
+            ensure_monthly_progress(s)
+        ranked = sorted(
+            players,
+            key=lambda item: int(item[1].get("month_xp") or 0),
+            reverse=True,
+        )[:10]
+        month_key = utc_month_key()
+        try:
+            month_label = datetime.fromisoformat(f"{month_key}-01").strftime("%B %Y")
+        except ValueError:
+            month_label = month_key
+        title = f"📆 Season · {month_label}"
+        blurb = "XP earned this UTC month (resets on the 1st). Career XP stays forever."
+        fmt = lambda s: (
+            f"**{format_xp(int(s.get('month_xp') or 0))}** · "
+            f"career {format_xp(s.get('xp', 0))}"
+        )
+        nonempty = lambda s: int(s.get("month_xp") or 0) > 0
+        empty_msg = f"{BUBBLE} Season board is empty — win a puzzle to earn month XP."
+        field_name = "Top this month"
     else:
         # Default: career XP (+ pocket on the same line)
         ranked = sorted(players, key=lambda item: item[1].get("xp", 0), reverse=True)[:10]
@@ -12147,6 +12561,7 @@ async def leaderboard_cmd(
         nonempty = lambda s: s.get("xp", 0) > 0 or s.get("wins", 0) > 0
         empty_msg = f"{BUBBLE} Nobody on this board yet — go earn some XP with `/play`!"
         mode = "xp"
+        field_name = "Top 10"
 
     ranked = [(uid, s) for uid, s in ranked if nonempty(s)]
     if not ranked:
@@ -12160,7 +12575,6 @@ async def leaderboard_cmd(
         lines.append(f"{prefix} **{display_name(s)}** — {fmt(s)}")
     embed = paper_embed(f"{title}")
     embed.description = f"{blurb}\n*{interaction.guild.name}*"
-    field_name = "Top spenders" if mode == "whales" else "Top 10"
     embed.add_field(name=field_name, value="\n".join(lines), inline=False)
     await interaction.response.send_message(embed=embed, silent=True)
 
@@ -12202,8 +12616,21 @@ async def stats_cmd(interaction: discord.Interaction, member: discord.Member | N
         s = user_stats(gstats, target.id)
         s["name"] = target.display_name
         evaluate_user_achievements(s)
+        # Same auto-claim path as /weekly so compact marks stay honest.
+        claim_ready_weekly_quests(s)
         save_data(bot.data)
-        embed = build_stats_embed(s)
+        try:
+            await match_store.save_leaderboard(bot.data)
+        except Exception as save_exc:  # noqa: BLE001
+            print(f"/stats save_leaderboard failed: {save_exc}")
+        daily_history: list[dict] = []
+        try:
+            daily_history = await match_store.list_recent_daily_completions(
+                interaction.guild.id, target.id, days=7
+            )
+        except Exception as hist_exc:  # noqa: BLE001
+            print(f"/stats daily history failed: {hist_exc}")
+        embed = build_stats_embed(s, daily_history=daily_history)
         await interaction.response.send_message(embed=embed, silent=True)
     except Exception as exc:  # noqa: BLE001
         import traceback

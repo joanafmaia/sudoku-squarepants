@@ -467,6 +467,29 @@ body {
   pointer-events: none;
 }
 
+#spectate-react {
+  margin-right: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+
+#spectate-react[hidden] {
+  display: none !important;
+}
+
+#spectate-react .react-btn {
+  font-size: 1.05rem;
+  padding: 5px 8px;
+  min-width: 36px;
+}
+
+#spectate-react .react-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 #app-toolbar button {
   appearance: none;
   border: 2px solid var(--gold);
