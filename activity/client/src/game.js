@@ -616,7 +616,7 @@ export function startThcokuGame(canvas, options = {}) {
     playerSlot: options.playerSlot || null,
     undoStack: [],
     hintsUsed: 0,
-    hintsMax: null, // null = unlimited paid hints
+    hintsMax: null, // null = unlimited; Expertttt gets 3 from the server
     hintsGaryUsed: 0,
     garyWisdomBonus: 0,
     hintSpongeCost: Number(options.hintSpongeCost) || 15,
@@ -631,6 +631,10 @@ export function startThcokuGame(canvas, options = {}) {
 
   const diffBtn = controls.querySelector("#ctrl-diff");
   const pencilBtn = controls.querySelector("#ctrl-pencil");
+
+  function hintsMaxForDifficulty(key) {
+    return key === "expertttt" ? 3 : null;
+  }
 
   function titleBadge() {
     const t = cosmetics.title;
@@ -794,7 +798,7 @@ export function startThcokuGame(canvas, options = {}) {
       filled: filledCount(state.board),
       session_kind: state.sessionKind,
       hints_used: state.hintsUsed,
-      hints_max: null, // paid hints are unlimited — never persist a stale cap
+      hints_max: state.hintsMax,
       hints_gary_used: state.hintsGaryUsed,
       gary_wisdom_bonus: state.garyWisdomBonus,
       // Original open time (metadata only) — elapsed is active screen time.
@@ -819,8 +823,11 @@ export function startThcokuGame(canvas, options = {}) {
     state.hintsUsed = Number(snap.hints_used) || 0;
     state.hintsGaryUsed = Number(snap.hints_gary_used) || 0;
     state.garyWisdomBonus = Number(snap.gary_wisdom_bonus) || 0;
-    // Paid hints are always unlimited — ignore legacy localStorage caps (3/10).
-    state.hintsMax = null;
+    if (snap.hints_max == null || snap.hints_max === "" || Number(snap.hints_max) <= 0) {
+      state.hintsMax = null;
+    } else {
+      state.hintsMax = Number(snap.hints_max);
+    }
     if (snap.hint_sponge_cost != null) {
       state.hintSpongeCost = Number(snap.hint_sponge_cost) || 15;
     }
@@ -840,6 +847,9 @@ export function startThcokuGame(canvas, options = {}) {
     } else {
       state.diffIndex = idx >= 0 ? idx : Math.max(0, DIFF_KEYS.indexOf(DEFAULT_DIFFICULTY));
       if (DIFF_KEYS[state.diffIndex]) state.difficulty = DIFF_KEYS[state.diffIndex];
+    }
+    if (state.hintsMax == null) {
+      state.hintsMax = hintsMaxForDifficulty(state.difficulty);
     }
     state.selected = [0, 0];
     state.won = false;
@@ -931,8 +941,11 @@ export function startThcokuGame(canvas, options = {}) {
         state.hintsGaryUsed + (Number(meta.gary_free_left) || 0);
     }
     if ("hints_max" in meta) {
-      // Server null = unlimited; never re-apply a positive legacy cap.
-      state.hintsMax = null;
+      if (meta.hints_max == null || meta.hints_max === "" || Number(meta.hints_max) <= 0) {
+        state.hintsMax = null;
+      } else {
+        state.hintsMax = Number(meta.hints_max);
+      }
     }
     if (meta.pocket != null) state.pocketSponges = Number(meta.pocket) || 0;
     if (meta.hint_sponge_cost != null) {
@@ -958,7 +971,7 @@ export function startThcokuGame(canvas, options = {}) {
     }
     if (garyFree > 0) {
       hintBtn.textContent = `💡 Hint · free ×${garyFree}`;
-      hintBtn.title = `Gary's Wisdom — ${garyFree} free left, then unlimited paid hints (${state.hintSpongeCost} 🧽 each)`;
+      hintBtn.title = `Gary's Wisdom — ${garyFree} free left, then paid hints (${state.hintSpongeCost} 🧽 each${unlimited ? "" : `, max ${state.hintsMax}`})`;
     } else {
       const cost = state.hintSpongeCost;
       const pocket = state.pocketSponges;
@@ -1108,7 +1121,7 @@ export function startThcokuGame(canvas, options = {}) {
       state.hintsUsed = 0;
       state.hintsGaryUsed = 0;
       state.garyWisdomBonus = 0;
-      state.hintsMax = null;
+      state.hintsMax = hintsMaxForDifficulty(state.difficulty);
       state.serverHints = false;
       const user = discordUsername();
       state.status = user ? `Hey, ${user}! I'm ready!` : "Tap a cell — I'm ready!";
@@ -1268,9 +1281,15 @@ export function startThcokuGame(canvas, options = {}) {
 
   async function hint() {
     if (state.spectatorMode || state.won || state.reportingWin || !state.board) return;
-    // Ignore legacy client caps — paid hints are unlimited.
     if (state.hintInFlight) return;
-    // (hintsMax kept null; no local exhaustion gate)
+    const unlimited =
+      state.hintsMax == null || !Number.isFinite(Number(state.hintsMax)) || Number(state.hintsMax) <= 0;
+    if (!unlimited && state.hintsUsed >= state.hintsMax) {
+      state.status = `No hints left (${state.hintsUsed}/${state.hintsMax}).`;
+      syncHintButton();
+      draw();
+      return;
+    }
 
     let targetR = state.selected[0];
     let targetC = state.selected[1];
@@ -1325,7 +1344,9 @@ export function startThcokuGame(canvas, options = {}) {
         const garyLeft = Math.max(0, state.garyWisdomBonus - state.hintsGaryUsed);
         let followUp = "";
         if (result.paid_with === "gary" && garyLeft === 0) {
-          followUp = ` · next hints cost ${state.hintSpongeCost} 🧽 each (no limit)`;
+          followUp = unlimited
+            ? ` · next hints cost ${state.hintSpongeCost} 🧽 each (no limit)`
+            : ` · next hints cost ${state.hintSpongeCost} 🧽 (max ${state.hintsMax})`;
         } else if (result.paid_with === "gary" && garyLeft > 0) {
           followUp = ` · ${garyLeft} free left`;
         }

@@ -27,7 +27,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Cache-bust when Python sources change (Render sometimes reuses stale layers).
-ARG SOURCE_DATE=2026-08-04-daily-announce-midnight-only
+ARG SOURCE_DATE=2026-08-05-expert-3-hints-harder-vh
 RUN echo "build $SOURCE_DATE"
 COPY bot.py challenge_store.py activity_http.py activity_watchers.py ./
 COPY fonts ./fonts

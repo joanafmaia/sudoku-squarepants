@@ -958,11 +958,18 @@ def _play_puzzle_fingerprint(
 
 
 def _hints_max_for_session(session_kind: str | None, doc: dict | None = None) -> int | None:
-    """Paid hints are unlimited. Returns None so the client does not show a hard cap.
+    """Return hint cap for this puzzle, or None when paid hints are unlimited.
 
-    Gary's Wisdom free tips are capped separately via gary_wisdom_bonus / hints_gary_used.
+    Expertttt is hard-capped (play / daily / challenge). Gary free tips still count
+    toward the same total. Other difficulties stay unlimited (sponges / Gary only).
     """
-    return None
+    _ = session_kind
+    from bot import hints_max_for_difficulty, resolve_session_difficulty
+
+    if not doc:
+        return None
+    difficulty, _idx = resolve_session_difficulty(doc)
+    return hints_max_for_difficulty(difficulty)
 
 
 def _resolve_active_play_elapsed(
@@ -2093,14 +2100,26 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
         elif ch_key and game is not None:
             hints_used = int(game.get("hints_used") or 0)
 
-        # No hard cap on paid hints — only sponges / Gary free / empty board matter.
+        hints_max = _hints_max_for_session(session_kind, charge_container or session or game)
+        if hints_max is not None and hints_used >= hints_max:
+            return {
+                "ok": False,
+                "error": "hints_exhausted",
+                "message": f"Expertttt allows only {hints_max} hints this puzzle.",
+                "hints_used": hints_used,
+                "hints_max": hints_max,
+                "hints_gary_used": int(charge_container.get("hints_gary_used") or 0),
+                "gary_wisdom_bonus": int(charge_container.get("gary_wisdom_bonus") or 0),
+                "gary_free_left": hint_gary_free_remaining(charge_container),
+            }
+
         picked = _pick_hint_cell(board, given, solution, row, col)
         if picked is None:
             return {
                 "ok": False,
                 "error": "no_hint_available",
                 "hints_used": hints_used,
-                "hints_max": None,
+                "hints_max": hints_max,
                 "hints_gary_used": int(charge_container.get("hints_gary_used") or 0),
                 "gary_wisdom_bonus": int(charge_container.get("gary_wisdom_bonus") or 0),
                 "gary_free_left": hint_gary_free_remaining(charge_container),
@@ -2112,7 +2131,7 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
                 "error": "no_guild",
                 "message": "Join a server to use hints.",
                 "hints_used": hints_used,
-                "hints_max": None,
+                "hints_max": hints_max,
             }
 
         charge = apply_hint_charge(stats, charge_container)
@@ -2125,7 +2144,7 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
                 "gary_free_left": int(charge.get("gary_free_left") or 0),
                 "gary_wisdom_bonus": int(charge_container.get("gary_wisdom_bonus") or 0),
                 "hints_used": hints_used,
-                "hints_max": None,
+                "hints_max": hints_max,
                 "hints_gary_used": int(charge_container.get("hints_gary_used") or 0),
             }
         save_data(bot.data)
@@ -2166,7 +2185,7 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
         "col": target_c,
         "value": value,
         "hints_used": hints_used,
-        "hints_max": None,
+        "hints_max": hints_max,
         "hints_gary_used": int(charge_container.get("hints_gary_used") or 0),
         "gary_wisdom_bonus": int(charge_container.get("gary_wisdom_bonus") or 0),
         "gary_free_left": hint_gary_free_remaining(charge_container),

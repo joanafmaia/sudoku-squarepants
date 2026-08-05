@@ -37,8 +37,8 @@ DIFFICULTY_TIERS: dict[str, dict] = {
     "easy": {"label": "Easy", "clues": 44, "multiplier": 1.00},
     "medium": {"label": "Medium", "clues": 38, "multiplier": 1.25},
     "hard": {"label": "Hard", "clues": 32, "multiplier": 1.60},
-    "very_hard": {"label": "Very Hard", "clues": 30, "multiplier": 2.20},
-    "expertttt": {"label": "Expertttt", "clues": 28, "multiplier": 3.00},
+    "very_hard": {"label": "Very Hard", "clues": 26, "multiplier": 2.20},
+    "expertttt": {"label": "Expertttt", "clues": 22, "multiplier": 3.00},
 }
 
 DIFFICULTY_CHOICES = [
@@ -55,6 +55,8 @@ KRABBY_SNACK_MULT = 1.25
 GOLDEN_SPATULA_MULT = 1.50
 REWARD_BOOST_GAMES_PER_PURCHASE = 3
 HINT_SPONGE_COST = 15
+# Expertttt only — total hints (Gary free + paid) across /play, /daily, /challenge.
+MAX_HINTS_EXPERTTTT = 3
 
 # Ordered list of difficulty keys (matches DIFF_KEYS in sudoku-core.js)
 DIFF_KEYS_LIST: list[str] = list(DIFFICULTY_TIERS.keys())
@@ -68,6 +70,19 @@ def difficulty_index(key: str) -> int:
         return DIFF_KEYS_LIST.index(canonical)
     except ValueError:
         return DIFF_KEYS_LIST.index(DEFAULT_DIFFICULTY)
+
+
+def hints_max_for_difficulty(difficulty: str | None) -> int | None:
+    """Hard cap on total hints for a puzzle, or None = unlimited paid hints.
+
+    Expertttt is capped in every mode (/play, /daily, challenge).
+    """
+    if not difficulty:
+        return None
+    key = difficulty_key_from_label(str(difficulty))
+    if key == "expertttt":
+        return MAX_HINTS_EXPERTTTT
+    return None
 
 
 def resolve_session_difficulty(session: dict | None) -> tuple[str, int]:
@@ -8297,7 +8312,8 @@ def shop_page_embed(
             detail += (
                 f"\n🐌 *{GARY_WISDOM_HINT_BONUS} free hints first (no sponge cost) "
                 f"for {GARY_WISDOM_GAMES_PER_PURCHASE} games. After that, paid hints "
-                f"are unlimited at {format_sponges(HINT_SPONGE_COST)} each.*"
+                f"at {format_sponges(HINT_SPONGE_COST)} each "
+                f"(Expertttt still max {MAX_HINTS_EXPERTTTT} total).*"
             )
         elif selected["id"] == "krabby_snack":
             detail += "\n🍟 *+25% pocket sponges only — career XP unchanged (3 wins).*"
@@ -8469,8 +8485,10 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
             "cost": cost,
             "message": (
                 f"Bought **{item['label']}**! Next game: "
-                f"**{GARY_WISDOM_HINT_BONUS} free hints**, then unlimited paid hints "
-                f"({stats['gary_wisdom_charges']} game(s) queued)."
+                f"**{GARY_WISDOM_HINT_BONUS} free hints**, then paid hints "
+                f"({format_sponges(HINT_SPONGE_COST)} each; Expertttt max "
+                f"{MAX_HINTS_EXPERTTTT} total). "
+                f"**{stats['gary_wisdom_charges']}** game(s) queued."
             ),
         }
 
@@ -10558,8 +10576,11 @@ async def help_cmd(interaction: discord.Interaction):
             f"Challenge win **×{CHALLENGE_WIN_MULT:g}** · "
             f"loss **{format_sponges(CHALLENGE_LOSER_COINS, signed=True)}** (sponges only)\n"
             f"**Hints** cost **{format_sponges(HINT_SPONGE_COST)}** from pocket sponges "
-            f"(not career XP) — **no limit** while you can pay. "
-            f"**Gary's Wisdom** in `/shop` grants {GARY_WISDOM_HINT_BONUS} free hints/game first.\n"
+            f"(not career XP). Most tiers are unlimited while you can pay; "
+            f"**Expertttt is capped at {MAX_HINTS_EXPERTTTT} hints** "
+            f"(/play, /daily, and challenges). "
+            f"**Gary's Wisdom** in `/shop` grants {GARY_WISDOM_HINT_BONUS} free hints/game first "
+            f"(they count toward the Expertttt cap).\n"
             f"{tiers}"
         ),
         inline=False,
