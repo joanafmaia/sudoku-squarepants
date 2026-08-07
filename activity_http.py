@@ -960,9 +960,9 @@ def _play_puzzle_fingerprint(
 def _hints_max_for_session(session_kind: str | None, doc: dict | None = None) -> int | None:
     """Return hint cap for this puzzle, or None when paid hints are unlimited.
 
-    Expertttt is hard-capped (play / daily / challenge). Gary free tips still count
-    toward the same total. Other difficulties stay unlimited (sponges / Gary only).
-    Challenge races can set no_hints → hard zero.
+    Very Hard and Expertttt are hard-capped (play / daily / challenge). Gary free
+    tips still count toward the same total. Other difficulties stay unlimited
+    (sponges / Gary only). Challenge races can set no_hints → hard zero.
     """
     _ = session_kind
     from bot import hints_max_for_difficulty, resolve_session_difficulty
@@ -2240,13 +2240,17 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
         elif ch_key and game is not None:
             hints_used = int(game.get("hints_used") or 0)
 
-        hints_max = _hints_max_for_session(session_kind, charge_container or session or game)
+        hint_doc = charge_container or session or game or {}
+        hints_max = _hints_max_for_session(session_kind, hint_doc)
         if hints_max is not None and hints_used >= hints_max:
+            from bot import difficulty_label, resolve_session_difficulty
+
+            tier_key, _ = resolve_session_difficulty(hint_doc)
+            tier_label = difficulty_label(tier_key) or "This difficulty"
             msg = (
                 "No hints in this race."
-                if (charge_container or session or game or {}).get("no_hints")
-                or hints_max == 0
-                else f"Expertttt allows only {hints_max} hints this puzzle."
+                if hint_doc.get("no_hints") or hints_max == 0
+                else f"{tier_label} allows only {hints_max} hints this puzzle."
             )
             return {
                 "ok": False,
