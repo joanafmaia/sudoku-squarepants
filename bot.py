@@ -3396,6 +3396,7 @@ def build_activity_win_embed(
     golden_spatula_remaining: int | None = None,
 ) -> discord.Embed:
     """Channel announcement when someone clears a Sudoku puzzle."""
+    # Mentions must live in description/content — Discord does not parse <@id> in embed titles.
     mention = f"<@{user_id}>"
     tier = difficulty_label(difficulty)
     badge = PINEAPPLE if is_daily else SPONGE
@@ -3414,8 +3415,9 @@ def build_activity_win_embed(
         golden_spatula_remaining=golden_spatula_remaining,
     )
 
-    embed = paper_embed(f"{badge} {mention} completed the {label}!")
+    embed = paper_embed(f"{badge} {label} completed!")
     embed.description = (
+        f"{mention} completed the {label}!\n"
         f"🏆 **Rank:** {format_rank_line(total_xp)}\n"
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {streak}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
@@ -3900,8 +3902,10 @@ def finish_win(
     if weekly_notes:
         weekly_line = "\n📅 **Weekly:** " + " · ".join(weekly_notes)
 
-    embed = paper_embed(f"{badge} {user.mention} completed the {label}!")
+    # Mentions must live in description/content — Discord does not parse <@id> in embed titles.
+    embed = paper_embed(f"{badge} {label} completed!")
     embed.description = (
+        f"{user.mention} completed the {label}!\n"
         f"🏆 **Rank:** {format_rank_line(int(stats.get('xp') or 0))}\n"
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {stats['streak']}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
