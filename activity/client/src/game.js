@@ -616,7 +616,7 @@ export function startThcokuGame(canvas, options = {}) {
     playerSlot: options.playerSlot || null,
     undoStack: [],
     hintsUsed: 0,
-    hintsMax: null, // null = unlimited; Expertttt gets 3 from the server
+    hintsMax: null, // null = unlimited; Very Hard / Expertttt get 3 from the server
     hintsGaryUsed: 0,
     garyWisdomBonus: 0,
     hintSpongeCost: Number(options.hintSpongeCost) || 15,
@@ -634,7 +634,8 @@ export function startThcokuGame(canvas, options = {}) {
   const pencilBtn = controls.querySelector("#ctrl-pencil");
 
   function hintsMaxForDifficulty(key) {
-    return key === "expertttt" ? 3 : null;
+    if (key === "very_hard" || key === "expertttt") return 3;
+    return null;
   }
 
   function titleBadge() {
