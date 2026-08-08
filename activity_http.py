@@ -960,9 +960,8 @@ def _play_puzzle_fingerprint(
 def _hints_max_for_session(session_kind: str | None, doc: dict | None = None) -> int | None:
     """Return hint cap for this puzzle, or None when paid hints are unlimited.
 
-    Very Hard and Expertttt are hard-capped (play / daily / challenge). Gary free
-    tips still count toward the same total. Other difficulties stay unlimited
-    (sponges / Gary only). Challenge races can set no_hints → hard zero.
+    All difficulties are unlimited (sponges / Gary only). Challenge races can
+    set no_hints → hard zero. Explicit session hints_max is still honored.
     """
     _ = session_kind
     from bot import hints_max_for_difficulty, resolve_session_difficulty
