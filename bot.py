@@ -55,13 +55,6 @@ KRABBY_SNACK_MULT = 1.25
 GOLDEN_SPATULA_MULT = 1.50
 REWARD_BOOST_GAMES_PER_PURCHASE = 3
 HINT_SPONGE_COST = 15
-# Hard tiers — total hints (Gary free + paid) across /play, /daily, /challenge.
-MAX_HINTS_VERY_HARD = 3
-MAX_HINTS_EXPERTTTT = 3
-HINT_CAPS_BY_DIFFICULTY: dict[str, int] = {
-    "very_hard": MAX_HINTS_VERY_HARD,
-    "expertttt": MAX_HINTS_EXPERTTTT,
-}
 
 # Ordered list of difficulty keys (matches DIFF_KEYS in sudoku-core.js)
 DIFF_KEYS_LIST: list[str] = list(DIFFICULTY_TIERS.keys())
@@ -80,12 +73,11 @@ def difficulty_index(key: str) -> int:
 def hints_max_for_difficulty(difficulty: str | None) -> int | None:
     """Hard cap on total hints for a puzzle, or None = unlimited paid hints.
 
-    Very Hard and Expertttt are capped in every mode (/play, /daily, challenge).
+    All difficulties are unlimited (sponges / Gary only). Challenge races may
+    still set no_hints → hard zero via the session doc.
     """
-    if not difficulty:
-        return None
-    key = difficulty_key_from_label(str(difficulty))
-    return HINT_CAPS_BY_DIFFICULTY.get(key)
+    _ = difficulty
+    return None
 
 
 def resolve_session_difficulty(session: dict | None) -> tuple[str, int]:
@@ -8593,8 +8585,7 @@ def shop_page_embed(
             detail += (
                 f"\n🐌 *{GARY_WISDOM_HINT_BONUS} free hints first (no sponge cost) "
                 f"for {GARY_WISDOM_GAMES_PER_PURCHASE} games. After that, paid hints "
-                f"at {format_sponges(HINT_SPONGE_COST)} each "
-                f"(Very Hard / Expertttt still max {MAX_HINTS_VERY_HARD} total).*"
+                f"at {format_sponges(HINT_SPONGE_COST)} each (unlimited while you can pay).*"
             )
         elif selected["id"] == "krabby_snack":
             detail += "\n🍟 *+25% pocket sponges only — career XP unchanged (3 wins).*"
@@ -8767,8 +8758,7 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
             "message": (
                 f"Bought **{item['label']}**! Next game: "
                 f"**{GARY_WISDOM_HINT_BONUS} free hints**, then paid hints "
-                f"({format_sponges(HINT_SPONGE_COST)} each; Very Hard / Expertttt max "
-                f"{MAX_HINTS_VERY_HARD} total). "
+                f"({format_sponges(HINT_SPONGE_COST)} each, unlimited). "
                 f"**{stats['gary_wisdom_charges']}** game(s) queued."
             ),
         }
@@ -10934,11 +10924,10 @@ async def help_cmd(interaction: discord.Interaction):
             f"Challenge win **×{CHALLENGE_WIN_MULT:g}** · "
             f"loss **{format_sponges(CHALLENGE_LOSER_COINS, signed=True)}** (sponges only)\n"
             f"**Hints** cost **{format_sponges(HINT_SPONGE_COST)}** from pocket sponges "
-            f"(not career XP). Most tiers are unlimited while you can pay; "
-            f"**Very Hard** and **Expertttt** are capped at **{MAX_HINTS_VERY_HARD} hints** "
+            f"(not career XP). All tiers are unlimited while you can pay "
             f"(/play, /daily, and challenges). "
             f"**Gary's Wisdom** in `/shop` grants {GARY_WISDOM_HINT_BONUS} free hints/game first "
-            f"(they count toward the Very Hard / Expertttt cap).\n"
+            f"(then paid hints as usual).\n"
             f"{tiers}"
         ),
         inline=False,
