@@ -266,32 +266,29 @@ SHOP_TITLES = {
     "larry": {"label": "💪 Larry Lobster", "cost": 200, "pin": "Larry", "emoji": "💪"},
     "barnacle": {"label": "🦸 Barnacle Boy", "cost": 300, "pin": "Barnacle", "emoji": "🦸"},
     "row_master": {"label": "🚗 Boatmobile Ace", "cost": 420, "pin": "Boatmobile", "emoji": "🚗"},
+    "darkstriker": {"label": "🦹 Dark Striker", "cost": 500, "pin": "Striker", "emoji": "🦹"},
     "puff": {"label": "⛵ Boating School Grad", "cost": 550, "pin": "Boating Grad", "emoji": "⛵"},
     "dutchman": {"label": "👻 Flying Dutchman", "cost": 700, "pin": "Dutchman", "emoji": "👻"},
+    "behindyou": {"label": "👀 Behind You", "cost": 750, "pin": "Behind You", "emoji": "👀"},
     "sudoku_pro": {"label": "🍦 Goofy Goober", "cost": 900, "pin": "Goober", "emoji": "🍦"},
-    "plankton": {"label": "🦠 Plankton Plotter", "cost": 1150, "pin": "Plankton", "emoji": "🦠"},
-    "mermaid": {"label": "🧜 Mermaid Man", "cost": 1450, "pin": "Mermaid Man", "emoji": "🧜"},
-    "legend": {"label": "🍍 Pineapple Legend", "cost": 1800, "pin": "Legend", "emoji": "🍍"},
-    "neptune": {"label": "👑 King Neptune", "cost": 2200, "pin": "Neptune", "emoji": "👑"},
-    # Mid / late career — grind titles (also eligible for the lighter daily title deal)
+    "glock_sheets": {"label": "📊 Glock Sheets", "cost": 900, "pin": "Sheets", "emoji": "📊"},
     "kelp_shake": {"label": "🥤 Kelp Shake Ace", "cost": 980, "pin": "Kelp Shake", "emoji": "🥤"},
+    "bookie": {"label": "📚 Book Queen", "cost": 1050, "pin": "Bookie", "emoji": "📚"},
+    "xiao": {"label": "🐰 Cute Xiao", "cost": 1050, "pin": "Xiao", "emoji": "🐰"},
+    "plankton": {"label": "🦠 Plankton Plotter", "cost": 1150, "pin": "Plankton", "emoji": "🦠"},
+    "stacked": {"label": "😎 Stacked Smooth", "cost": 1200, "pin": "Stacked", "emoji": "😎"},
     "karate": {"label": "🥊 Karate Island", "cost": 1320, "pin": "Karate", "emoji": "🥊"},
+    "drea_mom": {"label": "🫶 Mama Drea", "cost": 1400, "pin": "Mama", "emoji": "🫶"},
+    "mermaid": {"label": "🧜 Mermaid Man", "cost": 1450, "pin": "Mermaid Man", "emoji": "🧜"},
     "bubble_bass": {"label": "🐡 Bubble Bass", "cost": 1580, "pin": "Bass", "emoji": "🐡"},
+    "hulk_r5": {"label": "🧌 Hulk Command", "cost": 1650, "pin": "Hulk", "emoji": "🧌"},
+    "fuzzy": {"label": "🔪 Fuzzy Wuzzy", "cost": 1750, "pin": "Fuzzy", "emoji": "🔪"},
+    "legend": {"label": "🍍 Pineapple Legend", "cost": 1800, "pin": "Legend", "emoji": "🍍"},
     "fancy": {"label": "🎩 Fancy Living", "cost": 1920, "pin": "Fancy", "emoji": "🎩"},
     "time_closet": {"label": "⏰ Time Closet", "cost": 2080, "pin": "Time Closet", "emoji": "⏰"},
+    "neptune": {"label": "👑 King Neptune", "cost": 2200, "pin": "Neptune", "emoji": "👑"},
     "hash_slinging": {"label": "🪓 Hash-Slinging Slasher", "cost": 2350, "pin": "Slasher", "emoji": "🪓"},
-    # Crew tributes — Bikini Bottom shout-outs
-    "darkstriker": {"label": "🦹 Dark Striker", "cost": 500, "pin": "Striker", "emoji": "🦹"},
-    "behindyou": {"label": "👀 Behind You", "cost": 750, "pin": "Behind You", "emoji": "👀"},
-    "glock_sheets": {"label": "📊 Glock Sheets", "cost": 900, "pin": "Sheets", "emoji": "📊"},
-    "bookie": {"label": "📚 Book Queen", "cost": 1050, "pin": "Bookie", "emoji": "📚"},
-    "stacked": {"label": "😎 Stacked Smooth", "cost": 1200, "pin": "Stacked", "emoji": "😎"},
-    "drea_mom": {"label": "🫶 Mama Drea", "cost": 1400, "pin": "Mama", "emoji": "🫶"},
-    "hulk_r5": {"label": "🧌 Hulk Command", "cost": 1650, "pin": "Hulk", "emoji": "🧌"},
     "apex_whale": {"label": "🐋 Apex Whale", "cost": 2500, "pin": "Apex", "emoji": "🐋"},
-    "fuzzy": {"label": "🔪 Fuzzy Wuzzy", "cost": 1750, "pin": "Fuzzy", "emoji": "🔪"},
-    "xiao": {"label": "🐰 Cute Xiao", "cost": 1050, "pin": "Xiao", "emoji": "🐰"},
-    # Endgame titles — sponge whale chase, still a step under the pin grind
     "trident": {"label": "🔱 Trident Bearer", "cost": 5000, "pin": "Trident", "emoji": "🔱"},
     "atlantis": {"label": "🏰 Atlantis Royal", "cost": 6500, "pin": "Atlantis", "emoji": "🏰"},
     "acres": {"label": "🎪 Tentacle Acres", "cost": 8000, "pin": "Acres", "emoji": "🎪"},
@@ -1351,6 +1348,7 @@ def user_stats(gstats: dict, user_id: int) -> dict:
     if free_pins_added:
         s["owned_pins"] = owned
         s["owned_themes"] = owned
+    prune_pin_lists(s)
     seed_sponges_spent(s)
     s.setdefault("hints", 0)
     s.setdefault("daily_wins", 0)
@@ -1674,14 +1672,11 @@ def hidden_pin_ids(stats: dict) -> list[str]:
 
 
 def owned_pin_emojis(stats: dict) -> list[str]:
-    """Border emojis from owned pins — favorites first, hidden omitted."""
+    """Border emojis from owned pins — hidden omitted. My board is the on/off switch."""
     pins: list[str] = []
     seen: set[str] = set()
     hidden = set(hidden_pin_ids(stats))
-    ordered = list(
-        dict.fromkeys([*favorite_pin_ids(stats), *owned_pin_ids(stats)])
-    )
-    for tid in ordered:
+    for tid in owned_pin_ids(stats):
         if tid in hidden:
             continue
         meta = SHOP_PINS.get(tid)
@@ -1692,38 +1687,10 @@ def owned_pin_emojis(stats: dict) -> list[str]:
     return pins
 
 
-def toggle_favorite_pin(stats: dict, pin_id: str) -> bool:
-    """Toggle favorite. Returns True if now favorited."""
-    resolved = resolve_pin_id(str(pin_id))
-    if not resolved or resolved not in owned_pin_ids(stats):
-        return False
-    favs = favorite_pin_ids(stats)
-    if resolved in favs:
-        favs = [p for p in favs if p != resolved]
-        stats["favorite_pin_ids"] = favs
-        return False
-    favs.append(resolved)
-    stats["favorite_pin_ids"] = favs
-    # Favoriting unhides so the pin can show on the border.
-    stats["hidden_pin_ids"] = [p for p in hidden_pin_ids(stats) if p != resolved]
-    return True
-
-
-def toggle_hidden_pin(stats: dict, pin_id: str) -> bool:
-    """Toggle hide-from-border. Returns True if now hidden."""
-    resolved = resolve_pin_id(str(pin_id))
-    if not resolved or resolved not in owned_pin_ids(stats):
-        return False
-    hidden = hidden_pin_ids(stats)
-    if resolved in hidden:
-        hidden = [p for p in hidden if p != resolved]
-        stats["hidden_pin_ids"] = hidden
-        return False
-    hidden.append(resolved)
-    stats["hidden_pin_ids"] = hidden
-    # Hiding drops favorite (can't be both).
-    stats["favorite_pin_ids"] = [p for p in favorite_pin_ids(stats) if p != resolved]
-    return True
+def prune_pin_lists(stats: dict) -> None:
+    """Drop favorite/hidden ids that are no longer owned (gifts, migrations)."""
+    stats["favorite_pin_ids"] = favorite_pin_ids(stats)
+    stats["hidden_pin_ids"] = hidden_pin_ids(stats)
 
 
 def find_player_cosmetics_stats(
@@ -3356,15 +3323,15 @@ def apply_hint_charge(stats: dict, container: dict) -> dict:
 
 
 def format_hints_used_line(hints_used: int = 0, hints_gary_used: int = 0) -> str:
-    """Board/win caption for total hints (Gary free + paid)."""
-    paid = max(0, int(hints_used or 0))
-    gary = max(0, int(hints_gary_used or 0))
+    """Board/win caption. ``hints_used`` is the total (Gary free + paid)."""
+    total = max(0, int(hints_used or 0))
+    gary = min(max(0, int(hints_gary_used or 0)), total)
     gary_bits = f" (Gary {gary})" if gary else ""
-    return f"💡 Hints used: {paid + gary}{gary_bits}"
+    return f"💡 Hints used: {total}{gary_bits}"
 
 
 def hints_from_game(game: dict | None) -> tuple[int, int]:
-    """Paid hint count and Gary free-hint count from a game/session dict."""
+    """Total hint count and Gary free-hint count from a game/session dict."""
     src = game or {}
     return (
         int(src.get("hints_used") or src.get("hints") or 0),
@@ -4057,6 +4024,7 @@ async def finish_win_and_announce(
                 day=day,
                 elapsed=elapsed,
                 hints=int(game.get("hints_used") or game.get("hints") or 0),
+                hints_gary=int(game.get("hints_gary_used") or 0),
                 difficulty=tier,
                 coins=preview_coins,
                 player_name=getattr(user, "display_name", None) or getattr(user, "name", None),
@@ -8425,7 +8393,7 @@ def _daily_deal_pick(pool: list[str], day: str, salt: str) -> str | None:
 
     Uses one deterministic shuffle of the pool, then rotates by UTC day index.
     The same pin/title only returns after every other paid item had a turn
-    (~66 days for pins, ~40 for titles) — never again after just 1–2 days.
+    (~65 days for pins, ~40 for titles) — never again after just 1–2 days.
     """
     if not pool:
         return None
@@ -8480,26 +8448,6 @@ def daily_bundle_title_id(day: str | None = None) -> str | None:
 
 
 def daily_bundle_title(day: str | None = None) -> dict | None:
-    """Catalog-shaped daily title deal entry, or None."""
-    day = day or utc_today()
-    tid = daily_bundle_title_id(day)
-    if not tid:
-        return None
-    meta = SHOP_TITLES[tid]
-    full = int(meta["cost"])
-    sale = _shop_deal_price(full, SHOP_TITLE_DEAL_MULT)
-    return {
-        "kind": "title",
-        "id": tid,
-        "label": meta["label"],
-        "emoji": meta.get("emoji", SPONGE),
-        "cost": sale,
-        "full_cost": full,
-        "on_sale": True,
-        "theme": None,
-        "pin": meta.get("pin") or cosmetic_pin_text(meta),
-        "bundle_day": day,
-    }
     """Catalog-shaped daily title deal entry, or None."""
     day = day or utc_today()
     tid = daily_bundle_title_id(day)
@@ -8659,11 +8607,7 @@ def apply_page_board_pins(
     newly_hidden = [pid for pid in page_ids if pid and pid not in shown]
     hidden.extend(newly_hidden)
     stats["hidden_pin_ids"] = hidden
-    if newly_hidden:
-        drop = set(newly_hidden)
-        stats["favorite_pin_ids"] = [
-            p for p in favorite_pin_ids(stats) if p not in drop
-        ]
+    prune_pin_lists(stats)
 
 
 def shop_item_price_text(item: dict) -> str:
@@ -8703,11 +8647,9 @@ def shop_filter_catalog(
         owned = [it for it in items if shop_item_owned(stats, it)]
         if items and items[0].get("kind") == "pin":
             hidden = set(hidden_pin_ids(stats))
-            favs = set(favorite_pin_ids(stats))
             owned.sort(
                 key=lambda it: (
                     1 if it["id"] in hidden else 0,
-                    0 if it["id"] in favs else 1,
                     int(it.get("cost") or 0),
                     it["label"],
                 )
@@ -8854,7 +8796,10 @@ def apply_shop_equip(bot: "SudokuBot", guild_id: int, user_id: int, item: dict) 
         push_cosmetics_sync(user_id, guild_id, stats)
         return {
             "ok": True,
-            "message": f"**{item['label']}** is already on your border when you play.",
+            "message": (
+                f"**{item['label']}** is in your collection — "
+                "tick it under Pins → **My board** to show it on the frame."
+            ),
         }
 
     tid = item["id"]
@@ -9115,6 +9060,8 @@ def apply_gift_pin(
     donor["owned_themes"] = donor_owned
     recv["owned_pins"] = recv_owned
     recv["owned_themes"] = recv_owned
+    prune_pin_lists(donor)
+    prune_pin_lists(recv)
     save_data(bot.data)
     push_cosmetics_sync(from_user_id, guild_id, donor)
     push_cosmetics_sync(to_user_id, guild_id, recv)
@@ -12229,9 +12176,15 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
     ]
     elapsed = int(r.get("time") or r.get("elapsed") or 300)
     hints_used = 0
+    hints_gary_used = 0
     if mongo_completion and not mongo_completion.get("forfeit"):
         elapsed = int(mongo_completion.get("elapsed") or elapsed)
         hints_used = int(mongo_completion.get("hints") or 0)
+        hints_gary_used = int(
+            mongo_completion.get("hints_gary")
+            or mongo_completion.get("hints_gary_used")
+            or 0
+        )
 
     game_state = {
         "mode": "daily",
@@ -12242,6 +12195,7 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
         "given": given,
         "solution": solution,
         "hints_used": hints_used,
+        "hints_gary_used": hints_gary_used,
     }
 
     # finish_win_and_announce skips payout when local results already have won=True.
@@ -12291,6 +12245,7 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
         is_daily=True,
         user_stats_dict=stats,
         hints_used=hints_used,
+        hints_gary_used=hints_gary_used,
     )
     image = await asyncio.to_thread(
         render_board,

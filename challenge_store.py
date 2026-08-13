@@ -84,6 +84,7 @@ class MatchStore:
         difficulty: str,
         coins: int,
         player_name: str | None = None,
+        hints_gary: int = 0,
     ) -> bool:
         """Atomically claim today's daily win. True = first claim (award + announce)."""
         raise NotImplementedError
@@ -587,6 +588,7 @@ class MemoryMatchStore(MatchStore):
         difficulty: str,
         coins: int,
         player_name: str | None = None,
+        hints_gary: int = 0,
     ) -> bool:
         key = self._daily_key(guild_id, user_id, day)
         if key in self._daily:
@@ -599,6 +601,7 @@ class MemoryMatchStore(MatchStore):
             "date": day,
             "elapsed": elapsed,
             "hints": hints,
+            "hints_gary": max(0, int(hints_gary or 0)),
             "difficulty": difficulty,
             "coins": coins,
             "claimed_at": time.time(),
@@ -1109,6 +1112,7 @@ class MongoMatchStore(MatchStore):
         difficulty: str,
         coins: int,
         player_name: str | None = None,
+        hints_gary: int = 0,
     ) -> bool:
         from pymongo.errors import DuplicateKeyError  # type: ignore
 
@@ -1125,6 +1129,7 @@ class MongoMatchStore(MatchStore):
             "date": day,
             "elapsed": elapsed,
             "hints": hints,
+            "hints_gary": max(0, int(hints_gary or 0)),
             "difficulty": difficulty,
             "coins": coins,
             "claimed_at": time.time(),
