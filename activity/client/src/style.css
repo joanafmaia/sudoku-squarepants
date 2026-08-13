@@ -261,6 +261,18 @@ body {
   gap: 8px;
 }
 
+.ctrl-pad-hint {
+  margin: 0;
+  padding: 0 2px;
+  text-align: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--header);
+  opacity: 0.78;
+  line-height: 1.2;
+}
+
 .ctrl-actions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -700,6 +712,10 @@ body.theme-dark #game-controls {
   border-color: rgba(56, 189, 248, 0.4);
 }
 
+body.theme-dark .ctrl-pad-hint {
+  color: #7dd3fc;
+}
+
 body.theme-dark #game-controls button {
   background: linear-gradient(180deg, #334155 0%, #1e293b 100%);
   border-color: #475569;
@@ -786,6 +802,10 @@ body.theme-jellyfish #app-toolbar button {
 body.theme-jellyfish #game-controls {
   background: rgba(30, 27, 75, 0.88);
   border-color: rgba(244, 114, 182, 0.4);
+}
+
+body.theme-jellyfish .ctrl-pad-hint {
+  color: #f9a8d4;
 }
 
 body.theme-jellyfish #game-controls button {
@@ -876,6 +896,10 @@ body.theme-krabs #game-controls {
   border-color: rgba(251, 191, 36, 0.45);
 }
 
+body.theme-krabs .ctrl-pad-hint {
+  color: #fef08a;
+}
+
 body.theme-krabs #game-controls button {
   background: linear-gradient(180deg, #075985 0%, #0c4a6e 100%);
   border-color: #0369a1;
@@ -962,6 +986,10 @@ body.theme-rockbottom #app-toolbar button {
 body.theme-rockbottom #game-controls {
   background: rgba(9, 13, 22, 0.9);
   border-color: rgba(34, 211, 238, 0.35);
+}
+
+body.theme-rockbottom .ctrl-pad-hint {
+  color: #67e8f9;
 }
 
 body.theme-rockbottom #game-controls button {

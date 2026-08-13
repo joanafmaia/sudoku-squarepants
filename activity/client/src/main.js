@@ -1340,21 +1340,31 @@ async function beginPlay({ resumeSession = null, initialDiffIndex = null } = {})
 
   const cosmetics = await loadCosmetics();
   if (cosmetics && gameApi?.setCosmetics) gameApi.setCosmetics(cosmetics);
-  maybeShowCosmeticsTip();
+  maybeShowPlayTips();
 }
 
-function maybeShowCosmeticsTip() {
+function maybeShowPlayTips() {
+  let showedCosmetics = false;
   try {
-    if (localStorage.getItem("thcoku_tip_title_pins_v1")) return;
+    if (!localStorage.getItem("thcoku_tip_title_pins_v1")) {
+      showWinToast("Tip: titles live in the header · pins sit on the board border.");
+      localStorage.setItem("thcoku_tip_title_pins_v1", "1");
+      showedCosmetics = true;
+    }
   } catch {
-    return;
+    /* tip may show again next boot */
   }
-  showWinToast("Tip: titles live in the header · pins sit on the board border.");
-  try {
-    localStorage.setItem("thcoku_tip_title_pins_v1", "1");
-  } catch {
-    /* ignore — tip may show again next boot */
-  }
+  const showNotes = () => {
+    try {
+      if (localStorage.getItem("thcoku_tip_hold_notes_v1")) return;
+      showWinToast("Tip: tap a number to place it · hold for a pencil note.");
+      localStorage.setItem("thcoku_tip_hold_notes_v1", "1");
+    } catch {
+      /* ignore */
+    }
+  };
+  if (showedCosmetics) setTimeout(showNotes, 7000);
+  else showNotes();
 }
 
 async function prefetchSessionBoard(session) {

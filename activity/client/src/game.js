@@ -511,10 +511,11 @@ function ensureControls(shell) {
       )
       .join("")}
     </div>
+    <p class="ctrl-pad-hint" id="ctrl-pad-hint">Tap to place · hold for a note</p>
     <div class="ctrl-actions ctrl-actions-edit" role="group" aria-label="Editing Actions">
       <button type="button" data-action="undo" id="ctrl-undo" title="Undo move">↩ Undo</button>
       <button type="button" data-action="clear" class="ctrl-clear" title="Clear selected cell">Clear</button>
-      <button type="button" data-action="pencil" id="ctrl-pencil" title="Lock notes mode · or hold a number for a note">Notes</button>
+      <button type="button" data-action="pencil" id="ctrl-pencil" title="Lock notes mode · or hold a number for a note">Lock notes</button>
     </div>
     <div class="ctrl-actions ctrl-actions-meta" id="ctrl-meta" role="group" aria-label="Game Setup Actions">
       <button type="button" data-action="quit" id="ctrl-quit" class="btn-danger">🚪 Quit</button>
@@ -540,6 +541,18 @@ function ensureControls(shell) {
     } else if (resetBtn && meta && !meta.contains(resetBtn) && hintBtn) {
       hintBtn.insertAdjacentElement("afterend", resetBtn);
     }
+  }
+  const pad = bar.querySelector(".ctrl-pad");
+  if (pad && !bar.querySelector("#ctrl-pad-hint")) {
+    const hint = document.createElement("p");
+    hint.className = "ctrl-pad-hint";
+    hint.id = "ctrl-pad-hint";
+    hint.textContent = "Tap to place · hold for a note";
+    pad.insertAdjacentElement("afterend", hint);
+  }
+  const pencil = bar.querySelector("#ctrl-pencil");
+  if (pencil && pencil.textContent.trim() === "Notes") {
+    pencil.textContent = "Lock notes";
   }
   bar.querySelectorAll(".ctrl-digit").forEach((btn) => {
     const n = btn.dataset.digit;
@@ -1013,11 +1026,17 @@ export function startThcokuGame(canvas, options = {}) {
   function syncControls() {
     if (diffBtn) diffBtn.textContent = difficultyLabel(DIFF_KEYS[state.diffIndex]);
     if (pencilBtn) {
-      pencilBtn.textContent = state.pencilMode ? "Notes ON" : "Notes";
+      pencilBtn.textContent = state.pencilMode ? "Notes ON" : "Lock notes";
       pencilBtn.classList.toggle("is-active", state.pencilMode);
       pencilBtn.title = state.pencilMode
         ? "Notes locked — tap a number to mark · tap again to unlock"
         : "Hold a number for a pencil note · tap here to lock notes on";
+    }
+    const padHint = controls.querySelector("#ctrl-pad-hint");
+    if (padHint) {
+      padHint.textContent = state.pencilMode
+        ? "Notes on — tap a number to mark"
+        : "Tap to place · hold for a note";
     }
     const spec = state.spectatorMode;
     // Spectators only watch — hide the number pad and action rows entirely.
