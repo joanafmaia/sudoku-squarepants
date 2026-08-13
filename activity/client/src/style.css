@@ -151,6 +151,33 @@ body {
   }
 }
 
+@keyframes react-toast-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 18px) scale(0.72);
+  }
+  55% {
+    opacity: 1;
+    transform: translate(-50%, -4px) scale(1.08);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+@keyframes react-btn-sent {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.22);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
 #app {
   min-height: 100vh;
   min-height: 100dvh;
@@ -222,6 +249,10 @@ body {
   gap: 8px;
   box-sizing: border-box;
   align-self: stretch;
+}
+
+#game-controls[hidden] {
+  display: none !important;
 }
 
 .ctrl-pad {
@@ -325,6 +356,26 @@ body {
   max-width: min(90vw, 480px);
   text-align: center;
   animation: toast-in 0.35s ease;
+}
+
+#win-toast.is-reaction {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 14px;
+  border-radius: 999px;
+  text-align: center;
+  font-weight: 600;
+  box-shadow:
+    0 12px 32px rgba(0, 0, 0, 0.28),
+    0 0 0 2px rgba(245, 158, 11, 0.45);
+}
+
+#win-toast .react-toast-emoji {
+  font-size: 2.1rem;
+  line-height: 1;
+  flex-shrink: 0;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.25));
 }
 
 /* Mobile / Activity narrow: stack (board on top, pad below) */
@@ -431,10 +482,15 @@ body {
   display: flex;
   justify-content: flex-end;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   flex-shrink: 0;
   margin-bottom: 4px;
+  overflow: hidden;
 }
 
 #watchers-chip {
@@ -467,12 +523,19 @@ body {
   pointer-events: none;
 }
 
+/* Own full-width row so 5 reactions + music/theme never clip off-screen. */
 #spectate-react {
-  margin-right: auto;
+  order: -1;
+  flex: 1 1 100%;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 4px;
-  flex-wrap: nowrap;
+  box-sizing: border-box;
 }
 
 #spectate-react[hidden] {
@@ -480,14 +543,25 @@ body {
 }
 
 #spectate-react .react-btn {
-  font-size: 1.05rem;
-  padding: 5px 8px;
-  min-width: 36px;
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 52px;
+  font-size: 1rem;
+  padding: 6px 4px;
+  line-height: 1.1;
 }
 
 #spectate-react .react-btn:disabled {
   opacity: 0.55;
   cursor: default;
+}
+
+#spectate-react .react-btn.is-sent {
+  animation: react-btn-sent 0.55s ease;
+  box-shadow:
+    0 0 0 2px rgba(245, 158, 11, 0.85),
+    0 6px 16px rgba(15, 118, 110, 0.28);
+  transform: scale(1.08);
 }
 
 #app-toolbar button {
@@ -503,6 +577,7 @@ body {
   -webkit-tap-highlight-color: transparent;
   box-shadow: 0 4px 12px rgba(15, 118, 110, 0.2);
   transition: transform 0.15s ease, background 0.2s ease;
+  flex-shrink: 0;
 }
 
 @media (max-width: 859px) {
@@ -510,6 +585,20 @@ body {
     font-size: 0.9rem;
     padding: 8px 12px;
     min-height: 40px;
+  }
+
+  #spectate-react {
+    gap: 3px;
+  }
+
+  #spectate-react .react-btn {
+    max-width: none;
+    padding: 6px 2px;
+    font-size: 0.95rem;
+  }
+
+  #app-toolbar button:not(.react-btn) {
+    padding: 6px 8px;
   }
 }
 
