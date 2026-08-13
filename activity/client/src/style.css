@@ -308,10 +308,62 @@ body {
 }
 
 #game-controls .ctrl-digit {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 1.4rem;
+  line-height: 1;
   background: linear-gradient(180deg, #fff7ed 0%, #ffedd5 55%, #fdba74 100%);
   border-color: #c2410c;
   color: #7c2d12;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+#game-controls .ctrl-digit.is-holding {
+  transform: scale(0.94);
+  filter: brightness(0.96);
+}
+
+#game-controls .ctrl-digit.is-noted {
+  background: linear-gradient(180deg, #e0f2fe 0%, #bae6fd 55%, #7dd3fc 100%);
+  border-color: #0284c7;
+  color: #0c4a6e;
+}
+
+#game-controls .ctrl-digit-n {
+  font-size: inherit;
+  font-weight: 800;
+}
+
+#game-controls .ctrl-digit-left {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+#game-controls .ctrl-digit-left[hidden] {
+  display: none !important;
+}
+
+#game-controls .ctrl-digit.is-complete {
+  opacity: 0.4;
+  filter: grayscale(0.25);
+}
+
+#game-controls .ctrl-digit.is-selected-digit {
+  box-shadow: 0 3px 0 rgba(15, 118, 110, 0.25), 0 0 0 2px currentColor;
+}
+
+#game-controls .ctrl-digit.is-complete.is-selected-digit {
+  opacity: 0.72;
 }
 
 #game-controls .ctrl-clear {
@@ -339,6 +391,11 @@ body {
 #game-controls button:active {
   transform: translateY(2px);
   box-shadow: 0 1px 0 rgba(15, 118, 110, 0.2);
+}
+
+#game-controls .ctrl-digit.is-holding,
+#game-controls .ctrl-digit.is-holding:active {
+  transform: scale(0.94);
 }
 
 #win-toast {

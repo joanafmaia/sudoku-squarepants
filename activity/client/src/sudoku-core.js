@@ -258,6 +258,19 @@ export function filledCount(board) {
   return n;
 }
 
+/** How many times each digit 1–9 is placed (index 0 unused). */
+export function digitCounts(board) {
+  const counts = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  if (!board) return counts;
+  for (let r = 0; r < 9; r++) {
+    for (let c = 0; c < 9; c++) {
+      const v = cellValue(board, r, c);
+      if (v >= 1 && v <= 9) counts[v] += 1;
+    }
+  }
+  return counts;
+}
+
 export function isSolved(board, solution) {
   if (filledCount(board) < 81) return false;
   if (findConflicts(board).size) return false;

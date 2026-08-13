@@ -228,6 +228,16 @@ function playPuzzleCompatible(remote, local) {
   return true;
 }
 
+function maxHintCounts(remote, local) {
+  return {
+    hints_used: Math.max(Number(remote?.hints_used) || 0, Number(local?.hints_used) || 0),
+    hints_gary_used: Math.max(
+      Number(remote?.hints_gary_used) || 0,
+      Number(local?.hints_gary_used) || 0
+    ),
+  };
+}
+
 function sessionsCompatible(remote, local) {
   if (!remote || !local) return false;
   const rk = remote.session_kind || "play";
@@ -581,20 +591,17 @@ async function loadSavedSession() {
           board: local.board,
           filled: lFilled,
           elapsed: Math.max(Number(local.elapsed) || 0, Number(remote.elapsed) || 0),
-          hints_used: Math.max(
-            Number(remote.hints_used) || 0,
-            Number(local.hints_used) || 0
-          ),
+          ...maxHintCounts(remote, local),
         };
       }
     } else if (local && sessionsCompatible(remote, local) && remote.session_kind === "challenge") {
-      // Keep local hints if higher; never replace the server board.
-      const hints = Math.max(
-        Number(remote.hints_used) || 0,
-        Number(local.hints_used) || 0
-      );
-      if (hints > (Number(remote.hints_used) || 0)) {
-        return { ...remote, hints_used: hints };
+      // Keep local hint totals if higher; never replace the server board.
+      const mergedHints = maxHintCounts(remote, local);
+      if (
+        mergedHints.hints_used > (Number(remote.hints_used) || 0) ||
+        mergedHints.hints_gary_used > (Number(remote.hints_gary_used) || 0)
+      ) {
+        return { ...remote, ...mergedHints };
       }
     }
     return remote;

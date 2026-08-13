@@ -6,6 +6,7 @@ import {
   DIFF_KEYS,
   cellValue,
   clearPencilDigitPeers,
+  digitCounts,
   difficultyLabel,
   filledCount,
   findConflicts,
@@ -225,7 +226,7 @@ const TITLE_HEADER_LINES = {
   Medium: "Order up, {title}!",
   Hard: "Aye aye, {title}!",
   "Very Hard": "Jumping jellyfish, {title}!",
-  Expertttt: "Barnacles, {title}!",
+  Expertttt: "Barnacles! Go get 'em, {title}!",
 };
 
 const STATUS_OK = [
@@ -504,13 +505,16 @@ function ensureControls(shell) {
     bar.innerHTML = `
     <div class="ctrl-pad" role="group" aria-label="Numbers">
       ${[1, 2, 3, 4, 5, 6, 7, 8, 9]
-      .map((n) => `<button type="button" class="ctrl-digit" data-digit="${n}">${n}</button>`)
+      .map(
+        (n) =>
+          `<button type="button" class="ctrl-digit" data-digit="${n}" aria-label="${n}, 9 left"><span class="ctrl-digit-n">${n}</span><span class="ctrl-digit-left" aria-hidden="true">9</span></button>`
+      )
       .join("")}
     </div>
     <div class="ctrl-actions ctrl-actions-edit" role="group" aria-label="Editing Actions">
       <button type="button" data-action="undo" id="ctrl-undo" title="Undo move">↩ Undo</button>
       <button type="button" data-action="clear" class="ctrl-clear" title="Clear selected cell">Clear</button>
-      <button type="button" data-action="pencil" id="ctrl-pencil">Notes</button>
+      <button type="button" data-action="pencil" id="ctrl-pencil" title="Lock notes mode · or hold a number for a note">Notes</button>
     </div>
     <div class="ctrl-actions ctrl-actions-meta" id="ctrl-meta" role="group" aria-label="Game Setup Actions">
       <button type="button" data-action="quit" id="ctrl-quit" class="btn-danger">🚪 Quit</button>
@@ -537,6 +541,11 @@ function ensureControls(shell) {
       hintBtn.insertAdjacentElement("afterend", resetBtn);
     }
   }
+  bar.querySelectorAll(".ctrl-digit").forEach((btn) => {
+    const n = btn.dataset.digit;
+    if (!n || btn.querySelector(".ctrl-digit-n")) return;
+    btn.innerHTML = `<span class="ctrl-digit-n">${n}</span><span class="ctrl-digit-left" aria-hidden="true">9</span>`;
+  });
   return bar;
 }
 
@@ -1006,6 +1015,9 @@ export function startThcokuGame(canvas, options = {}) {
     if (pencilBtn) {
       pencilBtn.textContent = state.pencilMode ? "Notes ON" : "Notes";
       pencilBtn.classList.toggle("is-active", state.pencilMode);
+      pencilBtn.title = state.pencilMode
+        ? "Notes locked — tap a number to mark · tap again to unlock"
+        : "Hold a number for a pencil note · tap here to lock notes on";
     }
     const spec = state.spectatorMode;
     // Spectators only watch — hide the number pad and action rows entirely.
@@ -1054,11 +1066,37 @@ export function startThcokuGame(canvas, options = {}) {
       btn.disabled = false;
       btn.style.opacity = "";
     });
+    syncDigitPad();
+    syncHintButton();
+  }
+
+  function syncDigitPad() {
+    if (!controls || state.spectatorMode) return;
+    const counts = digitCounts(state.board);
+    const [sr, sc] = Array.isArray(state.selected) ? state.selected : [-1, -1];
+    const selectedVal = cellValue(state.board, sr, sc);
     controls.querySelectorAll(".ctrl-digit").forEach((btn) => {
+      const n = Number(btn.dataset.digit);
+      const placed = counts[n] || 0;
+      const left = Math.max(0, 9 - placed);
+      const complete = left === 0;
+      const leftEl = btn.querySelector(".ctrl-digit-left");
+      if (leftEl) {
+        leftEl.textContent = String(left);
+        leftEl.hidden = complete;
+      }
+      btn.classList.toggle("is-complete", complete);
+      btn.classList.toggle("is-selected-digit", selectedVal === n);
       btn.disabled = false;
       btn.style.opacity = "";
+      if (complete) {
+        btn.setAttribute("aria-label", `${n}, all placed`);
+        btn.title = `${n} — all 9 placed · hold for a note`;
+      } else {
+        btn.setAttribute("aria-label", `${n}, ${left} left. Tap to place, hold for a note`);
+        btn.title = `${n} — ${left} left · tap to place · hold for a note`;
+      }
     });
-    syncHintButton();
   }
 
   function spawnBubbles() {
@@ -1255,6 +1293,7 @@ export function startThcokuGame(canvas, options = {}) {
     if (state.won || state.reportingWin) return;
     state.reportingWin = true;
     pauseTimer();
+    syncDigitPad();
     const elapsed = getElapsedSec();
     const gen = state.boardGen;
     const run = async () => {
@@ -1373,6 +1412,7 @@ export function startThcokuGame(canvas, options = {}) {
         state.flashUntil = Date.now() + 300;
         state.status = `Hint applied! 💡 (${correctVal}) · ${state.hintsUsed} used${costNote}${followUp}`;
         syncHintButton();
+        syncDigitPad();
         playFx("hint");
         if (!maybeCelebrateAfterMove()) {
           draw();
@@ -1420,6 +1460,7 @@ export function startThcokuGame(canvas, options = {}) {
     state.flashUntil = Date.now() + 300;
     state.status = `Hint applied! 💡 (${correctVal}) · ${state.hintsUsed} used`;
     playFx("hint");
+    syncDigitPad();
     if (isSolved(state.board, state.solution)) {
       celebrateWin();
     } else {
@@ -1434,8 +1475,9 @@ export function startThcokuGame(canvas, options = {}) {
     }
   }
 
-  function place(digit) {
+  function place(digit, opts = {}) {
     if (state.spectatorMode || state.won || state.reportingWin) return;
+    const asPencil = Boolean(opts.pencil) || (state.pencilMode && digit);
     const [r, c] = state.selected;
     if (state.given[r][c]) {
       state.status = "Fixed clue — barnacles!";
@@ -1446,12 +1488,19 @@ export function startThcokuGame(canvas, options = {}) {
       return;
     }
 
-    saveUndoState();
-
     const currentVal = cellValue(state.board, r, c);
-    const targetDigit = (currentVal === digit && digit !== 0) ? 0 : digit;
+    const targetDigit = currentVal === digit && digit !== 0 && !asPencil ? 0 : digit;
 
-    if (state.pencilMode && targetDigit) {
+    if (asPencil && targetDigit) {
+      if (currentVal) {
+        state.status = "Clear the cell first — then hold for a note";
+        state.shakeUntil = Date.now() + 250;
+        playFx("error");
+        draw();
+        ensureAnim();
+        return;
+      }
+      saveUndoState();
       togglePencil(state.board, r, c, targetDigit);
       state.status = "Mrs. Puff note";
       state.flashCell = [r, c];
@@ -1466,8 +1515,22 @@ export function startThcokuGame(canvas, options = {}) {
           console.warn("[Thcoku] onProgress", err);
         }
       }
+      syncDigitPad();
       return;
     }
+
+    if (targetDigit && currentVal !== targetDigit) {
+      const placed = digitCounts(state.board)[targetDigit] || 0;
+      if (placed >= 9) {
+        state.status = `${targetDigit} is already complete!`;
+        playFx("error");
+        draw();
+        ensureAnim();
+        return;
+      }
+    }
+
+    saveUndoState();
     setCellValue(state.board, r, c, targetDigit);
     if (targetDigit) clearPencilDigitPeers(state.board, r, c, targetDigit);
     state.flashCell = [r, c];
@@ -1525,6 +1588,7 @@ export function startThcokuGame(canvas, options = {}) {
     if (state.won) return;
     state.selected = cell;
     state.status = pick(STATUS_PICK);
+    syncDigitPad();
     draw();
   }
 
@@ -1865,12 +1929,85 @@ export function startThcokuGame(canvas, options = {}) {
     handleBoardPointer(x, y);
   });
 
+  const PAD_HOLD_MS = 400;
+  let padHold = null;
+  let digitPointerUntil = 0;
+
+  function clearPadHoldVisual() {
+    if (padHold?.timer) {
+      clearTimeout(padHold.timer);
+      padHold.timer = 0;
+    }
+    padHold?.btn?.classList.remove("is-holding");
+  }
+
+  function endPadHold() {
+    clearPadHoldVisual();
+    padHold = null;
+  }
+
+  controls.addEventListener("pointerdown", (evt) => {
+    const btn = evt.target.closest(".ctrl-digit");
+    if (!btn || !controls.contains(btn)) return;
+    const digit = Number(btn.dataset.digit);
+    if (!(digit >= 1 && digit <= 9)) return;
+    getAudioCtx();
+    if (musicEnabled) ensureBgmStarted();
+    endPadHold();
+    try {
+      btn.setPointerCapture(evt.pointerId);
+    } catch {
+      /* capture optional */
+    }
+    padHold = {
+      btn,
+      digit,
+      pointerId: evt.pointerId,
+      fired: false,
+      timer: setTimeout(() => {
+        if (!padHold || padHold.pointerId !== evt.pointerId) return;
+        padHold.fired = true;
+        digitPointerUntil = Date.now() + 500;
+        padHold.btn.classList.remove("is-holding");
+        padHold.btn.classList.add("is-noted");
+        try {
+          navigator.vibrate?.(15);
+        } catch {
+          /* no haptic */
+        }
+        place(padHold.digit, { pencil: true });
+        const notedBtn = padHold.btn;
+        setTimeout(() => notedBtn.classList.remove("is-noted"), 220);
+      }, PAD_HOLD_MS),
+    };
+    btn.classList.add("is-holding");
+  });
+
+  controls.addEventListener("pointerup", (evt) => {
+    if (!padHold || padHold.pointerId !== evt.pointerId) return;
+    const { fired, digit } = padHold;
+    endPadHold();
+    digitPointerUntil = Date.now() + 500;
+    if (!fired) place(digit);
+  });
+
+  controls.addEventListener("pointercancel", (evt) => {
+    if (!padHold || padHold.pointerId !== evt.pointerId) return;
+    digitPointerUntil = Date.now() + 500;
+    endPadHold();
+  });
+
+  controls.addEventListener("contextmenu", (evt) => {
+    if (evt.target.closest(".ctrl-digit")) evt.preventDefault();
+  });
+
   controls.addEventListener("click", (evt) => {
     const btn = evt.target.closest("button");
     if (!btn) return;
     const digit = btn.dataset.digit;
     const action = btn.dataset.action;
     if (digit) {
+      if (Date.now() < digitPointerUntil) return;
       place(Number(digit));
       return;
     }
@@ -1908,7 +2045,7 @@ export function startThcokuGame(canvas, options = {}) {
   });
 
   window.addEventListener("keydown", (evt) => {
-    if (evt.key >= "1" && evt.key <= "9") place(Number(evt.key));
+    if (evt.key >= "1" && evt.key <= "9") place(Number(evt.key), { pencil: evt.shiftKey });
     else if (evt.key === "0" || evt.key === "Backspace" || evt.key === "Delete") place(0);
     else if ((evt.ctrlKey || evt.metaKey) && evt.key.toLowerCase() === "z") {
       evt.preventDefault();
@@ -1939,15 +2076,19 @@ export function startThcokuGame(canvas, options = {}) {
       /* arrows / selection disabled while watching */
     } else if (evt.key === "ArrowLeft") {
       state.selected[1] = (state.selected[1] + 8) % 9;
+      syncDigitPad();
       draw();
     } else if (evt.key === "ArrowRight") {
       state.selected[1] = (state.selected[1] + 1) % 9;
+      syncDigitPad();
       draw();
     } else if (evt.key === "ArrowUp") {
       state.selected[0] = (state.selected[0] + 8) % 9;
+      syncDigitPad();
       draw();
     } else if (evt.key === "ArrowDown") {
       state.selected[0] = (state.selected[0] + 1) % 9;
+      syncDigitPad();
       draw();
     }
   });

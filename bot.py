@@ -305,7 +305,7 @@ SHOP_TITLES = {
 
 # Pins = border stickers only. One free; paid pins scale up so cosmetics stay a chase.
 SHOP_PINS = {
-    "xp_boost": {"label": "🔮 Puff's Crystal Ball (2x XP - 3 Games)", "pin": "Crystal Ball", "emoji": "🔮", "cost": 120},
+    "xp_boost": {"label": "🔮 Puff's Crystal Ball (2× XP & Sponges — 3 games)", "pin": "Crystal Ball", "emoji": "🔮", "cost": 120},
     "streak_shield": {"label": "🛡️ Krabby Shield (missed daily days)", "pin": "Shield", "emoji": "🛡️", "cost": 150},
     "gary_wisdom": {"label": "🐌 Gary's Wisdom (+3 free hints/game ×2)", "pin": "Gary", "emoji": "🐌", "cost": 60},
     "krabby_snack": {"label": "🍟 Krabby Snack (+25% Sponges — 3 wins)", "pin": "Snack", "emoji": "🍟", "cost": 80},
@@ -3330,13 +3330,24 @@ def format_hints_used_line(hints_used: int = 0, hints_gary_used: int = 0) -> str
     return f"💡 Hints used: {total}{gary_bits}"
 
 
+def _hint_int(src: dict, *keys: str) -> int:
+    """First present numeric hint field. ``0`` is valid; missing falls through."""
+    for key in keys:
+        if key not in src or src[key] is None:
+            continue
+        try:
+            return max(0, int(src[key]))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
 def hints_from_game(game: dict | None) -> tuple[int, int]:
     """Total hint count and Gary free-hint count from a game/session dict."""
     src = game or {}
-    return (
-        int(src.get("hints_used") or src.get("hints") or 0),
-        int(src.get("hints_gary_used") or 0),
-    )
+    total = _hint_int(src, "hints_used", "hints")
+    gary = min(_hint_int(src, "hints_gary_used", "hints_gary"), total)
+    return total, gary
 
 
 def format_xp_boost_win_line(*, used: bool, remaining: int | None = None) -> str:
@@ -3879,12 +3890,15 @@ def finish_win(
     if is_daily:
         stats["daily_wins"] += 1
         daily = get_guild_daily(data, guild_id)
+        hints_used, hints_gary_used = hints_from_game(game)
         daily["results"][str(user.id)] = {
             "won": True,
             "time": int(elapsed),
             "name": stats["name"],
             "coins": coins,
             "xp": xp,
+            "hints_used": hints_used,
+            "hints_gary_used": hints_gary_used,
         }
     elif normalize_game_mode(game.get("mode")) == "solo":
         stats["last_activity_win_at"] = time.time()
@@ -4017,14 +4031,15 @@ async def finish_win_and_announce(
 
         # Fail-closed like award_play_win: never pay if the durable claim store is down.
         claimed = False
+        hints_used, hints_gary_used = hints_from_game(game)
         try:
             claimed_ok = await match_store.try_claim_daily_win(
                 guild_id=guild_id,
                 user_id=user.id,
                 day=day,
                 elapsed=elapsed,
-                hints=int(game.get("hints_used") or game.get("hints") or 0),
-                hints_gary=int(game.get("hints_gary_used") or 0),
+                hints=hints_used,
+                hints_gary=hints_gary_used,
                 difficulty=tier,
                 coins=preview_coins,
                 player_name=getattr(user, "display_name", None) or getattr(user, "name", None),
@@ -8994,7 +9009,14 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
         return {"ok": False, "bought": False, "message": "Unknown pin."}
     owned = owned_pin_ids(stats)
     if tid in owned:
-        return {"ok": False, "bought": False, "message": "Already owned — it's on your border."}
+        return {
+            "ok": False,
+            "bought": False,
+            "message": (
+                "Already owned — tick it under Pins → **My board** "
+                "to show it on the frame."
+            ),
+        }
     if stats["coins"] < cost:
         return {
             "ok": False,
@@ -11130,11 +11152,9 @@ async def help_cmd(interaction: discord.Interaction):
         value=(
             f"**XP** ranks the leaderboard (never spent).\n"
             f"**Sponges** buy cosmetics in `/shop`:\n"
-            f"· **Titles** — header flair on your board\n"
-            f"· **Pins** — emoji stickers on the border\n"
-            f"· Open `/shop` → pick from the menu → **Buy** / **Equip**\n"
-            f"· Pins: filter **My board**, then tick which stickers stay on the frame "
-            f"(Show all / Clear board per page)\n"
+            f"· **Titles** — **Buy**, then **Equip** as header flair\n"
+            f"· **Pins** — **Buy**, then filter **My board** and tick which "
+            f"stickers stay on the frame (Show all / Clear board per page)\n"
             f"· Daily deals (UTC midnight): **50% off** one pin · **25% off** one title\n"
             f"· `/weekly` — 3 weekly goals for bonus sponges (resets Monday UTC)\n"
             f"Solve **{format_xp(BASE_WIN_REWARD, signed=True)}** + "
@@ -12175,16 +12195,19 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
         for r_idx in range(9)
     ]
     elapsed = int(r.get("time") or r.get("elapsed") or 300)
-    hints_used = 0
-    hints_gary_used = 0
+    hints_used, hints_gary_used = hints_from_game(r)
     if mongo_completion and not mongo_completion.get("forfeit"):
         elapsed = int(mongo_completion.get("elapsed") or elapsed)
-        hints_used = int(mongo_completion.get("hints") or 0)
-        hints_gary_used = int(
-            mongo_completion.get("hints_gary")
-            or mongo_completion.get("hints_gary_used")
-            or 0
+        mongo_used, mongo_gary = hints_from_game(
+            {
+                "hints": mongo_completion.get("hints"),
+                "hints_used": mongo_completion.get("hints_used"),
+                "hints_gary": mongo_completion.get("hints_gary"),
+                "hints_gary_used": mongo_completion.get("hints_gary_used"),
+            }
         )
+        hints_used = max(hints_used, mongo_used)
+        hints_gary_used = min(max(hints_gary_used, mongo_gary), hints_used)
 
     game_state = {
         "mode": "daily",

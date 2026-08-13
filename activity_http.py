@@ -786,6 +786,10 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                             )
                             entry["won"] = True
                             entry["announced_debug"] = True
+                            entry["hints_used"] = int(session.get("hints_used") or 0)
+                            entry["hints_gary_used"] = int(
+                                session.get("hints_gary_used") or 0
+                            )
                             _save(bot.data)
                         except Exception as flag_exc:  # noqa: BLE001
                             print(f"activity daily announced_debug set failed: {flag_exc}")
