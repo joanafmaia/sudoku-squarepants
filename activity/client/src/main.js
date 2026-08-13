@@ -38,16 +38,18 @@ let sessionOpenedAt = 0;
 let spectating = false;
 let spectatorPollTimer = null;
 let watcherPollTimer = null;
+let watcherPollGen = 0;
 let spectateTargetUserId = null;
 let reactSending = false;
 const SPECTATOR_POLL_MS = 3500;
-const WATCHERS_POLL_MS = 5000;
+const WATCHERS_POLL_IDLE_MS = 5000;
+const WATCHERS_POLL_LIVE_MS = 2000;
 const spectateReactEl = document.getElementById("spectate-react");
 
 const SPECTATE_REACT_META = {
   gg: { emoji: "👏", label: "GG" },
   oh_ow: { emoji: "😮", label: "Oh-ow" },
-  oh_no: { emoji: "😱", label: "Oh no" },
+  oh_no: { emoji: "💀", label: "Oh no" },
   yayyy: { emoji: "🎉", label: "Yayyy" },
   heart: { emoji: "❤️", label: "Love" },
 };
@@ -1070,8 +1072,9 @@ function renderWatchers(watchers) {
 bindWatchersChip();
 
 function stopWatcherPolling() {
+  watcherPollGen += 1;
   if (watcherPollTimer) {
-    clearInterval(watcherPollTimer);
+    clearTimeout(watcherPollTimer);
     watcherPollTimer = null;
   }
   renderWatchers([]);
@@ -1093,7 +1096,7 @@ async function fetchWatchers() {
       const who = String(gg?.from_name || "Spectator").trim() || "Spectator";
       const emoji = String(gg?.emoji || "👏").trim() || "👏";
       const label = String(gg?.label || "GG").trim() || "GG";
-      showWinToast(`${emoji} ${who} · ${label}!`);
+      showReactionToast({ emoji, who, label });
     }
     return Array.isArray(data?.watchers) ? data.watchers : [];
   } catch (err) {
@@ -1109,6 +1112,7 @@ function setSpectateReactVisible(visible) {
     reactSending = false;
     spectateReactEl.querySelectorAll(".react-btn").forEach((btn) => {
       btn.disabled = false;
+      btn.classList.remove("is-sent");
     });
   }
 }
@@ -1120,7 +1124,18 @@ function setSpectateReactDisabled(disabled) {
   });
 }
 
-async function sendSpectateReaction(reactionId) {
+function pulseReactButton(btn) {
+  if (!btn) return;
+  btn.classList.remove("is-sent");
+  void btn.offsetWidth;
+  btn.classList.add("is-sent");
+  clearTimeout(btn._sentT);
+  btn._sentT = setTimeout(() => {
+    btn.classList.remove("is-sent");
+  }, 1000);
+}
+
+async function sendSpectateReaction(reactionId, btnEl = null) {
   const key = String(reactionId || "gg");
   const meta = SPECTATE_REACT_META[key] || SPECTATE_REACT_META.gg;
   if (!spectating || !spectateTargetUserId || reactSending) return;
@@ -1155,7 +1170,8 @@ async function sendSpectateReaction(reactionId) {
     }
     const emoji = data.emoji || meta.emoji;
     const label = data.label || meta.label;
-    showWinToast(`${emoji} ${label} sent!`);
+    pulseReactButton(btnEl);
+    showWinToast(`${emoji} ${label} sent!`, { duration: 2200 });
   } catch (err) {
     console.warn("[Thcoku] reaction failed", err);
     showWinToast("Could not send reaction.");
@@ -1174,7 +1190,7 @@ function bindSpectateReact() {
     if (!btn || !spectateReactEl.contains(btn)) return;
     e.preventDefault();
     e.stopPropagation();
-    void sendSpectateReaction(btn.getAttribute("data-reaction") || "gg");
+    void sendSpectateReaction(btn.getAttribute("data-reaction") || "gg", btn);
   });
 }
 
@@ -1182,13 +1198,19 @@ bindSpectateReact();
 
 function startWatcherPolling() {
   stopWatcherPolling();
+  const gen = watcherPollGen;
   const tick = async () => {
-    renderWatchers(await fetchWatchers());
+    if (gen !== watcherPollGen) return;
+    const watchers = await fetchWatchers();
+    if (gen !== watcherPollGen) return;
+    renderWatchers(watchers);
+    const delay =
+      watchers.length > 0 ? WATCHERS_POLL_LIVE_MS : WATCHERS_POLL_IDLE_MS;
+    watcherPollTimer = setTimeout(() => {
+      void tick();
+    }, delay);
   };
   void tick();
-  watcherPollTimer = setInterval(() => {
-    void tick();
-  }, WATCHERS_POLL_MS);
 }
 
 async function consumeSpectateIntent() {
@@ -1466,8 +1488,11 @@ function formatTime(seconds) {
   return `${m}:${String(r).padStart(2, "0")}`;
 }
 
-function showWinToast(message) {
+function showWinToast(message, opts = {}) {
   if (!winToastEl) return;
+  const duration = Number(opts.duration);
+  const ms = Number.isFinite(duration) && duration > 0 ? duration : 6500;
+  winToastEl.classList.remove("is-reaction");
   winToastEl.hidden = false;
   winToastEl.textContent = message;
   winToastEl.style.animation = "none";
@@ -1476,7 +1501,33 @@ function showWinToast(message) {
   clearTimeout(showWinToast._t);
   showWinToast._t = setTimeout(() => {
     winToastEl.hidden = true;
-  }, 6500);
+    winToastEl.classList.remove("is-reaction");
+  }, ms);
+}
+
+function showReactionToast({ emoji, who, label }) {
+  if (!winToastEl) return;
+  const em = String(emoji || "👏").trim() || "👏";
+  winToastEl.hidden = false;
+  winToastEl.classList.add("is-reaction");
+  winToastEl.replaceChildren();
+  const emEl = document.createElement("span");
+  emEl.className = "react-toast-emoji";
+  emEl.textContent = em;
+  // Keep who/label in aria for accessibility, not on-screen.
+  const tip = [who, label].filter(Boolean).join(" · ");
+  if (tip) winToastEl.title = tip;
+  winToastEl.append(emEl);
+  winToastEl.style.animation = "none";
+  void winToastEl.offsetWidth;
+  winToastEl.style.animation = "react-toast-pop 0.45s cubic-bezier(0.22, 1.4, 0.36, 1)";
+  clearTimeout(showWinToast._t);
+  showWinToast._t = setTimeout(() => {
+    winToastEl.hidden = true;
+    winToastEl.classList.remove("is-reaction");
+    winToastEl.removeAttribute("title");
+    winToastEl.replaceChildren();
+  }, 2500);
 }
 
 /** Called from the Canvas game after a solved board. */

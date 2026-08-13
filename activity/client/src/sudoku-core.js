@@ -7,8 +7,8 @@ export const DIFFICULTY_TIERS = {
   easy: { label: "Easy", clues: 44 },
   medium: { label: "Medium", clues: 38 },
   hard: { label: "Hard", clues: 32 },
-  very_hard: { label: "Very Hard", clues: 26 },
-  expertttt: { label: "Expertttt", clues: 22 },
+  very_hard: { label: "Very Hard", clues: 28 },
+  expertttt: { label: "Expertttt", clues: 24 },
 };
 
 export const DIFF_KEYS = Object.keys(DIFFICULTY_TIERS);

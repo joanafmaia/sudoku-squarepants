@@ -31,14 +31,14 @@ VIEW_TIMEOUT = 20 * 60
 DEFAULT_DIFFICULTY = "medium"
 
 # key → target clue count (unique solution), display label, coin multiplier on win
-# Clue targets follow human-style bands — NEVER "fewer clues = more solutions".
+# Even-ish bands: −6 early, −4 at the top so Expertttt stays hardest without feeling empty.
 DIFFICULTY_TIERS: dict[str, dict] = {
     "very_easy": {"label": "Very Easy", "clues": 50, "multiplier": 0.80},
     "easy": {"label": "Easy", "clues": 44, "multiplier": 1.00},
     "medium": {"label": "Medium", "clues": 38, "multiplier": 1.25},
     "hard": {"label": "Hard", "clues": 32, "multiplier": 1.60},
-    "very_hard": {"label": "Very Hard", "clues": 26, "multiplier": 2.20},
-    "expertttt": {"label": "Expertttt", "clues": 22, "multiplier": 3.00},
+    "very_hard": {"label": "Very Hard", "clues": 28, "multiplier": 2.20},
+    "expertttt": {"label": "Expertttt", "clues": 24, "multiplier": 3.00},
 }
 
 DIFFICULTY_CHOICES = [
@@ -273,7 +273,7 @@ SHOP_TITLES = {
     "mermaid": {"label": "🧜 Mermaid Man", "cost": 1450, "pin": "Mermaid Man", "emoji": "🧜"},
     "legend": {"label": "🍍 Pineapple Legend", "cost": 1800, "pin": "Legend", "emoji": "🍍"},
     "neptune": {"label": "👑 King Neptune", "cost": 2200, "pin": "Neptune", "emoji": "👑"},
-    # Mid / late career — grind titles (full price; never on daily sale)
+    # Mid / late career — grind titles (also eligible for the lighter daily title deal)
     "kelp_shake": {"label": "🥤 Kelp Shake Ace", "cost": 980, "pin": "Kelp Shake", "emoji": "🥤"},
     "karate": {"label": "🥊 Karate Island", "cost": 1320, "pin": "Karate", "emoji": "🥊"},
     "bubble_bass": {"label": "🐡 Bubble Bass", "cost": 1580, "pin": "Bass", "emoji": "🐡"},
@@ -291,6 +291,19 @@ SHOP_TITLES = {
     "apex_whale": {"label": "🐋 Apex Whale", "cost": 2500, "pin": "Apex", "emoji": "🐋"},
     "fuzzy": {"label": "🔪 Fuzzy Wuzzy", "cost": 1750, "pin": "Fuzzy", "emoji": "🔪"},
     "xiao": {"label": "🐰 Cute Xiao", "cost": 1050, "pin": "Xiao", "emoji": "🐰"},
+    # Endgame titles — sponge whale chase, still a step under the pin grind
+    "trident": {"label": "🔱 Trident Bearer", "cost": 5000, "pin": "Trident", "emoji": "🔱"},
+    "atlantis": {"label": "🏰 Atlantis Royal", "cost": 6500, "pin": "Atlantis", "emoji": "🏰"},
+    "acres": {"label": "🎪 Tentacle Acres", "cost": 8000, "pin": "Acres", "emoji": "🎪"},
+    "volcano_isle": {"label": "🌋 Volcano Islander", "cost": 10000, "pin": "Volcano", "emoji": "🌋"},
+    "ice_king": {"label": "🧊 Ice Cream King", "cost": 12500, "pin": "Ice King", "emoji": "🧊"},
+    "squilliam": {"label": "🎭 Squilliam Elite", "cost": 15500, "pin": "Squilliam", "emoji": "🎭"},
+    "conch_oracle": {"label": "🧿 Magic Conch Oracle", "cost": 19000, "pin": "Oracle", "emoji": "🧿"},
+    "doodlebob": {"label": "✏️ Doodle Nemesis", "cost": 23000, "pin": "Doodle", "emoji": "✏️"},
+    "formula_keeper": {"label": "📜 Formula Keeper", "cost": 28000, "pin": "Keeper", "emoji": "📜"},
+    "galaxy": {"label": "🌌 Galaxy Wanderer", "cost": 34000, "pin": "Galaxy", "emoji": "🌌"},
+    "overlord": {"label": "💫 Tidal Overlord", "cost": 40000, "pin": "Overlord", "emoji": "💫"},
+    "eternal": {"label": "♾️ Squarepants Eternal", "cost": 45000, "pin": "Eternal", "emoji": "♾️"},
 }
 
 # Pins = border stickers only. One free; paid pins scale up so cosmetics stay a chase.
@@ -350,6 +363,27 @@ SHOP_PINS = {
     "pin_apex": {"label": "🐋 Apex Pin", "pin": "Apex", "emoji": "🐋", "cost": 1000, "theme": "crew"},
     "pin_fuzzy": {"label": "🔪 Fuzzy Pin", "pin": "Fuzzy", "emoji": "🔪", "cost": 880, "theme": "crew"},
     "pin_xiao": {"label": "🐰 Cute Xiao Pin", "pin": "Xiao", "emoji": "🐰", "cost": 540, "theme": "crew"},
+    # Endgame chase stickers — priced well above titles so pins stay the long grind
+    "lagoon": {"label": "🏖️ Goo Lagoon Pin", "pin": "Lagoon", "emoji": "🏖️", "cost": 6000, "theme": "ocean"},
+    "bikini": {"label": "👙 Bikini Bottom Pin", "pin": "Bikini", "emoji": "👙", "cost": 7000, "theme": "ocean"},
+    "dive": {"label": "🤿 Deep Dive Pin", "pin": "Dive", "emoji": "🤿", "cost": 8000, "theme": "ocean"},
+    "lobster": {"label": "🦞 Lobster Pin", "pin": "Lobster", "emoji": "🦞", "cost": 9000, "theme": "ocean"},
+    "taco": {"label": "🌮 Taco Tuesday Pin", "pin": "Taco", "emoji": "🌮", "cost": 10000, "theme": "ocean"},
+    "donut": {"label": "🍩 Donut Pin", "pin": "Donut", "emoji": "🍩", "cost": 11500, "theme": "ocean"},
+    "texas": {"label": "🌵 Texas Pin", "pin": "Texas", "emoji": "🌵", "cost": 13000, "theme": "ocean"},
+    "cowboy": {"label": "🤠 Cowboy Pin", "pin": "Cowboy", "emoji": "🤠", "cost": 14500, "theme": "ocean"},
+    "piano": {"label": "🎹 Piano Pin", "pin": "Piano", "emoji": "🎹", "cost": 16000, "theme": "ocean"},
+    "karaoke": {"label": "🎤 Sweet Victory Pin", "pin": "Victory", "emoji": "🎤", "cost": 18000, "theme": "ocean"},
+    "robot": {"label": "🤖 SpongeBot Pin", "pin": "SpongeBot", "emoji": "🤖", "cost": 20000, "theme": "ocean"},
+    "gar": {"label": "🦖 SpongeGar Pin", "pin": "SpongeGar", "emoji": "🦖", "cost": 22000, "theme": "ocean"},
+    "doodle": {"label": "✏️ DoodleBob Pin", "pin": "DoodleBob", "emoji": "✏️", "cost": 24500, "theme": "ocean"},
+    "conch": {"label": "🧿 Magic Conch Pin", "pin": "Conch", "emoji": "🧿", "cost": 27000, "theme": "ocean"},
+    "atlantis_pin": {"label": "🏰 Atlantis Pin", "pin": "Atlantis", "emoji": "🏰", "cost": 30000, "theme": "ocean"},
+    "volcano": {"label": "🌋 Volcano Pin", "pin": "Volcano", "emoji": "🌋", "cost": 33000, "theme": "ocean"},
+    "space": {"label": "🚀 Space Cadet Pin", "pin": "Space", "emoji": "🚀", "cost": 36000, "theme": "ocean"},
+    "ufo": {"label": "🛸 UFO Pin", "pin": "UFO", "emoji": "🛸", "cost": 40000, "theme": "ocean"},
+    "rainbow": {"label": "🌈 Rainbow Road Pin", "pin": "Rainbow", "emoji": "🌈", "cost": 45000, "theme": "ocean"},
+    "eternal_pin": {"label": "♾️ Eternal Pin", "pin": "Eternal", "emoji": "♾️", "cost": 50000, "theme": "ocean"},
 }
 
 SHOP_BOOST_KEYS = frozenset({
@@ -359,7 +393,10 @@ SHOP_BOOST_KEYS = frozenset({
     "krabby_snack",
     "golden_spatula",
 })
-SHOP_BUNDLE_DISCOUNT = 0.5  # 50% off one pin per UTC day (titles stay full price)
+# Daily deals (UTC midnight): one paid pin + one paid title.
+SHOP_PIN_DEAL_MULT = 0.5  # pay 50% → 50% off
+SHOP_TITLE_DEAL_MULT = 0.75  # pay 75% → ~25% off
+SHOP_BUNDLE_DISCOUNT = SHOP_PIN_DEAL_MULT  # backward-compatible alias
 
 SHOP_PAGE_SIZE = 11
 
@@ -387,8 +424,10 @@ ACHIEVEMENTS = {
     "pin_hoarder": {"label": "🎨 Pin Hoarder", "desc": "Own 8 border pins"},
     "pin_collector": {"label": "🪸 Pin Collector", "desc": "Own 16 border pins"},
     "pin_museum": {"label": "🏛️ Pin Museum", "desc": "Own 32 border pins"},
+    "pin_vault": {"label": "🗄️ Pin Vault", "desc": "Own 48 border pins"},
     "title_tour": {"label": "👑 Title Tour", "desc": "Own 5 shop titles"},
     "title_wardrobe": {"label": "👗 Title Wardrobe", "desc": "Own 10 shop titles"},
+    "title_hall": {"label": "🏅 Title Hall", "desc": "Own 20 shop titles"},
     "xp_voyager": {"label": "⭐ XP Voyager", "desc": "Reach 5,000 career XP"},
     "xp_reef": {"label": "🪸 XP Reef Walker", "desc": "Reach 15,000 career XP"},
     "xp_king": {"label": "👑 XP King Tide", "desc": "Reach 40,000 career XP"},
@@ -697,6 +736,8 @@ def evaluate_user_achievements(stats: dict) -> list[str]:
         unlocked.add("pin_collector")
     if pin_count >= 32:
         unlocked.add("pin_museum")
+    if pin_count >= 48:
+        unlocked.add("pin_vault")
 
     try:
         title_count = len(list(stats.get("owned_titles") or []))
@@ -706,6 +747,8 @@ def evaluate_user_achievements(stats: dict) -> list[str]:
         unlocked.add("title_tour")
     if title_count >= 10:
         unlocked.add("title_wardrobe")
+    if title_count >= 20:
+        unlocked.add("title_hall")
 
     try:
         xp_n = int(stats.get("xp") or 0)
@@ -3312,6 +3355,23 @@ def apply_hint_charge(stats: dict, container: dict) -> dict:
     }
 
 
+def format_hints_used_line(hints_used: int = 0, hints_gary_used: int = 0) -> str:
+    """Board/win caption for total hints (Gary free + paid)."""
+    paid = max(0, int(hints_used or 0))
+    gary = max(0, int(hints_gary_used or 0))
+    gary_bits = f" (Gary {gary})" if gary else ""
+    return f"💡 Hints used: {paid + gary}{gary_bits}"
+
+
+def hints_from_game(game: dict | None) -> tuple[int, int]:
+    """Paid hint count and Gary free-hint count from a game/session dict."""
+    src = game or {}
+    return (
+        int(src.get("hints_used") or src.get("hints") or 0),
+        int(src.get("hints_gary_used") or 0),
+    )
+
+
 def format_xp_boost_win_line(*, used: bool, remaining: int | None = None) -> str:
     """Optional win footer when Puff's Crystal Ball doubled the payout."""
     if not used:
@@ -3355,6 +3415,8 @@ def win_reward_caption(
     krabby_snack_remaining: int | None = None,
     golden_spatula_used: bool = False,
     golden_spatula_remaining: int | None = None,
+    hints_used: int = 0,
+    hints_gary_used: int = 0,
 ) -> str:
     """Readable win line under the board image (XP + sponges)."""
     line = random.choice(WIN_BANNER_LINES)
@@ -3367,9 +3429,10 @@ def win_reward_caption(
         golden_spatula_used=golden_spatula_used,
         golden_spatula_remaining=golden_spatula_remaining,
     )
+    hints_line = f"\n{format_hints_used_line(hints_used, hints_gary_used)}"
     return (
         f"{BUBBLE} **{line} {format_xp(gained_xp, signed=True)} · "
-        f"{format_sponges(max(int(coins), 0), signed=True)}!**{boost_line}"
+        f"{format_sponges(max(int(coins), 0), signed=True)}!**{boost_line}{hints_line}"
     )
 
 
@@ -3389,6 +3452,8 @@ def build_activity_win_embed(
     krabby_snack_remaining: int | None = None,
     golden_spatula_used: bool = False,
     golden_spatula_remaining: int | None = None,
+    hints_used: int = 0,
+    hints_gary_used: int = 0,
 ) -> discord.Embed:
     """Channel announcement when someone clears a Sudoku puzzle."""
     # Mentions must live in description/content — Discord does not parse <@id> in embed titles.
@@ -3409,6 +3474,7 @@ def build_activity_win_embed(
         golden_spatula_used=golden_spatula_used,
         golden_spatula_remaining=golden_spatula_remaining,
     )
+    hints_line = f"\n{format_hints_used_line(hints_used, hints_gary_used)}"
 
     embed = paper_embed(f"{badge} {label} completed!")
     embed.description = (
@@ -3416,7 +3482,7 @@ def build_activity_win_embed(
         f"🏆 **Rank:** {format_rank_line(total_xp)}\n"
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {streak}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
-        f"{boost_line}{badge_line}"
+        f"{boost_line}{hints_line}{badge_line}"
     )
     return embed
 
@@ -3741,6 +3807,7 @@ def board_file_for(game: dict, *, status: str | None = None) -> tuple[str, disco
     """Silent caption + large PNG attachment (no embed, no move chatter)."""
     _ = status
     conflicts = find_conflicts(game["board"])
+    mode = normalize_game_mode(game.get("mode"))
     stage = game.get("ui_stage", STAGE_BOX)
     highlight_box = game.get("box_id") if stage in (STAGE_CELL, STAGE_NUMBER) else None
     selected = selected_cell(game) if stage == STAGE_NUMBER else None
@@ -3756,7 +3823,13 @@ def board_file_for(game: dict, *, status: str | None = None) -> tuple[str, disco
         pin_emojis=game.get("pin_emojis"),
         pin_seed=game.get("pin_seed"),
     )
-    return " ", board_to_file(image)
+    # Board PNGs are posted into Discord chat (daily / play / challenge).
+    # Keep the content short: show how many hints were used so far.
+    if mode in ("daily", "solo", "challenge"):
+        content = format_hints_used_line(*hints_from_game(game))
+    else:
+        content = " "
+    return content, board_to_file(image)
 
 
 # ---------------------------------------------------------------------------
@@ -3897,6 +3970,8 @@ def finish_win(
     if weekly_notes:
         weekly_line = "\n📅 **Weekly:** " + " · ".join(weekly_notes)
 
+    hints_line = f"\n{format_hints_used_line(*hints_from_game(game))}"
+
     # Mentions must live in description/content — Discord does not parse <@id> in embed titles.
     embed = paper_embed(f"{badge} {label} completed!")
     embed.description = (
@@ -3904,7 +3979,7 @@ def finish_win(
         f"🏆 **Rank:** {format_rank_line(int(stats.get('xp') or 0))}\n"
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {stats['streak']}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
-        f"{boost_line}{badge_line}{weekly_line}"
+        f"{boost_line}{hints_line}{badge_line}{weekly_line}"
     )
     return WinOutcome(
         embed=embed,
@@ -4315,6 +4390,7 @@ async def abort_challenge_launch(match_id: str, player_ids: list[int]) -> None:
             await cleanup_challenge_channel_messages(
                 bot,
                 channel,
+                lobby_message_id=match.get("lobby_message_id"),
                 launch_message_id=match.get("launch_message_id"),
                 live_message_id=match.get("live_message_id"),
             )
@@ -4604,6 +4680,7 @@ async def settle_challenge_match(
             "detail": detail,
             "reward_notes": reward_notes,
             "channel_id": match.get("channel_id"),
+            "lobby_message_id": match.get("lobby_message_id"),
             "launch_message_id": match.get("launch_message_id"),
             "live_message_id": match.get("live_message_id"),
         }
@@ -4620,12 +4697,13 @@ async def settle_challenge_match(
     channel = as_challenge_text_channel(
         await resolve_channel(bot, announce_payload["channel_id"])
     )
+    lobby_id = announce_payload.get("lobby_message_id")
     launch_id = announce_payload.get("launch_message_id")
     live_id = announce_payload.get("live_message_id")
     if channel is None:
         print(
             f"settle_challenge_match: origin channel missing for match {match_id} "
-            f"(result/cleanup skipped; launch={launch_id} live={live_id})"
+            f"(result/cleanup skipped; lobby={lobby_id} launch={launch_id} live={live_id})"
         )
         return
 
@@ -4714,6 +4792,7 @@ async def settle_challenge_match(
         await cleanup_challenge_channel_messages(
             bot,
             channel,
+            lobby_message_id=lobby_id,
             launch_message_id=launch_id,
             live_message_id=live_id,
         )
@@ -4723,11 +4802,16 @@ async def cleanup_challenge_channel_messages(
     bot_ref: "SudokuBot",
     channel: discord.abc.Messageable,
     *,
+    lobby_message_id: int | str | None = None,
     launch_message_id: int | str | None,
     live_message_id: int | str | None,
 ) -> None:
-    """Delete the Play launch + live progress messages after the match ends."""
+    """Delete lobby / Play launch / live progress after the match ends.
+
+    Finished board posts and the result embed are kept on purpose.
+    """
     for label, raw_id in (
+        ("lobby", lobby_message_id),
         ("launch", launch_message_id),
         ("live", live_message_id),
     ):
@@ -4990,9 +5074,11 @@ async def handle_challenge_completion_activity(
                     if remaining
                     else "Settling match…"
                 )
+                hints_used, hints_gary_used = hints_from_game(game)
                 caption = (
                     f"✅ **{player_name}** finished · "
                     f"<@{user_id}> · **{format_time(elapsed)}**\n"
+                    f"{format_hints_used_line(hints_used, hints_gary_used)}\n"
                     f"{wait_msg}"
                 )
                 await channel.send(content=caption, file=file)
@@ -5096,10 +5182,12 @@ async def launch_challenge_match(
     players: list[discord.Member],
     difficulty: str,
     no_hints: bool = False,
+    lobby_message_id: int | None = None,
 ) -> bool:
     """Start a challenge. Caller must already have deferred the interaction.
 
     Returns True on success. On failure, sends an ephemeral followup when possible.
+    Deletes the invite/open lobby message when provided so chat stays lean.
     """
     match_id: str | None = None
     player_ids: list[int] = []
@@ -5168,9 +5256,10 @@ async def launch_challenge_match(
 
         launch_message_id = launch_msg.id
         try:
-            await match_store.update_match(
-                match_id, {"launch_message_id": launch_message_id}
-            )
+            patch: dict = {"launch_message_id": launch_message_id}
+            if lobby_message_id:
+                patch["lobby_message_id"] = int(lobby_message_id)
+            await match_store.update_match(match_id, patch)
         except Exception as exc:  # noqa: BLE001
             print(f"challenge launch_message_id save failed: {exc}")
 
@@ -5210,6 +5299,15 @@ async def launch_challenge_match(
         fresh = await match_store.get_match(match_id)
         if fresh is not None:
             await post_challenge_live_panel(bot, home, fresh, interaction.guild)
+        # Drop invite/open lobby from chat — keep Play + live until settle.
+        if lobby_message_id:
+            try:
+                lobby_msg = await home.fetch_message(int(lobby_message_id))
+                await lobby_msg.delete()
+            except (discord.NotFound, discord.Forbidden):
+                pass
+            except (discord.HTTPException, AttributeError) as exc:
+                print(f"challenge lobby message delete failed: {exc}")
         return True
     except Exception as exc:  # noqa: BLE001
         print(f"launch_challenge_match failed: {exc}")
@@ -5369,7 +5467,8 @@ async def update_challenge_live_message(bot_ref: "SudokuBot", match_id: str) -> 
             await cleanup_challenge_channel_messages(
                 bot_ref,
                 channel,
-                launch_message_id=None,
+                lobby_message_id=match.get("lobby_message_id"),
+                launch_message_id=match.get("launch_message_id"),
                 live_message_id=match.get("live_message_id"),
             )
             return
@@ -6737,6 +6836,7 @@ class ChallengeInviteView(discord.ui.View):
             players=members,
             difficulty=self.difficulty,
             no_hints=self.no_hints,
+            lobby_message_id=self.message.id if self.message else None,
         )
         if not ok:
             await _abort("Challenge failed to start — lobby reopened.")
@@ -7035,6 +7135,7 @@ class OpenChallengeLobbyView(discord.ui.View):
             players=members,
             difficulty=self.difficulty,
             no_hints=self.no_hints,
+            lobby_message_id=self.message.id if self.message else None,
         )
         if not ok:
             self._launching = False
@@ -8129,10 +8230,17 @@ class SudokuView(discord.ui.View):
                     pin_seed=game.get("pin_seed"),
                 )
             )
+            hints_used, hints_gary_used = hints_from_game(game)
             caption = (
-                win_reward_caption(coins, xp, **boost_kwargs)
+                win_reward_caption(
+                    coins,
+                    xp,
+                    **boost_kwargs,
+                    hints_used=hints_used,
+                    hints_gary_used=hints_gary_used,
+                )
                 if coins > 0 or xp > 0
-                else f"{BUBBLE} **Board complete!**"
+                else f"{BUBBLE} **Board complete!**\n{format_hints_used_line(hints_used, hints_gary_used)}"
             )
             try:
                 await interaction.edit_original_response(
@@ -8244,10 +8352,17 @@ class SudokuView(discord.ui.View):
                     game["rewarded"] = True
             except Exception as exc:  # noqa: BLE001
                 print(f"on_forfeit solved award failed: {exc}")
+            hints_used, hints_gary_used = hints_from_game(game)
             caption = (
-                win_reward_caption(coins, xp, **boost_kwargs)
+                win_reward_caption(
+                    coins,
+                    xp,
+                    **boost_kwargs,
+                    hints_used=hints_used,
+                    hints_gary_used=hints_gary_used,
+                )
                 if coins > 0 or xp > 0
-                else f"{BUBBLE} **Board complete!**"
+                else f"{BUBBLE} **Board complete!**\n{format_hints_used_line(hints_used, hints_gary_used)}"
             )
             try:
                 file = board_to_file(
@@ -8296,18 +8411,38 @@ class SudokuView(discord.ui.View):
 # Shop
 # ---------------------------------------------------------------------------
 
+def _shop_deal_price(full: int, mult: float) -> int:
+    return max(1, int(round(int(full) * float(mult))))
+
+
+def _utc_day_ordinal(day: str) -> int:
+    """UTC calendar day as a stable integer (date.toordinal)."""
+    return datetime.fromisoformat(str(day)[:10]).date().toordinal()
+
+
+def _daily_deal_pick(pool: list[str], day: str, salt: str) -> str | None:
+    """Pick one catalog id for ``day`` with no repeats until the pool cycles.
+
+    Uses one deterministic shuffle of the pool, then rotates by UTC day index.
+    The same pin/title only returns after every other paid item had a turn
+    (~66 days for pins, ~40 for titles) — never again after just 1–2 days.
+    """
+    if not pool:
+        return None
+    order = list(pool)
+    random.Random(salt).shuffle(order)
+    return order[_utc_day_ordinal(day) % len(order)]
+
+
 def daily_bundle_pin_id(day: str | None = None) -> str | None:
-    """Stable paid pin id on sale for this UTC day (50% off)."""
+    """Stable paid pin id on sale for this UTC day (exactly one; no short repeats)."""
     day = day or utc_today()
     paid = [
         tid
         for tid, meta in SHOP_PINS.items()
         if tid not in SHOP_BOOST_KEYS and int(meta.get("cost") or 0) > 0
     ]
-    if not paid:
-        return None
-    digest = hashlib.md5(f"thcoku-bundle:{day}".encode()).hexdigest()
-    return paid[int(digest, 16) % len(paid)]
+    return _daily_deal_pick(paid, day, "thcoku-pin-deal-v3")
 
 
 def daily_bundle_pin(day: str | None = None) -> dict | None:
@@ -8318,7 +8453,7 @@ def daily_bundle_pin(day: str | None = None) -> dict | None:
         return None
     meta = SHOP_PINS[tid]
     full = int(meta["cost"])
-    sale = max(1, int(round(full * SHOP_BUNDLE_DISCOUNT)))
+    sale = _shop_deal_price(full, SHOP_PIN_DEAL_MULT)
     return {
         "kind": "pin",
         "id": tid,
@@ -8334,13 +8469,57 @@ def daily_bundle_pin(day: str | None = None) -> dict | None:
 
 
 def daily_bundle_title_id(day: str | None = None) -> str | None:
-    """Titles are never on daily sale (kept rare); always returns None."""
-    return None
+    """Stable paid title id on sale for this UTC day (exactly one; no short repeats)."""
+    day = day or utc_today()
+    paid = [
+        tid
+        for tid, meta in SHOP_TITLES.items()
+        if int(meta.get("cost") or 0) > 0
+    ]
+    return _daily_deal_pick(paid, day, "thcoku-title-deal-v3")
 
 
 def daily_bundle_title(day: str | None = None) -> dict | None:
-    """Titles are never on daily sale (kept rare); always returns None."""
-    return None
+    """Catalog-shaped daily title deal entry, or None."""
+    day = day or utc_today()
+    tid = daily_bundle_title_id(day)
+    if not tid:
+        return None
+    meta = SHOP_TITLES[tid]
+    full = int(meta["cost"])
+    sale = _shop_deal_price(full, SHOP_TITLE_DEAL_MULT)
+    return {
+        "kind": "title",
+        "id": tid,
+        "label": meta["label"],
+        "emoji": meta.get("emoji", SPONGE),
+        "cost": sale,
+        "full_cost": full,
+        "on_sale": True,
+        "theme": None,
+        "pin": meta.get("pin") or cosmetic_pin_text(meta),
+        "bundle_day": day,
+    }
+    """Catalog-shaped daily title deal entry, or None."""
+    day = day or utc_today()
+    tid = daily_bundle_title_id(day)
+    if not tid:
+        return None
+    meta = SHOP_TITLES[tid]
+    full = int(meta["cost"])
+    sale = _shop_deal_price(full, SHOP_TITLE_DEAL_MULT)
+    return {
+        "kind": "title",
+        "id": tid,
+        "label": meta["label"],
+        "emoji": meta.get("emoji", SPONGE),
+        "cost": sale,
+        "full_cost": full,
+        "on_sale": True,
+        "theme": None,
+        "pin": meta.get("pin") or cosmetic_pin_text(meta),
+        "bundle_day": day,
+    }
 
 
 def shop_catalog(kind: str) -> list[dict]:
@@ -8362,23 +8541,35 @@ def shop_catalog(kind: str) -> list[dict]:
             if tid in SHOP_BOOST_KEYS
         ]
     if kind == "titles":
+        bundle_id = daily_bundle_title_id()
         items = []
         for tid, meta in SHOP_TITLES.items():
             full = int(meta["cost"])
+            on_sale = tid == bundle_id and full > 0
+            cost = (
+                _shop_deal_price(full, SHOP_TITLE_DEAL_MULT) if on_sale else full
+            )
             items.append(
                 {
                     "kind": "title",
                     "id": tid,
                     "label": meta["label"],
                     "emoji": meta.get("emoji", SPONGE),
-                    "cost": full,
+                    "cost": cost,
                     "pin": meta.get("pin") or cosmetic_pin_text(meta),
                     "theme": None,
-                    "on_sale": False,
+                    "on_sale": on_sale,
                     "full_cost": full,
                 }
             )
-        items.sort(key=lambda it: (int(it.get("cost") or 0), it["label"]))
+        # Deal of the day first, then cheaper titles.
+        items.sort(
+            key=lambda it: (
+                0 if it.get("on_sale") else 1,
+                int(it.get("cost") or 0),
+                it["label"],
+            )
+        )
         return items
 
     bundle_id = daily_bundle_pin_id()
@@ -8388,7 +8579,7 @@ def shop_catalog(kind: str) -> list[dict]:
             continue
         full = int(meta["cost"])
         on_sale = tid == bundle_id and full > 0
-        cost = max(1, int(round(full * SHOP_BUNDLE_DISCOUNT))) if on_sale else full
+        cost = _shop_deal_price(full, SHOP_PIN_DEAL_MULT) if on_sale else full
         items.append(
             {
                 "kind": "pin",
@@ -8429,15 +8620,50 @@ def shop_item_status_text(stats: dict, item: dict) -> str:
         if not owned:
             return "🔒 Locked"
         if item["id"] in hidden_pin_ids(stats):
-            return "🙈 Hidden"
-        if item["id"] in favorite_pin_ids(stats):
-            return "⭐ Favorite"
-        return "🟢 Owned"
+            return "🙈 Off board"
+        return "🟢 On board"
     if shop_item_equipped(stats, item):
         return "✨ Equipped"
     if owned:
         return "🟢 Owned"
     return "🔒 Locked"
+
+
+def shop_pin_board_counts(stats: dict) -> tuple[int, int]:
+    """(on_board, owned_total) for the shop header."""
+    owned = owned_pin_ids(stats)
+    hidden = set(hidden_pin_ids(stats))
+    on_board = sum(1 for pid in owned if pid not in hidden)
+    return on_board, len(owned)
+
+
+def shop_filter_label(kind: str, filt: str) -> str:
+    if kind == "pins" and filt == "owned":
+        return "My board"
+    return {
+        "all": "All",
+        "afford": "Can buy",
+        "owned": "Owned",
+        "ocean": "Ocean",
+        "crew": "Crew",
+    }.get(filt, "All")
+
+
+def apply_page_board_pins(
+    stats: dict, page_ids: list[str], shown_ids: set[str]
+) -> None:
+    """Hide/show only the pins on this shop page; leave other pages unchanged."""
+    page_set = {pid for pid in page_ids if pid}
+    shown = {pid for pid in shown_ids if pid in page_set}
+    hidden = [p for p in hidden_pin_ids(stats) if p not in page_set]
+    newly_hidden = [pid for pid in page_ids if pid and pid not in shown]
+    hidden.extend(newly_hidden)
+    stats["hidden_pin_ids"] = hidden
+    if newly_hidden:
+        drop = set(newly_hidden)
+        stats["favorite_pin_ids"] = [
+            p for p in favorite_pin_ids(stats) if p not in drop
+        ]
 
 
 def shop_item_price_text(item: dict) -> str:
@@ -8476,9 +8702,11 @@ def shop_filter_catalog(
     if filt == "owned":
         owned = [it for it in items if shop_item_owned(stats, it)]
         if items and items[0].get("kind") == "pin":
+            hidden = set(hidden_pin_ids(stats))
             favs = set(favorite_pin_ids(stats))
             owned.sort(
                 key=lambda it: (
+                    1 if it["id"] in hidden else 0,
                     0 if it["id"] in favs else 1,
                     int(it.get("cost") or 0),
                     it["label"],
@@ -8505,13 +8733,7 @@ def shop_page_embed(
 ) -> discord.Embed:
     """Mobile-first paginated shop embed with active boosts and inventory status."""
     tab_title = {"boosts": "🔮 Power-Ups", "pins": "🎨 Border Pins", "titles": "👑 Titles"}.get(kind, "🔮 Power-Ups")
-    filter_label = {
-        "all": "All",
-        "afford": "Can buy",
-        "owned": "Owned",
-        "ocean": "Ocean",
-        "crew": "Crew",
-    }.get(filt, "All")
+    filter_label = shop_filter_label(kind, filt)
 
     embed = paper_embed(f"{SPONGE} Krusty Shop · {tab_title}")
 
@@ -8530,22 +8752,26 @@ def shop_page_embed(
     shields = int(stats.get("streak_shields") or 0)
     eq_title = SHOP_TITLES[stats.get("title")]["label"] if stats.get("title") in SHOP_TITLES else "Civilian"
     extra_boosts = " · ".join(x for x in (snack_str, spatula_str, gary_str) if x)
+    on_board_n, owned_n = shop_pin_board_counts(stats)
 
     status_banner = (
         f"💰 **Pocket:** {format_sponges(stats.get('coins', 0))}\n"
         f"{boost_str} · 🛡️ **Shields:** {shields}"
         + (f"\n{extra_boosts}" if extra_boosts else "")
-        + f"\n👑 **Title:** {eq_title} · 🎨 **Pins:** {len(owned_pin_emojis(stats))}\n"
+        + f"\n👑 **Title:** {eq_title} · 🎨 **On board:** {on_board_n}/{owned_n}\n"
     )
 
     deal = None
     if kind == "pins":
         deal = daily_bundle_pin()
+    elif kind == "titles":
+        deal = daily_bundle_title()
     deal_line = ""
     if deal:
+        pct = 50 if deal["kind"] == "pin" else 25
         deal_line = (
             f"🏷️ **Deal of the day:** {deal['emoji']} **{deal['label']}** — "
-            f"{shop_item_price_text(deal)} (ends next UTC midnight)\n"
+            f"{shop_item_price_text(deal)} (**{pct}% off**, ends next UTC midnight)\n"
         )
 
     lines: list[str] = []
@@ -8595,17 +8821,19 @@ def shop_page_embed(
             sample = titled_header_line("Easy", selected.get("pin") or "Civilian", emoji=str(selected.get("emoji") or ""))
             detail += f"\n👑 **Title** = header flair only (not a border sticker)."
             detail += f"\nPreview sample: `{sample}`"
+            if selected.get("on_sale"):
+                detail += "\n🔥 *Today's title deal — 25% off!*"
             detail += "\nUse **Preview** to see it on a sample board header."
         else:
             theme = (selected.get("theme") or "ocean").title()
             detail += (
-                f"\n🎨 **Pin** = border sticker on the frame "
-                f"({selected['emoji']} · Theme: **{theme}**)."
+                f"\n🎨 Border sticker ({selected['emoji']} · {theme}). "
+                "On the board unless you untick it in **My board**."
             )
             if selected.get("on_sale"):
                 detail += "\n🔥 *Today's pin deal — 50% off!*"
-            detail += "\nUse **Preview** to see it on the moldura."
-            detail += "\nGift owned pins with `/giftpin` or the **Gift** button."
+            if shop_item_owned(stats, selected):
+                detail += "\nGift with `/giftpin` or **Gift**."
 
         embed.add_field(
             name="🔍 Selected Item",
@@ -8901,16 +9129,16 @@ def apply_gift_pin(
     }
 
 
-def shop_preview_file(stats: dict, item: dict) -> discord.File:
+def shop_preview_file(stats: dict, item: dict | None = None) -> discord.File:
     """Sample board: titles change header flair; pins add a border sticker."""
     board, given, solution = make_puzzle("easy")
     title_id = equipped_title_id(stats)
     pins = list(owned_pin_emojis(stats))
-    kind = item.get("kind")
-    if kind == "title" and item.get("id") in SHOP_TITLES:
+    kind = (item or {}).get("kind")
+    if kind == "title" and item and item.get("id") in SHOP_TITLES:
         # Preview the browsed title on the header — never as a border pin.
         title_id = item["id"]
-    elif kind == "pin":
+    elif kind == "pin" and item:
         emoji = item.get("emoji")
         if emoji and emoji not in pins:
             pins = pins + [emoji]
@@ -9035,7 +9263,7 @@ class GiftPinUserView(discord.ui.View):
                     await self.shop_view.message.edit(
                         embed=self.shop_view.build_embed(),
                         view=self.shop_view,
-                        attachments=[],
+                        attachments=self.shop_view.shop_attachments(),
                     )
             except discord.HTTPException:
                 pass
@@ -9052,7 +9280,7 @@ class GiftPinUserView(discord.ui.View):
 
 
 class KrustyShopView(discord.ui.View):
-    """Paginated catalog with Select + filters: Titles/Pins, Buy/Equip/Preview."""
+    """Paginated catalog: Buy/Equip plus My board multi-select for border pins."""
 
     def __init__(
         self,
@@ -9151,6 +9379,19 @@ class KrustyShopView(discord.ui.View):
                 return
         self.page = 0
 
+    def _is_my_board(self) -> bool:
+        return self.kind == "pins" and self.filt == "owned"
+
+    def shop_attachments(self) -> list[discord.File]:
+        """Live frame preview while picking which pins sit on the board."""
+        if not self._is_my_board():
+            return []
+        try:
+            return [shop_preview_file(self._stats(), None)]
+        except Exception as exc:  # noqa: BLE001
+            print(f"shop board preview failed: {exc}")
+            return []
+
     def build_embed(self) -> discord.Embed:
         items = self.filtered_catalog()
         page_items = self.page_items()
@@ -9172,6 +9413,7 @@ class KrustyShopView(discord.ui.View):
         page_items = self.page_items()
         selected = self.selected_item()
         owned = shop_item_owned(stats, selected) if selected else False
+        my_board = self._is_my_board()
 
         # Row 0 — 3 Mobile Category Tabs
         boosts_btn = discord.ui.Button(
@@ -9196,14 +9438,14 @@ class KrustyShopView(discord.ui.View):
         self.add_item(titles_btn)
         self.add_item(pins_btn)
 
-        # Row 1 — filters (pins get Ocean/Crew themes)
+        # Row 1 — filter dropdown
         if self.kind == "pins":
             filter_defs = (
                 ("all", "All"),
+                ("afford", "Can buy"),
+                ("owned", "My board"),
                 ("ocean", "Ocean"),
                 ("crew", "Crew"),
-                ("afford", "Buy"),
-                ("owned", "Owned"),
             )
         else:
             filter_defs = (
@@ -9211,17 +9453,26 @@ class KrustyShopView(discord.ui.View):
                 ("afford", "Can buy"),
                 ("owned", "Owned"),
             )
-        for key, label in filter_defs:
-            btn = discord.ui.Button(
-                label=label,
-                style=discord.ButtonStyle.primary if self.filt == key else discord.ButtonStyle.secondary,
-                row=1,
-            )
-            btn.callback = self._filter_cb(key)
-            self.add_item(btn)
+        filter_select = discord.ui.Select(
+            placeholder="Filter…",
+            options=[
+                discord.SelectOption(
+                    label=label,
+                    value=key,
+                    default=(key == self.filt),
+                )
+                for key, label in filter_defs
+            ],
+            row=1,
+            min_values=1,
+            max_values=1,
+        )
+        filter_select.callback = self.on_filter_select
+        self.add_item(filter_select)
 
         # Row 2 — select current page items
         if page_items:
+            hidden = set(hidden_pin_ids(stats)) if my_board else set()
             options: list[discord.SelectOption] = []
             for it in page_items:
                 status = shop_item_status_text(stats, it)
@@ -9232,21 +9483,38 @@ class KrustyShopView(discord.ui.View):
                 price = shop_item_price_text(it)
                 desc = f"{price} · {status}"[:100]
                 label = it["label"][:100]
+                if my_board:
+                    default = it["id"] not in hidden
+                else:
+                    default = it["id"] == (selected or {}).get("id")
                 options.append(
                     discord.SelectOption(
                         label=label,
                         value=it["id"],
                         description=desc,
                         emoji=shop_select_emoji(it.get("emoji")),
-                        default=(it["id"] == (selected or {}).get("id")),
+                        default=default,
                     )
                 )
+            if my_board:
+                placeholder = "Tick the pins that stay on your board"
+                min_vals = 0
+                max_vals = len(options)
+            elif self.kind == "boosts":
+                placeholder = "Pick a power-up to buy"
+                min_vals, max_vals = 1, 1
+            elif self.kind == "titles":
+                placeholder = "Pick a title to wear"
+                min_vals, max_vals = 1, 1
+            else:
+                placeholder = "Pick a pin to buy"
+                min_vals, max_vals = 1, 1
             select = discord.ui.Select(
-                placeholder="Choose an item…",
+                placeholder=placeholder[:150],
                 options=options,
                 row=2,
-                min_values=1,
-                max_values=1,
+                min_values=min_vals,
+                max_values=max_vals,
             )
             select.callback = self.on_select
             self.add_item(select)
@@ -9271,34 +9539,44 @@ class KrustyShopView(discord.ui.View):
         self.add_item(next_btn)
 
         # Row 4 — actions
+        if my_board:
+            show_all = discord.ui.Button(
+                label="Show all",
+                style=discord.ButtonStyle.success,
+                row=4,
+                disabled=not page_items,
+            )
+            show_all.callback = self.on_show_all_page
+            self.add_item(show_all)
+            clear_btn = discord.ui.Button(
+                label="Clear board",
+                style=discord.ButtonStyle.danger,
+                row=4,
+                disabled=not page_items,
+            )
+            clear_btn.callback = self.on_clear_board_page
+            self.add_item(clear_btn)
+            if selected and owned:
+                gift = discord.ui.Button(
+                    label="Gift",
+                    style=discord.ButtonStyle.primary,
+                    row=4,
+                )
+                gift.callback = self.on_gift
+                self.add_item(gift)
+            preview = discord.ui.Button(
+                label="Preview",
+                style=discord.ButtonStyle.secondary,
+                row=4,
+            )
+            preview.callback = self.on_preview
+            self.add_item(preview)
+            return
+
         if selected is None:
             return
         if owned:
             if selected["kind"] == "pin":
-                is_fav = selected["id"] in favorite_pin_ids(stats)
-                is_hid = selected["id"] in hidden_pin_ids(stats)
-                fav_btn = discord.ui.Button(
-                    label="⭐ Unfav" if is_fav else "⭐ Fav",
-                    style=(
-                        discord.ButtonStyle.success
-                        if is_fav
-                        else discord.ButtonStyle.secondary
-                    ),
-                    row=4,
-                )
-                fav_btn.callback = self.on_favorite_pin
-                self.add_item(fav_btn)
-                hide_btn = discord.ui.Button(
-                    label="Unhide" if is_hid else "Hide",
-                    style=(
-                        discord.ButtonStyle.primary
-                        if is_hid
-                        else discord.ButtonStyle.secondary
-                    ),
-                    row=4,
-                )
-                hide_btn.callback = self.on_hide_pin
-                self.add_item(hide_btn)
                 gift = discord.ui.Button(
                     label="Gift",
                     style=discord.ButtonStyle.primary,
@@ -9349,6 +9627,17 @@ class KrustyShopView(discord.ui.View):
 
         return _cb
 
+    async def on_filter_select(self, interaction: discord.Interaction) -> None:
+        values = (interaction.data or {}).get("values") or []
+        if values:
+            self.filt = str(values[0])
+            if self.kind != "pins" and self.filt in ("ocean", "crew"):
+                self.filt = "all"
+        self.page = 0
+        self.selected_id = None
+        self._ensure_selection()
+        await self._refresh(interaction)
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message(
@@ -9367,9 +9656,10 @@ class KrustyShopView(discord.ui.View):
             except discord.HTTPException:
                 pass
         self._rebuild()
+        files = self.shop_attachments()
         try:
             await interaction.edit_original_response(
-                embed=self.build_embed(), view=self, attachments=[]
+                embed=self.build_embed(), view=self, attachments=files
             )
         except discord.HTTPException as exc:
             print(f"KrustyShopView refresh failed: {type(exc).__name__}: {exc}")
@@ -9380,7 +9670,9 @@ class KrustyShopView(discord.ui.View):
                         for opt in child.options:
                             opt.emoji = None
                 await interaction.edit_original_response(
-                    embed=self.build_embed(), view=self, attachments=[]
+                    embed=self.build_embed(),
+                    view=self,
+                    attachments=self.shop_attachments(),
                 )
             except discord.HTTPException as exc2:
                 print(f"KrustyShopView refresh retry failed: {type(exc2).__name__}: {exc2}")
@@ -9431,9 +9723,38 @@ class KrustyShopView(discord.ui.View):
         if not interaction.data or "values" not in interaction.data:
             await interaction.response.defer()
             return
-        values = interaction.data.get("values") or []
+        values = [str(v) for v in (interaction.data.get("values") or [])]
+        if self._is_my_board():
+            await self._apply_board_pins(values)
+            if values:
+                self.selected_id = values[0]
+            elif self.page_items():
+                self.selected_id = self.page_items()[0]["id"]
+            await self._refresh(interaction)
+            return
         if values:
-            self.selected_id = str(values[0])
+            self.selected_id = values[0]
+        await self._refresh(interaction)
+
+    async def _apply_board_pins(self, shown_ids: list[str]) -> None:
+        stats = self._stats()
+        page_ids = [it["id"] for it in self.page_items()]
+        apply_page_board_pins(stats, page_ids, set(shown_ids))
+        save_data(self.bot.data)
+        push_cosmetics_sync(self.owner_id, self.guild_id, stats)
+        await sync_cosmetics_to_activity_sessions(
+            self.owner_id,
+            self.guild_id,
+            title_id=equipped_title_id(stats),
+            pin_emojis=owned_pin_emojis(stats),
+        )
+
+    async def on_show_all_page(self, interaction: discord.Interaction) -> None:
+        await self._apply_board_pins([it["id"] for it in self.page_items()])
+        await self._refresh(interaction)
+
+    async def on_clear_board_page(self, interaction: discord.Interaction) -> None:
+        await self._apply_board_pins([])
         await self._refresh(interaction)
 
     async def on_equip(self, interaction: discord.Interaction) -> None:
@@ -9450,69 +9771,8 @@ class KrustyShopView(discord.ui.View):
                 title_id=equipped_title_id(stats),
                 pin_emojis=owned_pin_emojis(stats),
             )
-        self._rebuild()
-        await interaction.response.edit_message(
-            embed=self.build_embed(), view=self, attachments=[]
-        )
+        await self._refresh(interaction)
         await interaction.followup.send(result["message"], ephemeral=True)
-
-    async def on_favorite_pin(self, interaction: discord.Interaction) -> None:
-        item = self.selected_item()
-        if not item or item.get("kind") != "pin":
-            await interaction.response.send_message("Select a pin first.", ephemeral=True)
-            return
-        stats = self._stats()
-        if not shop_item_owned(stats, item):
-            await interaction.response.send_message("You don't own that pin.", ephemeral=True)
-            return
-        now_fav = toggle_favorite_pin(stats, item["id"])
-        save_data(self.bot.data)
-        push_cosmetics_sync(self.owner_id, self.guild_id, stats)
-        await sync_cosmetics_to_activity_sessions(
-            self.owner_id,
-            self.guild_id,
-            title_id=equipped_title_id(stats),
-            pin_emojis=owned_pin_emojis(stats),
-        )
-        self._rebuild()
-        await interaction.response.edit_message(
-            embed=self.build_embed(), view=self, attachments=[]
-        )
-        await interaction.followup.send(
-            f"{'⭐ Favorited' if now_fav else 'Removed favorite'} **{item['label']}**.",
-            ephemeral=True,
-        )
-
-    async def on_hide_pin(self, interaction: discord.Interaction) -> None:
-        item = self.selected_item()
-        if not item or item.get("kind") != "pin":
-            await interaction.response.send_message("Select a pin first.", ephemeral=True)
-            return
-        stats = self._stats()
-        if not shop_item_owned(stats, item):
-            await interaction.response.send_message("You don't own that pin.", ephemeral=True)
-            return
-        now_hid = toggle_hidden_pin(stats, item["id"])
-        save_data(self.bot.data)
-        push_cosmetics_sync(self.owner_id, self.guild_id, stats)
-        await sync_cosmetics_to_activity_sessions(
-            self.owner_id,
-            self.guild_id,
-            title_id=equipped_title_id(stats),
-            pin_emojis=owned_pin_emojis(stats),
-        )
-        self._rebuild()
-        await interaction.response.edit_message(
-            embed=self.build_embed(), view=self, attachments=[]
-        )
-        await interaction.followup.send(
-            (
-                f"🙈 **{item['label']}** hidden from the board border."
-                if now_hid
-                else f"**{item['label']}** is back on the border."
-            ),
-            ephemeral=True,
-        )
 
     async def on_buy(self, interaction: discord.Interaction) -> None:
         item = self.selected_item()
@@ -9534,10 +9794,7 @@ class KrustyShopView(discord.ui.View):
                 title_id=equipped_title_id(stats),
                 pin_emojis=owned_pin_emojis(stats),
             )
-        self._rebuild()
-        await interaction.response.edit_message(
-            embed=self.build_embed(), view=self, attachments=[]
-        )
+        await self._refresh(interaction)
         if not result["ok"]:
             await interaction.followup.send(result["message"], ephemeral=True)
             return
@@ -9593,18 +9850,22 @@ class KrustyShopView(discord.ui.View):
         stats = self._stats()
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            file = shop_preview_file(stats, item)
+            file = shop_preview_file(stats, None if self._is_my_board() else item)
         except Exception as exc:  # noqa: BLE001
             await interaction.followup.send(
                 f"Couldn't render preview: {exc}", ephemeral=True
             )
             return
-        if item.get("kind") == "title":
+        if self._is_my_board():
+            on_n, own_n = shop_pin_board_counts(stats)
+            hint = f"🎨 your board right now ({on_n}/{own_n} pins)"
+        elif item.get("kind") == "title":
             hint = "👑 header flair (not a border sticker)"
         else:
             hint = "🎨 border sticker on the moldura"
+        label = "My board" if self._is_my_board() else item["label"]
         await interaction.followup.send(
-            content=f"{BUBBLE} Preview · **{item['label']}** — {hint}",
+            content=f"{BUBBLE} Preview · **{label}** — {hint}",
             file=file,
             ephemeral=True,
         )
@@ -9796,12 +10057,23 @@ async def broadcast_daily_announcement(target_channel_id: int | None = None) -> 
     embed.add_field(name="Difficulty", value=f"**{label}**", inline=True)
     embed.add_field(name="Daily Bonus", value=f"**+{DAILY_BONUS} Sponges {SPONGE}**", inline=True)
     deal = daily_bundle_pin(now_date)
+    title_deal = daily_bundle_title(now_date)
+    deal_bits: list[str] = []
     if deal:
+        deal_bits.append(
+            f"🎨 {deal['emoji']} **{deal['label']}** — {shop_item_price_text(deal)} (50% off)"
+        )
+    if title_deal:
+        deal_bits.append(
+            f"👑 {title_deal['emoji']} **{title_deal['label']}** — "
+            f"{shop_item_price_text(title_deal)} (25% off)"
+        )
+    if deal_bits:
         embed.add_field(
-            name="🏷️ Pin Deal of the Day",
+            name="🏷️ Deals of the Day",
             value=(
-                f"🎨 {deal['emoji']} **{deal['label']}** — {shop_item_price_text(deal)}\n"
-                f"Open `/shop` → **Pins** (50% off until next UTC midnight)"
+                "\n".join(deal_bits)
+                + "\nOpen `/shop` → **Pins** / **Titles** (until next UTC midnight)"
             ),
             inline=False,
         )
@@ -10913,9 +11185,10 @@ async def help_cmd(interaction: discord.Interaction):
             f"**Sponges** buy cosmetics in `/shop`:\n"
             f"· **Titles** — header flair on your board\n"
             f"· **Pins** — emoji stickers on the border\n"
-            f"· Open `/shop` → pick from the menu → **Buy** / **Equip** "
-            f"(filter All / Can buy / Owned · pages ◀ ▶)\n"
-            f"· Daily **50% off** one pin (UTC midnight) — titles stay full price\n"
+            f"· Open `/shop` → pick from the menu → **Buy** / **Equip**\n"
+            f"· Pins: filter **My board**, then tick which stickers stay on the frame "
+            f"(Show all / Clear board per page)\n"
+            f"· Daily deals (UTC midnight): **50% off** one pin · **25% off** one title\n"
             f"· `/weekly` — 3 weekly goals for bonus sponges (resets Monday UTC)\n"
             f"Solve **{format_xp(BASE_WIN_REWARD, signed=True)}** + "
             f"**{format_sponges(BASE_WIN_REWARD, signed=True)}** · "
@@ -10927,7 +11200,8 @@ async def help_cmd(interaction: discord.Interaction):
             f"(not career XP). All tiers are unlimited while you can pay "
             f"(/play, /daily, and challenges). "
             f"**Gary's Wisdom** in `/shop` grants {GARY_WISDOM_HINT_BONUS} free hints/game first "
-            f"(then paid hints as usual).\n"
+            f"(then paid hints as usual). "
+            f"Challenge **no_hints** disables Gary + paid hints for that race.\n"
             f"{tiers}"
         ),
         inline=False,
@@ -11954,8 +12228,10 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
         for r_idx in range(9)
     ]
     elapsed = int(r.get("time") or r.get("elapsed") or 300)
+    hints_used = 0
     if mongo_completion and not mongo_completion.get("forfeit"):
         elapsed = int(mongo_completion.get("elapsed") or elapsed)
+        hints_used = int(mongo_completion.get("hints") or 0)
 
     game_state = {
         "mode": "daily",
@@ -11965,6 +12241,7 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
         "board": solved_board,
         "given": given,
         "solution": solution,
+        "hints_used": hints_used,
     }
 
     # finish_win_and_announce skips payout when local results already have won=True.
@@ -12013,6 +12290,7 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
         streak=max(int(stats.get("streak") or 1), 1),
         is_daily=True,
         user_stats_dict=stats,
+        hints_used=hints_used,
     )
     image = await asyncio.to_thread(
         render_board,

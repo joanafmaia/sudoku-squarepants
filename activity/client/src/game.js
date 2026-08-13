@@ -634,7 +634,7 @@ export function startThcokuGame(canvas, options = {}) {
   const pencilBtn = controls.querySelector("#ctrl-pencil");
 
   function hintsMaxForDifficulty(_key) {
-    return null;
+    return null; // paid hints unlimited; challenge no_hints is server-side
   }
 
   function titleBadge() {
@@ -1008,30 +1008,35 @@ export function startThcokuGame(canvas, options = {}) {
       pencilBtn.classList.toggle("is-active", state.pencilMode);
     }
     const spec = state.spectatorMode;
+    // Spectators only watch — hide the number pad and action rows entirely.
+    if (controls) {
+      controls.hidden = Boolean(spec);
+    }
+    if (spec) return;
     const meta = controls.querySelector("#ctrl-meta");
     const hideDiff = difficultyLocked();
     const resetBtn = controls.querySelector("#ctrl-reset");
     if (diffBtn) {
       // Diff only when difficulty is free; otherwise Reset takes that slot.
-      diffBtn.hidden = hideDiff || spec;
+      diffBtn.hidden = hideDiff;
       diffBtn.style.display = "";
     }
     if (resetBtn) {
-      resetBtn.hidden = spec || !hideDiff;
+      resetBtn.hidden = !hideDiff;
       resetBtn.style.display = "";
     }
     if (pencilBtn) {
-      pencilBtn.hidden = spec;
+      pencilBtn.hidden = false;
       pencilBtn.style.display = "";
     }
     if (meta) {
-      meta.classList.toggle("is-solo", spec);
+      meta.classList.remove("is-solo");
       // Compact = Diff gone, Reset shown → still 3 equal slots (Quit · Hint · Reset)
-      meta.classList.toggle("is-compact", !spec && hideDiff);
-      meta.classList.toggle("is-free-diff", !spec && !hideDiff);
+      meta.classList.toggle("is-compact", hideDiff);
+      meta.classList.toggle("is-free-diff", !hideDiff);
     }
     const newBtn = controls.querySelector('[data-action="new"]');
-    if (newBtn) newBtn.style.display = spec ? "none" : "";
+    if (newBtn) newBtn.style.display = "";
     const quitBtn = controls.querySelector("#ctrl-quit");
     if (quitBtn) {
       if (state.sessionKind === "challenge") {
@@ -1046,19 +1051,12 @@ export function startThcokuGame(canvas, options = {}) {
       }
     }
     controls.querySelectorAll("[data-action]").forEach((btn) => {
-      const action = btn.getAttribute("data-action");
-      const allow = !spec || action === "quit";
-      btn.disabled = spec && !allow;
-      btn.style.opacity = spec && !allow ? "0.45" : "";
+      btn.disabled = false;
+      btn.style.opacity = "";
     });
     controls.querySelectorAll(".ctrl-digit").forEach((btn) => {
-      if (spec) {
-        btn.disabled = true;
-        btn.style.opacity = "0.45";
-      } else {
-        btn.disabled = false;
-        btn.style.opacity = "";
-      }
+      btn.disabled = false;
+      btn.style.opacity = "";
     });
     syncHintButton();
   }

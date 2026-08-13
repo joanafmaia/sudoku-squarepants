@@ -705,6 +705,7 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                 "given": given,
                 "solution": solution,
                 "hints_used": int(session.get("hints_used") or 0),
+                "hints_gary_used": int(session.get("hints_gary_used") or 0),
             }
 
             from bot import finish_win_and_announce
@@ -766,6 +767,8 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                             streak=int(stats.get("streak") or 0),
                             is_daily=True,
                             user_stats_dict=stats,
+                            hints_used=int(session.get("hints_used") or 0),
+                            hints_gary_used=int(session.get("hints_gary_used") or 0),
                             **win_boost_caption_kwargs(outcome),
                         )
                         await channel.send(
@@ -901,6 +904,8 @@ async def _apply_activity_win(bot: Any, *, user: dict, body: dict) -> dict:
                         xp=xp,
                         streak=int(stats["streak"]),
                         user_stats_dict=stats,
+                        hints_used=int(session.get("hints_used") or 0),
+                        hints_gary_used=int(session.get("hints_gary_used") or 0),
                         **win_boost_caption_kwargs(outcome),
                     )
                     await channel.send(embed=embed, file=file)
@@ -970,9 +975,12 @@ def _hints_max_for_session(session_kind: str | None, doc: dict | None = None) ->
         return None
     if doc.get("no_hints"):
         return 0
+    # Honor explicit 0 (no-hints races). Ignore legacy positive caps (old Expertttt=3).
     if doc.get("hints_max") is not None:
         try:
-            return max(0, int(doc.get("hints_max")))
+            n = int(doc.get("hints_max"))
+            if n <= 0:
+                return 0
         except (TypeError, ValueError):
             pass
     difficulty, _idx = resolve_session_difficulty(doc)
@@ -1170,7 +1178,7 @@ GG_INBOX_MAX = 12
 SPECTATE_REACTIONS: dict[str, tuple[str, str]] = {
     "gg": ("👏", "GG"),
     "oh_ow": ("😮", "Oh-ow"),
-    "oh_no": ("😱", "Oh no"),
+    "oh_no": ("💀", "Oh no"),
     "yayyy": ("🎉", "Yayyy"),
     "heart": ("❤️", "Love"),
 }
@@ -2445,6 +2453,7 @@ async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> di
                     "given": given,
                     "solution": solution,
                     "hints_used": int(session.get("hints_used") or 0),
+                    "hints_gary_used": int(session.get("hints_gary_used") or 0),
                 }
                 try:
                     await finish_win_and_announce(bot, gid, actor, game_state)
