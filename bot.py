@@ -396,6 +396,7 @@ SHOP_TITLE_DEAL_MULT = 0.75  # pay 75% → ~25% off
 SHOP_BUNDLE_DISCOUNT = SHOP_PIN_DEAL_MULT  # backward-compatible alias
 
 SHOP_PAGE_SIZE = 11
+SHOP_BOOST_MAX_QTY = 10
 
 ACHIEVEMENTS = {
     # Speed
@@ -2863,45 +2864,96 @@ def _border_pin_slots(
     origin_y: int,
     grid: int,
     pin_size: int,
+    min_count: int = 0,
 ) -> list[tuple[int, int]]:
-    """Candidate top-left positions in the cream margin around the grid (no top — conflicts with header)."""
-    slots: list[tuple[int, int]] = []
-    # Tighter pitch so collectors can show 50+ unique stickers.
-    gap = max(12, pin_size - 2)
+    """Pack pin positions in the cream margin (left/right/bottom). No top — header."""
+    min_gap = max(8, pin_size // 2)
 
-    def _row(y: int, x0: int, x1: int) -> None:
-        if y < header_h + 2 or y + pin_size > canvas - 2:
-            return
-        for x in range(x0, x1 - pin_size + 1, gap):
-            slots.append((x, y))
+    def _pack(step: int) -> list[tuple[int, int]]:
+        slots: list[tuple[int, int]] = []
 
-    def _col(x: int, y0: int, y1: int) -> None:
-        if x < 2 or x + pin_size > canvas - 2:
-            return
-        for y in range(y0, y1 - pin_size + 1, gap):
-            if y >= header_h + 2:
+        def _row(y: int, x0: int, x1: int) -> None:
+            if y < header_h + 2 or y + pin_size > canvas - 2:
+                return
+            for x in range(x0, x1 - pin_size + 1, step):
                 slots.append((x, y))
 
-    # Bottom margin (+ optional outer row)
-    bottom_y = origin_y + grid + max(2, (canvas - (origin_y + grid) - pin_size) // 2)
-    _row(bottom_y, origin_x, origin_x + grid)
-    bottom_outer = bottom_y + pin_size + 2
-    if bottom_outer + pin_size <= canvas - 2:
-        _row(bottom_outer, origin_x, origin_x + grid)
+        def _col(x: int, y0: int, y1: int) -> None:
+            if x < 2 or x + pin_size > canvas - 2:
+                return
+            for y in range(max(y0, header_h + 2), y1 - pin_size + 1, step):
+                slots.append((x, y))
 
-    # Left / right (+ outer columns when the cream margin is wide enough)
+        y = origin_y + grid + 2
+        while y + pin_size <= canvas - 2:
+            _row(y, origin_x, origin_x + grid)
+            y += step
+
+        x = 2
+        while x + pin_size <= origin_x - 2:
+            _col(x, origin_y, origin_y + grid)
+            x += step
+
+        x = origin_x + grid + 2
+        while x + pin_size <= canvas - 2:
+            _col(x, origin_y, origin_y + grid)
+            x += step
+
+        return slots
+
+    gap = max(min_gap, pin_size - 2)
+    slots = _pack(gap)
+    while min_count > 0 and len(slots) < min_count and gap > min_gap:
+        gap -= 1
+        slots = _pack(gap)
+    return slots
+
+
+def _pack_pins_to_fit(
+    need: int,
+    *,
+    canvas: int,
+    header_h: int,
+    origin_x: int,
+    origin_y: int,
+    grid: int,
+    pin_size: int,
+) -> list[tuple[int, int]]:
+    """Evenly space ``need`` pins on left/right (and bottom if it fits)."""
+    if need <= 0:
+        return []
     left_x = max(2, (origin_x - pin_size) // 2)
-    _col(left_x, origin_y, origin_y + grid)
-    left_outer = max(2, left_x - pin_size - 2)
-    if left_outer + pin_size <= left_x - 2:
-        _col(left_outer, origin_y, origin_y + grid)
+    right_x = min(canvas - pin_size - 2, origin_x + grid + 2)
+    y0 = max(origin_y, header_h + 2)
+    y1 = max(y0, origin_y + grid - pin_size)
+    bottom_y = canvas - pin_size - 2
+    bottom_ok = bottom_y >= origin_y + grid + 2 and bottom_y + pin_size <= canvas - 2
+    if bottom_ok:
+        left_n = (need + 2) // 3
+        right_n = (need - left_n + 1) // 2
+        bottom_n = need - left_n - right_n
+    else:
+        left_n = (need + 1) // 2
+        right_n = need - left_n
+        bottom_n = 0
 
-    right_x = origin_x + grid + max(2, (canvas - (origin_x + grid) - pin_size) // 2)
-    _col(right_x, origin_y, origin_y + grid)
-    right_outer = right_x + pin_size + 2
-    if right_outer + pin_size <= canvas - 2:
-        _col(right_outer, origin_y, origin_y + grid)
+    def _along(n: int, x0: int, ya: int, x1: int, yb: int) -> list[tuple[int, int]]:
+        if n <= 0:
+            return []
+        if n == 1:
+            return [(int((x0 + x1) / 2), int((ya + yb) / 2))]
+        out: list[tuple[int, int]] = []
+        for i in range(n):
+            t = i / (n - 1)
+            out.append((int(x0 + (x1 - x0) * t), int(ya + (yb - ya) * t)))
+        return out
 
+    slots = _along(left_n, left_x, y0, left_x, y1)
+    slots.extend(_along(right_n, right_x, y0, right_x, y1))
+    if bottom_n:
+        slots.extend(
+            _along(bottom_n, origin_x, bottom_y, origin_x + grid - pin_size, bottom_y)
+        )
     return slots
 
 
@@ -2920,6 +2972,14 @@ def paste_owned_emoji_pins(
     emojis = [e for e in (pin_emojis or []) if e]
     if not emojis:
         return img
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for e in emojis:
+        if e not in seen:
+            unique.append(e)
+            seen.add(e)
+    need = len(unique)
     pin_size = PIN_EMOJI_SIZE
     slots = _border_pin_slots(
         canvas=canvas,
@@ -2928,20 +2988,36 @@ def paste_owned_emoji_pins(
         origin_y=origin_y,
         grid=grid,
         pin_size=pin_size,
+        min_count=need,
     )
+    while len(slots) < need and pin_size > 12:
+        pin_size -= 2
+        slots = _border_pin_slots(
+            canvas=canvas,
+            header_h=header_h,
+            origin_x=origin_x,
+            origin_y=origin_y,
+            grid=grid,
+            pin_size=pin_size,
+            min_count=need,
+        )
+    if len(slots) < need:
+        slots = _pack_pins_to_fit(
+            need,
+            canvas=canvas,
+            header_h=header_h,
+            origin_x=origin_x,
+            origin_y=origin_y,
+            grid=grid,
+            pin_size=pin_size,
+        )
     if not slots:
         return img
 
     rng = random.Random(int(pin_seed or 1))
     rng.shuffle(slots)
-    # One pin per owned emoji — no duplicates (buying more cosmetics = more unique pins)
-    unique: list[str] = []
-    seen: set[str] = set()
-    for e in emojis:
-        if e not in seen:
-            unique.append(e)
-            seen.add(e)
-    chosen_slots = slots[: min(len(slots), len(unique))]
+    # Show every unique on-board pin; shrink/pack above so the catalog can fill the frame.
+    chosen_slots = slots[: min(len(slots), need)]
     base = img.convert("RGBA")
     for i, (x, y) in enumerate(chosen_slots):
         emoji = unique[i]
@@ -8654,6 +8730,21 @@ def shop_item_can_buy(stats: dict, item: dict) -> bool:
     return cost <= 0 or int(stats.get("coins") or 0) >= cost
 
 
+def shop_item_is_stackable(item: dict | None) -> bool:
+    """Power-ups can be bought in bulk; titles and pins are unique."""
+    return bool(item) and item.get("kind") == "boost"
+
+
+def shop_boost_max_qty(stats: dict, item: dict) -> int:
+    """Copies the player can afford in one tap (always at least 1)."""
+    cost = int(item.get("cost") or 0)
+    if cost <= 0:
+        return SHOP_BOOST_MAX_QTY
+    coins = int(stats.get("coins") or 0)
+    affordable = coins // cost
+    return max(1, min(SHOP_BOOST_MAX_QTY, affordable))
+
+
 def shop_filter_catalog(
     items: list[dict], stats: dict, filt: str
 ) -> list[dict]:
@@ -8687,6 +8778,7 @@ def shop_page_embed(
     pages: int,
     filt: str,
     filtered_total: int,
+    qty: int = 1,
 ) -> discord.Embed:
     """Mobile-first paginated shop embed with active boosts and inventory status."""
     tab_title = {"boosts": "🔮 Power-Ups", "pins": "🎨 Border Pins", "titles": "👑 Titles"}.get(kind, "🔮 Power-Ups")
@@ -8757,6 +8849,14 @@ def shop_page_embed(
             status = "⚡ Can Buy"
 
         detail = f"**{selected['label']}** ({shop_item_price_text(selected)} · {status})"
+        buy_qty = max(1, int(qty or 1))
+        if shop_item_is_stackable(selected):
+            unit = int(selected.get("cost") or 0)
+            total = unit * buy_qty
+            if buy_qty > 1:
+                detail += f"\n🛒 **×{buy_qty}** = {format_sponges(total)}"
+            else:
+                detail += "\n🛒 Pick a quantity below, then Buy."
         if selected["id"] == "xp_boost":
             detail += (
                 "\n⚡ *Best all-rounder: 2× career XP **and** sponges on win (3 games).* "
@@ -8834,11 +8934,24 @@ def apply_shop_equip(bot: "SudokuBot", guild_id: int, user_id: int, item: dict) 
     }
 
 
-def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dict) -> dict:
-    """Buy + auto-equip (titles) or add border pin. Returns {ok, bought, message, label, cost}."""
+def apply_shop_purchase(
+    bot: "SudokuBot", guild_id: int, user_id: int, item: dict, qty: int = 1
+) -> dict:
+    """Buy + auto-equip (titles) or add border pin. Returns {ok, bought, message, label, cost, qty}."""
     gstats = guild_stats(bot.data, guild_id)
     stats = user_stats(gstats, user_id)
-    cost = int(item["cost"])
+    try:
+        qty = int(qty)
+    except (TypeError, ValueError):
+        qty = 1
+    qty = max(1, qty)
+    if item["kind"] != "boost":
+        qty = 1
+    else:
+        qty = min(qty, SHOP_BOOST_MAX_QTY)
+    unit_cost = int(item["cost"])
+    cost = unit_cost * qty
+    bought_name = f"**{qty}× {item['label']}**" if qty > 1 else f"**{item['label']}**"
 
     if item["kind"] == "title":
         tid = item["id"]
@@ -8866,6 +8979,7 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
             "bought": True,
             "label": item["label"],
             "cost": cost,
+            "qty": 1,
             "message": (
                 f"Bought **{item['label']}**! Equipped as **header flair** "
                 "(not a border pin). Live boards / Activity update in a moment."
@@ -8885,14 +8999,15 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
             }
         stats["coins"] -= cost
         stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
-        stats["streak_shields"] = int(stats.get("streak_shields") or 0) + 1
+        stats["streak_shields"] = int(stats.get("streak_shields") or 0) + qty
         save_data(bot.data)
         return {
             "ok": True,
             "bought": True,
             "label": item["label"],
             "cost": cost,
-            "message": f"Bought **{item['label']}**! (Shields owned: **{stats['streak_shields']}** 🛡️)",
+            "qty": qty,
+            "message": f"Bought {bought_name}! (Shields owned: **{stats['streak_shields']}** 🛡️)",
         }
 
     if tid == "xp_boost":
@@ -8908,7 +9023,8 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
         stats["coins"] -= cost
         stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
         stats["xp_boost_charges"] = (
-            int(stats.get("xp_boost_charges") or 0) + REWARD_BOOST_GAMES_PER_PURCHASE
+            int(stats.get("xp_boost_charges") or 0)
+            + REWARD_BOOST_GAMES_PER_PURCHASE * qty
         )
         save_data(bot.data)
         return {
@@ -8916,8 +9032,9 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
             "bought": True,
             "label": item["label"],
             "cost": cost,
+            "qty": qty,
             "message": (
-                f"Bought **🔮 Puff's Crystal Ball**! 🔮 **2x XP & Sponges active for next "
+                f"Bought {bought_name}! 🔮 **2x XP & Sponges active for next "
                 f"{stats['xp_boost_charges']} games!**"
             ),
         }
@@ -8935,7 +9052,8 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
         stats["coins"] -= cost
         stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
         stats["gary_wisdom_charges"] = (
-            int(stats.get("gary_wisdom_charges") or 0) + GARY_WISDOM_GAMES_PER_PURCHASE
+            int(stats.get("gary_wisdom_charges") or 0)
+            + GARY_WISDOM_GAMES_PER_PURCHASE * qty
         )
         save_data(bot.data)
         return {
@@ -8943,8 +9061,9 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
             "bought": True,
             "label": item["label"],
             "cost": cost,
+            "qty": qty,
             "message": (
-                f"Bought **{item['label']}**! Next game: "
+                f"Bought {bought_name}! Next game: "
                 f"**{GARY_WISDOM_HINT_BONUS} free hints**, then paid hints "
                 f"({format_sponges(HINT_SPONGE_COST)} each, unlimited). "
                 f"**{stats['gary_wisdom_charges']}** game(s) queued."
@@ -8964,7 +9083,8 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
         stats["coins"] -= cost
         stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
         stats["krabby_snack_charges"] = (
-            int(stats.get("krabby_snack_charges") or 0) + REWARD_BOOST_GAMES_PER_PURCHASE
+            int(stats.get("krabby_snack_charges") or 0)
+            + REWARD_BOOST_GAMES_PER_PURCHASE * qty
         )
         save_data(bot.data)
         return {
@@ -8972,8 +9092,9 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
             "bought": True,
             "label": item["label"],
             "cost": cost,
+            "qty": qty,
             "message": (
-                f"Bought **{item['label']}**! **+25% sponges** on your next "
+                f"Bought {bought_name}! **+25% sponges** on your next "
                 f"{stats['krabby_snack_charges']} wins."
             ),
         }
@@ -8991,7 +9112,8 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
         stats["coins"] -= cost
         stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
         stats["golden_spatula_charges"] = (
-            int(stats.get("golden_spatula_charges") or 0) + REWARD_BOOST_GAMES_PER_PURCHASE
+            int(stats.get("golden_spatula_charges") or 0)
+            + REWARD_BOOST_GAMES_PER_PURCHASE * qty
         )
         save_data(bot.data)
         return {
@@ -8999,8 +9121,9 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
             "bought": True,
             "label": item["label"],
             "cost": cost,
+            "qty": qty,
             "message": (
-                f"Bought **{item['label']}**! **+50% career XP** on your next "
+                f"Bought {bought_name}! **+50% career XP** on your next "
                 f"{stats['golden_spatula_charges']} wins."
             ),
         }
@@ -9038,6 +9161,7 @@ def apply_shop_purchase(bot: "SudokuBot", guild_id: int, user_id: int, item: dic
         "bought": True,
         "label": item["label"],
         "cost": cost,
+        "qty": 1,
         "message": (
             f"Bought pin **{item['label']}**! "
             "It sticks on your **border** — live Discord boards and Activity "
@@ -9272,6 +9396,7 @@ class KrustyShopView(discord.ui.View):
             self.filt = "all"
         self.page = max(0, page)
         self.selected_id = selected_id
+        self.qty = 1
         self.message: discord.Message | None = None
         self._ensure_selection()
         self._rebuild()
@@ -9374,6 +9499,7 @@ class KrustyShopView(discord.ui.View):
             pages=self.page_count(),
             filt=self.filt,
             filtered_total=len(items),
+            qty=self.qty,
         )
 
     def _rebuild(self) -> None:
@@ -9488,24 +9614,50 @@ class KrustyShopView(discord.ui.View):
             select.callback = self.on_select
             self.add_item(select)
 
-        # Row 3 — page nav (page index on ▶ to cut clicks)
-        pages = self.page_count()
-        prev_btn = discord.ui.Button(
-            label="◀",
-            style=discord.ButtonStyle.secondary,
-            row=3,
-            disabled=pages <= 1 or self.page <= 0,
-        )
-        next_btn = discord.ui.Button(
-            label=f"{self.page + 1}/{pages} ▶" if pages > 1 else "▶",
-            style=discord.ButtonStyle.secondary,
-            row=3,
-            disabled=pages <= 1 or self.page >= pages - 1,
-        )
-        prev_btn.callback = self.on_prev
-        next_btn.callback = self.on_next
-        self.add_item(prev_btn)
-        self.add_item(next_btn)
+        # Row 3 — quantity (power-ups) or page nav (titles/pins)
+        if shop_item_is_stackable(selected):
+            max_qty = shop_boost_max_qty(stats, selected)
+            self.qty = max(1, min(int(self.qty or 1), max_qty))
+            unit = int(selected.get("cost") or 0)
+            qty_options: list[discord.SelectOption] = []
+            for n in range(1, max_qty + 1):
+                total = unit * n
+                label = f"×{n}" if unit <= 0 else f"×{n} — {total} {SPONGE}"
+                qty_options.append(
+                    discord.SelectOption(
+                        label=label[:100],
+                        value=str(n),
+                        default=(n == self.qty),
+                    )
+                )
+            qty_select = discord.ui.Select(
+                placeholder="Quantity…",
+                options=qty_options,
+                row=3,
+                min_values=1,
+                max_values=1,
+            )
+            qty_select.callback = self.on_qty_select
+            self.add_item(qty_select)
+        else:
+            self.qty = 1
+            pages = self.page_count()
+            prev_btn = discord.ui.Button(
+                label="◀",
+                style=discord.ButtonStyle.secondary,
+                row=3,
+                disabled=pages <= 1 or self.page <= 0,
+            )
+            next_btn = discord.ui.Button(
+                label=f"{self.page + 1}/{pages} ▶" if pages > 1 else "▶",
+                style=discord.ButtonStyle.secondary,
+                row=3,
+                disabled=pages <= 1 or self.page >= pages - 1,
+            )
+            prev_btn.callback = self.on_prev
+            next_btn.callback = self.on_next
+            self.add_item(prev_btn)
+            self.add_item(next_btn)
 
         # Row 4 — actions
         if my_board:
@@ -9563,14 +9715,17 @@ class KrustyShopView(discord.ui.View):
                 action.callback = self.on_equip
                 self.add_item(action)
         else:
-            cost = int(selected["cost"])
+            unit = int(selected["cost"])
+            buy_qty = self.qty if shop_item_is_stackable(selected) else 1
+            cost = unit * buy_qty
             sale = "🔥 " if selected.get("on_sale") else ""
+            qty_bit = f"×{buy_qty} " if buy_qty > 1 else ""
             action = discord.ui.Button(
                 label=(
-                    f"{sale}Buy ({cost} {SPONGE})"
+                    f"{sale}Buy {qty_bit}({cost} {SPONGE})"
                     if cost
                     else "Claim FREE"
-                ),
+                )[:80],
                 style=discord.ButtonStyle.danger,
                 row=4,
             )
@@ -9604,6 +9759,7 @@ class KrustyShopView(discord.ui.View):
                 self.filt = "all"
         self.page = 0
         self.selected_id = None
+        self.qty = 1
         self._ensure_selection()
         await self._refresh(interaction)
 
@@ -9653,10 +9809,20 @@ class KrustyShopView(discord.ui.View):
                 except discord.HTTPException:
                     pass
 
+    async def on_qty_select(self, interaction: discord.Interaction) -> None:
+        values = (interaction.data or {}).get("values") or []
+        if values:
+            try:
+                self.qty = max(1, int(values[0]))
+            except (TypeError, ValueError):
+                self.qty = 1
+        await self._refresh(interaction)
+
     async def on_boosts(self, interaction: discord.Interaction) -> None:
         self.kind = "boosts"
         self.page = 0
         self.selected_id = None
+        self.qty = 1
         self._ensure_selection()
         await self._refresh(interaction)
 
@@ -9664,6 +9830,7 @@ class KrustyShopView(discord.ui.View):
         self.kind = "titles"
         self.page = 0
         self.selected_id = None
+        self.qty = 1
         self._ensure_selection()
         await self._refresh(interaction)
 
@@ -9671,6 +9838,7 @@ class KrustyShopView(discord.ui.View):
         self.kind = "pins"
         self.page = 0
         self.selected_id = None
+        self.qty = 1
         self._ensure_selection()
         await self._refresh(interaction)
 
@@ -9703,6 +9871,7 @@ class KrustyShopView(discord.ui.View):
             return
         if values:
             self.selected_id = values[0]
+            self.qty = 1
         await self._refresh(interaction)
 
     async def _apply_board_pins(self, shown_ids: list[str]) -> None:
@@ -9749,7 +9918,10 @@ class KrustyShopView(discord.ui.View):
             await interaction.response.send_message("Nothing selected.", ephemeral=True)
             return
         bought_id = item["id"]
-        result = apply_shop_purchase(self.bot, self.guild_id, self.owner_id, item)
+        qty = self.qty if shop_item_is_stackable(item) else 1
+        result = apply_shop_purchase(
+            self.bot, self.guild_id, self.owner_id, item, qty=qty
+        )
         if result.get("ok"):
             # Keep the purchased item selected and visible (show Owned).
             self.selected_id = bought_id
@@ -9769,10 +9941,13 @@ class KrustyShopView(discord.ui.View):
             return
         who = interaction.user.mention
         cost = int(result.get("cost") or 0)
+        bought_qty = int(result.get("qty") or 1)
+        label = result["label"]
+        item_bit = f"**{bought_qty}× {label}**" if bought_qty > 1 else f"**{label}**"
         pocket = format_sponges(self._stats().get("coins", 0))
         owned_note = " · **Owned ✓**" if item.get("kind") == "pin" else ""
         announce = (
-            f"{SPONGE} {who} bought **{result['label']}** "
+            f"{SPONGE} {who} bought {item_bit} "
             f"(−{cost} {SPONGE}) · pocket now **{pocket}**!{owned_note}"
         )
         try:

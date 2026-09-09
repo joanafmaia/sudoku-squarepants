@@ -217,8 +217,9 @@ const BOARD_ORIGIN = { x: 64, y: 108 };
 const CELL = 64;
 const BOARD_SIZE = CELL * 9;
 const FRAME_PAD = 16;
-// Slightly smaller badges so half-cell spacing fits ~54 unique pins.
+// Default badge size; drawBorderPins shrinks this so every on-board pin fits.
 const PIN_RADIUS = 16;
+const PIN_RADIUS_MIN = 7;
 
 const TITLE_HEADER_LINES = {
   "Very Easy": "Ahoy, {title}!",
@@ -676,62 +677,110 @@ export function startThcokuGame(canvas, options = {}) {
     return `~ ${tier} ~  ${template.replace("{title}", badge)}`;
   }
 
-  function drawBorderPins() {
-    const pins = cosmetics.pins.filter(Boolean);
-    if (!pins.length) return;
-    const rng = mulberry32(cosmetics.seed || 1);
-    const ox = BOARD_ORIGIN.x;
-    const oy = BOARD_ORIGIN.y;
-    // Frame outer edge — pin centers stay fully outside so badges are never clipped
-    const frameLeft = ox - FRAME_PAD - 4;
-    const frameRight = ox + BOARD_SIZE + FRAME_PAD + 4;
-    const frameBottom = oy + BOARD_SIZE + FRAME_PAD + 4;
-    const leftX = Math.max(PIN_RADIUS + 2, frameLeft - PIN_RADIUS - 4);
-    const rightX = Math.min(WIDTH - PIN_RADIUS - 2, frameRight + PIN_RADIUS + 4);
-    const bottomY = Math.min(HEIGHT - PIN_RADIUS - 8, frameBottom + PIN_RADIUS + 6);
-
-    const slots = [];
-    // Half-cell pitch (~18 per edge) → ~54 slots (was 27 at one-per-row).
-    const step = CELL / 2;
-    const count = 18;
-    for (let i = 0; i < count; i++) {
-      const y = oy + (i + 0.5) * step;
-      slots.push({ x: leftX, y });
-      slots.push({ x: rightX, y });
-    }
-    for (let i = 0; i < count; i++) {
-      slots.push({ x: ox + (i + 0.5) * step, y: bottomY });
-    }
-    for (let i = slots.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      [slots[i], slots[j]] = [slots[j], slots[i]];
-    }
+  function uniquePinList(list) {
     const unique = [];
     const seen = new Set();
-    for (const p of pins) {
-      if (!seen.has(p)) {
+    for (const p of list || []) {
+      if (p && !seen.has(p)) {
         seen.add(p);
         unique.push(p);
       }
     }
-    for (let i = 0; i < Math.min(unique.length, slots.length); i++) {
-      const emoji = unique[i];
+    return unique;
+  }
+
+  function collectBorderPinSlots(radius) {
+    const ox = BOARD_ORIGIN.x;
+    const oy = BOARD_ORIGIN.y;
+    const step = Math.max(10, radius * 2 - 2);
+    const frameLeft = ox - FRAME_PAD - 4;
+    const frameRight = ox + BOARD_SIZE + FRAME_PAD + 4;
+    const frameBottom = oy + BOARD_SIZE + FRAME_PAD + 4;
+    const headerBottom = 82;
+    const slots = [];
+    const add = (x, y) => {
+      if (x < radius + 1 || x > WIDTH - radius - 1) return;
+      if (y < headerBottom + radius || y > HEIGHT - radius - 2) return;
+      slots.push({ x, y });
+    };
+    for (let x = radius + 2; x + radius <= frameLeft - 1; x += step) {
+      for (let y = oy; y <= oy + BOARD_SIZE; y += step) add(x, y);
+    }
+    for (let x = WIDTH - radius - 2; x - radius >= frameRight + 1; x -= step) {
+      for (let y = oy; y <= oy + BOARD_SIZE; y += step) add(x, y);
+    }
+    for (let y = HEIGHT - radius - 6; y - radius >= frameBottom + 1; y -= step) {
+      for (let x = ox; x <= ox + BOARD_SIZE; x += step) add(x, y);
+    }
+    return slots;
+  }
+
+  function packPinsToFit(need, radius) {
+    const ox = BOARD_ORIGIN.x;
+    const oy = BOARD_ORIGIN.y;
+    const frameLeft = ox - FRAME_PAD - 4;
+    const frameRight = ox + BOARD_SIZE + FRAME_PAD + 4;
+    const frameBottom = oy + BOARD_SIZE + FRAME_PAD + 4;
+    const leftX = Math.max(radius + 2, frameLeft - radius - 4);
+    const rightX = Math.min(WIDTH - radius - 2, frameRight + radius + 4);
+    const bottomY = Math.min(HEIGHT - radius - 6, frameBottom + radius + 6);
+    const leftN = Math.ceil(need / 3);
+    const rightN = Math.ceil((need - leftN) / 2);
+    const bottomN = need - leftN - rightN;
+    const along = (n, x0, y0, x1, y1) => {
+      if (n <= 0) return [];
+      if (n === 1) return [{ x: (x0 + x1) / 2, y: (y0 + y1) / 2 }];
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        const t = i / (n - 1);
+        out.push({ x: x0 + (x1 - x0) * t, y: y0 + (y1 - y0) * t });
+      }
+      return out;
+    };
+    return [
+      ...along(leftN, leftX, oy, leftX, oy + BOARD_SIZE),
+      ...along(rightN, rightX, oy, rightX, oy + BOARD_SIZE),
+      ...along(bottomN, ox, bottomY, ox + BOARD_SIZE, bottomY),
+    ];
+  }
+
+  function drawBorderPins() {
+    const unique = uniquePinList(cosmetics.pins);
+    if (!unique.length) return;
+    let radius = PIN_RADIUS;
+    let slots = collectBorderPinSlots(radius);
+    while (slots.length < unique.length && radius > PIN_RADIUS_MIN) {
+      radius -= 1;
+      slots = collectBorderPinSlots(radius);
+    }
+    if (slots.length < unique.length) {
+      slots = packPinsToFit(unique.length, radius);
+    }
+    const rng = mulberry32(cosmetics.seed || 1);
+    for (let i = slots.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [slots[i], slots[j]] = [slots[j], slots[i]];
+    }
+    const fontPx = Math.max(11, Math.round(radius * 1.5));
+    const shine = Math.max(2, Math.round(radius * 0.3));
+    for (let i = 0; i < unique.length; i++) {
       const slot = slots[i];
+      if (!slot) break;
       ctx.beginPath();
-      ctx.arc(slot.x, slot.y, PIN_RADIUS, 0, Math.PI * 2);
+      ctx.arc(slot.x, slot.y, radius, 0, Math.PI * 2);
       ctx.fillStyle = RGB.pinFill;
       ctx.fill();
-      ctx.lineWidth = 2.5;
+      ctx.lineWidth = radius > 12 ? 2.5 : 1.5;
       ctx.strokeStyle = RGB.gold;
       ctx.stroke();
       ctx.beginPath();
-      ctx.arc(slot.x - 4, slot.y - 5, 5, 0, Math.PI * 2);
+      ctx.arc(slot.x - radius * 0.25, slot.y - radius * 0.3, shine, 0, Math.PI * 2);
       ctx.fillStyle = RGB.pinShine;
       ctx.fill();
-      ctx.font = "24px Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol, sans-serif";
+      ctx.font = `${fontPx}px Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol, sans-serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(emoji, slot.x, slot.y + 1);
+      ctx.fillText(unique[i], slot.x, slot.y + 1);
     }
   }
 
