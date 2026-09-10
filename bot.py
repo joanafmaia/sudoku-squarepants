@@ -219,6 +219,9 @@ BOARD_CARD_PAD = 0          # full-bleed so the board aligns with the keyboard
 BOARD_CARD_RADIUS = 0
 BOARD_INNER_PAD = 14        # margin around grid — room for random emoji pins
 PIN_EMOJI_SIZE = 26
+# Circular backing is pin_size+6, pasted at (x-3, y-3). Keep badges inside the gold rim.
+PIN_BADGE_PAD = 3
+PIN_EDGE_INSET = 3
 EMOJI_PIN_DIR = Path(__file__).with_name("assets") / "emoji_pins"
 
 COLS = "ABCDEFGHI"
@@ -545,6 +548,17 @@ def weekly_progress_compact(stats: dict) -> str:
     return f"**{done}/{len(WEEKLY_QUESTS)}** · " + " · ".join(bits)
 
 
+def positive_solve_seconds(value: object) -> int | None:
+    """Real solve duration in seconds, or None if missing/bogus (0s)."""
+    if value is None:
+        return None
+    try:
+        t = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return t if t > 0 else None
+
+
 def format_time_compact(seconds: float) -> str:
     """Short clock for dense UI (3:42 / 1h05) — not the verbose format_time()."""
     total = max(0, int(seconds))
@@ -593,16 +607,10 @@ def build_stats_embed(
 ) -> discord.Embed:
     """Compact player card — description-only so Discord mobile stays short."""
     _ = avatar_url  # intentionally unused (thumbnail eats phone width)
-    best = (
-        format_time(stats["best_time"])
-        if stats.get("best_time") is not None
-        else "—"
-    )
-    longest = (
-        format_time(stats["longest_time"])
-        if stats.get("longest_time") is not None
-        else "—"
-    )
+    best_n = positive_solve_seconds(stats.get("best_time"))
+    longest_n = positive_solve_seconds(stats.get("longest_time"))
+    best = format_time(best_n) if best_n is not None else "—"
+    longest = format_time(longest_n) if longest_n is not None else "—"
     title = (
         SHOP_TITLES[stats["title"]]["label"]
         if stats.get("title") in SHOP_TITLES
@@ -672,7 +680,7 @@ def evaluate_user_achievements(stats: dict) -> list[str]:
     unlocked = set(stats.get("badges") or [])
 
     try:
-        best_time = float(stats.get("best_time") if stats.get("best_time") is not None else 0)
+        best_time = float(positive_solve_seconds(stats.get("best_time")) or 0)
     except (TypeError, ValueError):
         best_time = 0.0
     if best_time > 0 and best_time <= 180:
@@ -1029,6 +1037,19 @@ async def restore_leaderboard_from_mongo(bot: "SudokuBot") -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"xiao best_time clear failed: {exc}")
 
+    # One-time: replace career best 0s (timer bug) with the fastest real PB.
+    try:
+        repaired = migrate_fix_zero_best_times(bot.data)
+        if repaired:
+            save_data(bot.data)
+            try:
+                await match_store.save_leaderboard(bot.data)
+            except Exception as save_exc:  # noqa: BLE001
+                print(f"zero best_time fix mongo save failed: {save_exc}")
+            print(f"Repaired zero best_time: {', '.join(repaired)}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"zero best_time fix failed: {exc}")
+
 
 STREAK_FAIR_RESET_FLAG = "streak_calendar_fair_reset_v1"
 STREAK_RESTORE_V1_FLAG = "streak_restore_bookqueen_fuzzy_xiao_v1"
@@ -1097,6 +1118,60 @@ def migrate_clear_xiao_bogus_best_time(data: dict) -> list[str]:
     if xiao_seen or cleared:
         data[XIAO_BEST_TIME_BUG_RESET_FLAG] = True
     return cleared
+
+
+ZERO_BEST_TIME_FIX_FLAG = "zero_best_time_fix_v1"
+
+
+def _min_positive_difficulty_best(stats: dict) -> int | None:
+    raw = stats.get("best_times") if isinstance(stats.get("best_times"), dict) else {}
+    best: int | None = None
+    for val in raw.values():
+        t = positive_solve_seconds(val)
+        if t is None:
+            continue
+        if best is None or t < best:
+            best = t
+    return best
+
+
+def migrate_fix_zero_best_times(data: dict) -> list[str]:
+    """One-shot: swap impossible 0s career bests for the fastest per-difficulty PB."""
+    if data.get(ZERO_BEST_TIME_FIX_FLAG):
+        return []
+    fixed: list[str] = []
+    players_seen = False
+    for guild_key, gstats in list(data.items()):
+        if not isinstance(gstats, dict) or not str(guild_key).isdigit():
+            continue
+        for uid, stats in iter_players(gstats):
+            if not isinstance(stats, dict):
+                continue
+            players_seen = True
+            raw = stats.get("best_times")
+            if isinstance(raw, dict):
+                for key, val in list(raw.items()):
+                    if positive_solve_seconds(val) is None:
+                        raw.pop(key, None)
+            career = positive_solve_seconds(stats.get("best_time"))
+            longest = positive_solve_seconds(stats.get("longest_time"))
+            recovered = _min_positive_difficulty_best(stats)
+            if career is not None and longest is not None:
+                continue
+            before = stats.get("best_time")
+            if career is None:
+                stats["best_time"] = recovered
+            if longest is None:
+                stats["longest_time"] = None
+            evaluate_user_achievements(stats)
+            if career is None:
+                after = positive_solve_seconds(stats.get("best_time"))
+                before_txt = format_time(before) if before is not None else "—"
+                after_txt = format_time(after) if after is not None else "—"
+                fixed.append(f"{stats.get('name') or uid}@{guild_key} ({before_txt} → {after_txt})")
+    if players_seen:
+        data[ZERO_BEST_TIME_FIX_FLAG] = True
+    return fixed
 
 
 def migrate_fair_daily_streaks(data: dict) -> int:
@@ -1304,11 +1379,10 @@ def user_stats(gstats: dict, user_id: int) -> dict:
     if not isinstance(s.get("best_times"), dict):
         s["best_times"] = {}
     # Seed longest from known best when we only ever tracked fastest before.
-    if s.get("longest_time") is None and s.get("best_time") is not None:
-        try:
-            s["longest_time"] = int(float(s["best_time"]))
-        except (TypeError, ValueError):
-            pass
+    if s.get("longest_time") is None:
+        bt = positive_solve_seconds(s.get("best_time"))
+        if bt is not None:
+            s["longest_time"] = bt
     s.setdefault("streak", 0)
     s.setdefault("best_streak", 0)
     s.setdefault("last_streak_day", None)
@@ -2631,19 +2705,14 @@ def record_solve_times(
     difficulty: str | None = None,
 ) -> None:
     """Update career fastest/longest plus per-difficulty personal bests."""
-    if elapsed is None:
+    t = positive_solve_seconds(elapsed)
+    if t is None:
         return
-    try:
-        t = int(float(elapsed))
-    except (TypeError, ValueError):
-        return
-    if t < 0:
-        return
-    best = stats.get("best_time")
-    if best is None or t < float(best):
+    best = positive_solve_seconds(stats.get("best_time"))
+    if best is None or t < best:
         stats["best_time"] = t
-    longest = stats.get("longest_time")
-    if longest is None or t > float(longest):
+    longest = positive_solve_seconds(stats.get("longest_time"))
+    if longest is None or t > longest:
         stats["longest_time"] = t
     key = difficulty_key_from_label(str(difficulty)) if difficulty else None
     if key and key in DIFFICULTY_TIERS:
@@ -2651,11 +2720,7 @@ def record_solve_times(
         if not isinstance(times, dict):
             times = {}
             stats["best_times"] = times
-        prev = times.get(key)
-        try:
-            prev_n = int(float(prev)) if prev is not None else None
-        except (TypeError, ValueError):
-            prev_n = None
+        prev_n = positive_solve_seconds(times.get(key))
         if prev_n is None or t < prev_n:
             times[key] = t
 
@@ -2685,13 +2750,10 @@ def format_best_times_by_difficulty(stats: dict) -> str:
     parts: list[str] = []
     for key in DIFFICULTY_TIERS:
         label = _PB_DIFF_SHORT.get(key, key[:2].upper())
-        val = raw.get(key)
+        val = positive_solve_seconds(raw.get(key))
         if val is None:
             continue
-        try:
-            parts.append(f"{label}:{format_time_compact(int(float(val)))}")
-        except (TypeError, ValueError):
-            continue
+        parts.append(f"{label}:{format_time_compact(val)}")
     return " · ".join(parts) if parts else "—"
 
 
@@ -2856,6 +2918,42 @@ def load_emoji_pin(emoji: str, size: int = PIN_EMOJI_SIZE) -> Image.Image | None
         return None
 
 
+def _pin_min_x() -> int:
+    """Top-left x so the circular badge stays inside the gold card rim."""
+    return PIN_EDGE_INSET + PIN_BADGE_PAD
+
+
+def _pin_max_x(canvas: int, pin_size: int) -> int:
+    return canvas - pin_size - PIN_EDGE_INSET - PIN_BADGE_PAD
+
+
+def _centered_left_pin_x(origin_x: int, pin_size: int) -> int:
+    return max(_pin_min_x(), (origin_x - pin_size) // 2)
+
+
+def _centered_right_pin_x(canvas: int, origin_x: int, grid: int, pin_size: int) -> int:
+    margin0 = origin_x + grid
+    centered = margin0 + max(PIN_EDGE_INSET, (canvas - margin0 - pin_size) // 2)
+    return min(_pin_max_x(canvas, pin_size), centered)
+
+
+def _centered_bottom_pin_y(canvas: int, origin_y: int, grid: int, pin_size: int) -> int | None:
+    margin0 = origin_y + grid
+    y = margin0 + max(PIN_EDGE_INSET, (canvas - margin0 - pin_size) // 2)
+    y = min(canvas - pin_size - PIN_EDGE_INSET - PIN_BADGE_PAD, y)
+    if y < margin0 + 2:
+        return None
+    return y
+
+
+def _pin_column_fits(n: int, y0: int, y1: int, pin_size: int) -> bool:
+    """True when ``n`` badges can sit on a column without overlapping."""
+    if n <= 1:
+        return y1 >= y0
+    pitch = (y1 - y0) / (n - 1)
+    return pitch >= pin_size + PIN_BADGE_PAD * 2 + 2
+
+
 def _border_pin_slots(
     *,
     canvas: int,
@@ -2866,8 +2964,11 @@ def _border_pin_slots(
     pin_size: int,
     min_count: int = 0,
 ) -> list[tuple[int, int]]:
-    """Pack pin positions in the cream margin (left/right/bottom). No top — header."""
+    """Candidate positions centered in the cream margin (left/right/bottom). No top — header."""
     min_gap = max(8, pin_size // 2)
+    left_x = _centered_left_pin_x(origin_x, pin_size)
+    right_x = _centered_right_pin_x(canvas, origin_x, grid, pin_size)
+    bottom_y = _centered_bottom_pin_y(canvas, origin_y, grid, pin_size)
 
     def _pack(step: int) -> list[tuple[int, int]]:
         slots: list[tuple[int, int]] = []
@@ -2879,25 +2980,23 @@ def _border_pin_slots(
                 slots.append((x, y))
 
         def _col(x: int, y0: int, y1: int) -> None:
-            if x < 2 or x + pin_size > canvas - 2:
+            if x < _pin_min_x() or x + pin_size > canvas - _pin_min_x():
                 return
             for y in range(max(y0, header_h + 2), y1 - pin_size + 1, step):
                 slots.append((x, y))
 
-        y = origin_y + grid + 2
-        while y + pin_size <= canvas - 2:
-            _row(y, origin_x, origin_x + grid)
-            y += step
+        if bottom_y is not None:
+            _row(bottom_y, origin_x, origin_x + grid)
 
-        x = 2
-        while x + pin_size <= origin_x - 2:
-            _col(x, origin_y, origin_y + grid)
-            x += step
+        _col(left_x, origin_y, origin_y + grid)
+        left_outer = left_x - pin_size - 2
+        if left_outer >= _pin_min_x() and left_outer + pin_size <= left_x - 2:
+            _col(left_outer, origin_y, origin_y + grid)
 
-        x = origin_x + grid + 2
-        while x + pin_size <= canvas - 2:
-            _col(x, origin_y, origin_y + grid)
-            x += step
+        _col(right_x, origin_y, origin_y + grid)
+        right_outer = right_x + pin_size + 2
+        if right_outer <= _pin_max_x(canvas, pin_size):
+            _col(right_outer, origin_y, origin_y + grid)
 
         return slots
 
@@ -2919,16 +3018,15 @@ def _pack_pins_to_fit(
     grid: int,
     pin_size: int,
 ) -> list[tuple[int, int]]:
-    """Evenly space ``need`` pins on left/right (and bottom if it fits)."""
+    """Evenly space ``need`` pins, centered in the left/right (and bottom) cream margins."""
     if need <= 0:
         return []
-    left_x = max(2, (origin_x - pin_size) // 2)
-    right_x = min(canvas - pin_size - 2, origin_x + grid + 2)
+    left_x = _centered_left_pin_x(origin_x, pin_size)
+    right_x = _centered_right_pin_x(canvas, origin_x, grid, pin_size)
     y0 = max(origin_y, header_h + 2)
     y1 = max(y0, origin_y + grid - pin_size)
-    bottom_y = canvas - pin_size - 2
-    bottom_ok = bottom_y >= origin_y + grid + 2 and bottom_y + pin_size <= canvas - 2
-    if bottom_ok:
+    bottom_y = _centered_bottom_pin_y(canvas, origin_y, grid, pin_size)
+    if bottom_y is not None:
         left_n = (need + 2) // 3
         right_n = (need - left_n + 1) // 2
         bottom_n = need - left_n - right_n
@@ -2936,6 +3034,10 @@ def _pack_pins_to_fit(
         left_n = (need + 1) // 2
         right_n = need - left_n
         bottom_n = 0
+    if not _pin_column_fits(max(left_n, right_n), y0, y1, pin_size):
+        return []
+    if bottom_n and not _pin_column_fits(bottom_n, origin_x, origin_x + grid - pin_size, pin_size):
+        return []
 
     def _along(n: int, x0: int, ya: int, x1: int, yb: int) -> list[tuple[int, int]]:
         if n <= 0:
@@ -2950,7 +3052,7 @@ def _pack_pins_to_fit(
 
     slots = _along(left_n, left_x, y0, left_x, y1)
     slots.extend(_along(right_n, right_x, y0, right_x, y1))
-    if bottom_n:
+    if bottom_n and bottom_y is not None:
         slots.extend(
             _along(bottom_n, origin_x, bottom_y, origin_x + grid - pin_size, bottom_y)
         )
@@ -2981,27 +3083,8 @@ def paste_owned_emoji_pins(
             seen.add(e)
     need = len(unique)
     pin_size = PIN_EMOJI_SIZE
-    slots = _border_pin_slots(
-        canvas=canvas,
-        header_h=header_h,
-        origin_x=origin_x,
-        origin_y=origin_y,
-        grid=grid,
-        pin_size=pin_size,
-        min_count=need,
-    )
-    while len(slots) < need and pin_size > 12:
-        pin_size -= 2
-        slots = _border_pin_slots(
-            canvas=canvas,
-            header_h=header_h,
-            origin_x=origin_x,
-            origin_y=origin_y,
-            grid=grid,
-            pin_size=pin_size,
-            min_count=need,
-        )
-    if len(slots) < need:
+    slots: list[tuple[int, int]] = []
+    while pin_size >= 12:
         slots = _pack_pins_to_fit(
             need,
             canvas=canvas,
@@ -3010,6 +3093,20 @@ def paste_owned_emoji_pins(
             origin_y=origin_y,
             grid=grid,
             pin_size=pin_size,
+        )
+        if slots:
+            break
+        pin_size -= 2
+    if len(slots) < need:
+        pin_size = max(12, pin_size)
+        slots = _border_pin_slots(
+            canvas=canvas,
+            header_h=header_h,
+            origin_x=origin_x,
+            origin_y=origin_y,
+            grid=grid,
+            pin_size=pin_size,
+            min_count=need,
         )
     if not slots:
         return img
