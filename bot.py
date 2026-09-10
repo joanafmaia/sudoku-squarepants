@@ -2239,6 +2239,46 @@ def toggle_pencil(board: list[list[dict]], r: int, c: int, digit: int) -> list[i
     return marks
 
 
+def unique_box_pencil_keys(board: list[list[dict]]) -> set[tuple[int, int, int]]:
+    """Pencil digits that appear once in a box, row, or column (hidden singles among notes)."""
+    unique: set[tuple[int, int, int]] = set()
+    if not board:
+        return unique
+
+    def _scan(cells: list[tuple[int, int]]) -> None:
+        counts = [0] * 10
+        placed = [False] * 10
+        at: list[tuple[int, int] | None] = [None] * 10
+        for r, c in cells:
+            val = cell_value(board, r, c)
+            if val:
+                if 1 <= val <= 9:
+                    placed[val] = True
+                continue
+            for raw in board[r][c].get("pencil_marks") or []:
+                try:
+                    d = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                if d < 1 or d > 9:
+                    continue
+                counts[d] += 1
+                at[d] = (r, c)
+        for d in range(1, 10):
+            cell = at[d]
+            if counts[d] == 1 and not placed[d] and cell is not None:
+                unique.add((cell[0], cell[1], d))
+
+    for br in range(3):
+        for bc in range(3):
+            _scan([(br * 3 + i, bc * 3 + j) for i in range(3) for j in range(3)])
+    for r in range(9):
+        _scan([(r, c) for c in range(9)])
+    for c in range(9):
+        _scan([(r, c) for r in range(9)])
+    return unique
+
+
 def values_grid(board: list[list[dict]]) -> list[list[int]]:
     return [[cell_value(board, r, c) for c in range(9)] for r in range(9)]
 
@@ -3283,7 +3323,9 @@ def render_board(
 
     font_player = board_font(max(24, cell * 28 // 48), bold=False)
     font_given = board_font(max(24, cell * 28 // 48), bold=True)
-    pencil_font = board_font(max(14, cell * 16 // 48), bold=True)
+    pencil_font = board_font(max(13, cell * 15 // 48), bold=False)
+    pencil_unique_font = board_font(max(15, cell * 17 // 48), bold=True)
+    unique_notes = unique_box_pencil_keys(board)
 
     box_cells: set[tuple[int, int]] = set()
     if highlight_box is not None:
@@ -3388,13 +3430,16 @@ def render_board(
                     cx = x0 + inset + (ni % 3) * slot_w + slot_w / 2
                     cy = y0 + inset + (ni // 3) * slot_h + slot_h / 2
                     t = str(n)
-                    bbox = draw.textbbox((0, 0), t, font=pencil_font)
+                    solo = (r, c, n) in unique_notes
+                    font = pencil_unique_font if solo else pencil_font
+                    fill = pal["text"] if solo else pal["pencil"]
+                    bbox = draw.textbbox((0, 0), t, font=font)
                     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
                     draw.text(
                         (cx - tw / 2, cy - th / 2 - 1),
                         t,
-                        fill=pal["pencil"],
-                        font=pencil_font,
+                        fill=fill,
+                        font=font,
                     )
 
     img = paste_owned_emoji_pins(

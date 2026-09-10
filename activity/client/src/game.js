@@ -14,6 +14,7 @@ import {
   makePuzzle,
   setCellValue,
   togglePencil,
+  uniqueBoxPencilKeys,
   difficultyKeyFromLabel,
 } from "./sudoku-core.js";
 
@@ -1815,6 +1816,7 @@ export function startThcokuGame(canvas, options = {}) {
     ctx.translate(-WIDTH / 2, -HEIGHT / 2);
 
     const conflicts = findConflicts(state.board);
+    const uniqueNotes = uniqueBoxPencilKeys(state.board);
     // Spectators: no cell selection / peer wash — keep the board readable.
     const sel = state.selected;
     const highlightSel =
@@ -1873,11 +1875,14 @@ export function startThcokuGame(canvas, options = {}) {
         } else {
           const marks = state.board[r][c]?.pencil_marks || [];
           if (marks.length) {
-            ctx.fillStyle = RGB.pencil;
-            ctx.font = "500 13px Fredoka, Segoe UI, sans-serif";
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
             for (const d of marks) {
+              const solo = uniqueNotes.has(`${r},${c},${d}`);
+              ctx.fillStyle = solo ? RGB.text : RGB.pencil;
+              ctx.font = solo
+                ? "700 14px Fredoka, Segoe UI, sans-serif"
+                : "500 13px Fredoka, Segoe UI, sans-serif";
               const mr = Math.floor((d - 1) / 3);
               const mc = (d - 1) % 3;
               ctx.fillText(String(d), x + 14 + mc * 22, y + 14 + mr * 22);

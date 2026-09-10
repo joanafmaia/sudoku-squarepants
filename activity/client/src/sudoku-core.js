@@ -233,6 +233,51 @@ function peers(r, c) {
   return [...cells].map((k) => k.split(",").map(Number));
 }
 
+/** Pencil digits that appear once in a box, row, or column (hidden singles among notes). */
+export function uniqueBoxPencilKeys(board) {
+  const unique = new Set();
+  if (!board?.length) return unique;
+
+  const scan = (cells) => {
+    const counts = Array(10).fill(0);
+    const placed = Array(10).fill(false);
+    const at = Array(10).fill(null);
+    for (const [r, c] of cells) {
+      const val = cellValue(board, r, c);
+      if (val) {
+        if (val >= 1 && val <= 9) placed[val] = true;
+        continue;
+      }
+      for (const raw of board[r][c]?.pencil_marks || []) {
+        const d = raw | 0;
+        if (d < 1 || d > 9) continue;
+        counts[d] += 1;
+        at[d] = `${r},${c},${d}`;
+      }
+    }
+    for (let d = 1; d <= 9; d++) {
+      if (counts[d] === 1 && !placed[d] && at[d]) unique.add(at[d]);
+    }
+  };
+
+  for (let br = 0; br < 3; br++) {
+    for (let bc = 0; bc < 3; bc++) {
+      const cells = [];
+      for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) cells.push([br * 3 + i, bc * 3 + j]);
+      }
+      scan(cells);
+    }
+  }
+  for (let r = 0; r < 9; r++) {
+    scan(Array.from({ length: 9 }, (_, c) => [r, c]));
+  }
+  for (let c = 0; c < 9; c++) {
+    scan(Array.from({ length: 9 }, (_, r) => [r, c]));
+  }
+  return unique;
+}
+
 export function findConflicts(board) {
   const bad = new Set();
   for (let r = 0; r < 9; r++) {
