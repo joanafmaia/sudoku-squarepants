@@ -620,8 +620,10 @@ def build_stats_embed(
     best_streak = int(stats.get("best_streak", 0) or 0)
     wins = int(stats.get("wins", 0) or 0)
     losses = int(stats.get("losses", 0) or 0)
-    games_n = int(stats.get("games", 0) or 0) or (wins + losses)
-    win_rate = f"{(100 * wins / games_n):.0f}%" if games_n else "—"
+    games_n = int(stats.get("games", 0) or 0) or wins
+    chall = int(stats.get("challenge_wins", 0) or 0)
+    race_n = chall + losses
+    race_rate = f" ({100 * chall / race_n:.0f}%)" if race_n else ""
     shields = int(stats.get("streak_shields") or 0)
     badge_ids = [b for b in (stats.get("badges") or []) if b in ACHIEVEMENTS]
     have = len(badge_ids)
@@ -650,7 +652,8 @@ def build_stats_embed(
         f"{format_sponges(stats.get('coins', 0))} · "
         f"spent {int(stats.get('sponges_spent', 0) or 0)} · "
         f"{format_xp(stats.get('xp', 0))}\n"
-        f"**{wins}**W–**{losses}**L ({win_rate}) · best **{best}** · longest **{longest}**\n"
+        f"**{wins}** solved · races **{chall}**W–**{losses}**L{race_rate} · "
+        f"best **{best}** · longest **{longest}**\n"
         f"PBs · {format_best_times_by_difficulty(stats)}\n"
         f"{PINEAPPLE} **{int(stats.get('daily_wins', 0) or 0)}** · "
         f"{JELLY} **{int(stats.get('challenge_wins', 0) or 0)}** · "
@@ -1050,6 +1053,19 @@ async def restore_leaderboard_from_mongo(bot: "SudokuBot") -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"zero best_time fix failed: {exc}")
 
+    # One-time: drop losses that were actually /play quits and abandoned dailies.
+    try:
+        dropped = migrate_drop_quit_inflated_losses(bot.data)
+        if dropped:
+            save_data(bot.data)
+            try:
+                await match_store.save_leaderboard(bot.data)
+            except Exception as save_exc:  # noqa: BLE001
+                print(f"quit-loss fix mongo save failed: {save_exc}")
+            print(f"Dropped quit-inflated losses for {dropped} player(s)")
+    except Exception as exc:  # noqa: BLE001
+        print(f"quit-loss inflation fix failed: {exc}")
+
 
 STREAK_FAIR_RESET_FLAG = "streak_calendar_fair_reset_v1"
 STREAK_RESTORE_V1_FLAG = "streak_restore_bookqueen_fuzzy_xiao_v1"
@@ -1118,6 +1134,32 @@ def migrate_clear_xiao_bogus_best_time(data: dict) -> list[str]:
     if xiao_seen or cleared:
         data[XIAO_BEST_TIME_BUG_RESET_FLAG] = True
     return cleared
+
+
+QUIT_LOSS_INFLATION_FIX_FLAG = "quit_loss_inflation_fix_v1"
+
+
+def migrate_drop_quit_inflated_losses(data: dict) -> int:
+    """One-shot: W–L was counting /play quits. Keep wins; zero those losses."""
+    if data.get(QUIT_LOSS_INFLATION_FIX_FLAG):
+        return 0
+    changed = 0
+    for guild_key, gstats in list(data.items()):
+        if not isinstance(gstats, dict) or not str(guild_key).isdigit():
+            continue
+        for _uid, stats in iter_players(gstats):
+            if not isinstance(stats, dict):
+                continue
+            wins = int(stats.get("wins") or 0)
+            losses = int(stats.get("losses") or 0)
+            games = int(stats.get("games") or 0)
+            if losses == 0 and (games == 0 or games == wins):
+                continue
+            stats["losses"] = 0
+            stats["games"] = wins
+            changed += 1
+    data[QUIT_LOSS_INFLATION_FIX_FLAG] = True
+    return changed
 
 
 ZERO_BEST_TIME_FIX_FLAG = "zero_best_time_fix_v1"
@@ -4416,8 +4458,6 @@ async def finish_forfeit(
                     description="Today's daily was already forfeited.",
                 )
 
-            stats["losses"] += 1
-            stats["games"] += 1
             stats["streak"] = 0
             stats["last_streak_day"] = None
             daily["results"][str(user.id)] = {
@@ -4431,8 +4471,7 @@ async def finish_forfeit(
             description="Streak wiped. Daily attempt locked for today — see you at the Krusty Krab!",
         )
 
-    stats["losses"] += 1
-    stats["games"] += 1
+    # Abandoned /play is not a competitive loss (and does not count as a board).
     save_data(data)
     return paper_embed(
         f"{WAVE} Quit",
@@ -4866,6 +4905,7 @@ async def settle_challenge_match(
             if player.get("forfeit"):
                 continue
             loser_stats = user_stats(gstats, uid)
+            # Only finished (or still-standing) challenge losses count as L.
             loser_stats["losses"] += 1
             loser_stats["games"] += 1
             # Challenge loss does not wipe the calendar daily streak.
