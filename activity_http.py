@@ -116,12 +116,33 @@ async def _lookup_activity_session(
 
     Today's daily always beats a leftover /play board (guild=0 orphan race).
     Lists all user docs — a single newest find_one can hide today's daily.
+    A /resume pick pins a specific session via resume intent.
     """
     from bot import _pick_best_activity_session, match_store, utc_today
 
     uid = int(user_id)
     gid = str(guild_id if guild_id is not None else "0")
     primary = _activity_session_id(gid, uid)
+
+    try:
+        intent = await match_store.get_resume_intent(uid)
+    except Exception:
+        intent = None
+    pinned = str((intent or {}).get("session_id") or "")
+    if pinned:
+        pinned_doc = await match_store.get_activity_session(pinned)
+        if (
+            pinned_doc
+            and str(pinned_doc.get("user_id") or "") == str(uid)
+            and (pinned_doc.get("board") or pinned_doc.get("solution"))
+            and not pinned_doc.get("won_at")
+        ):
+            return pinned_doc, pinned
+        try:
+            await match_store.clear_resume_intent(uid)
+        except Exception:
+            pass
+
     session = await match_store.get_activity_session(primary)
 
     orphan_id = _activity_session_id("0", uid)

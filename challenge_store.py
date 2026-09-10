@@ -229,6 +229,19 @@ class MatchStore:
         """Return and delete pending spectate intent if not expired."""
         raise NotImplementedError
 
+    async def set_resume_intent(
+        self, user_id: int, *, session_id: str, ttl_sec: int = 14400
+    ) -> None:
+        """Pin which Activity session /resume should open (until TTL or clear)."""
+        raise NotImplementedError
+
+    async def get_resume_intent(self, user_id: int) -> dict | None:
+        """Return sticky resume target if not expired."""
+        return None
+
+    async def clear_resume_intent(self, user_id: int) -> None:
+        return None
+
 
 class MemoryMatchStore(MatchStore):
     def __init__(self) -> None:
@@ -237,6 +250,7 @@ class MemoryMatchStore(MatchStore):
         self._active: dict[str, dict] = {}
         self._activity: dict[str, dict] = {}
         self._spectate_intents: dict[str, dict] = {}
+        self._resume_intents: dict[str, dict] = {}
         self._play_wins: set[str] = set()
         self._leaderboard: dict | None = None
         self._leaderboard_revision: int = 0
@@ -573,6 +587,30 @@ class MemoryMatchStore(MatchStore):
             "guild_id": int(doc["guild_id"]),
             "target_user_id": int(doc["target_user_id"]),
         }
+
+    async def set_resume_intent(
+        self, user_id: int, *, session_id: str, ttl_sec: int = 14400
+    ) -> None:
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        self._resume_intents[str(user_id)] = {
+            "session_id": sid,
+            "expires_at": time.time() + max(60, int(ttl_sec)),
+        }
+
+    async def get_resume_intent(self, user_id: int) -> dict | None:
+        doc = self._resume_intents.get(str(user_id))
+        if not doc:
+            return None
+        if time.time() > float(doc.get("expires_at") or 0):
+            self._resume_intents.pop(str(user_id), None)
+            return None
+        sid = str(doc.get("session_id") or "")
+        return {"session_id": sid} if sid else None
+
+    async def clear_resume_intent(self, user_id: int) -> None:
+        self._resume_intents.pop(str(user_id), None)
 
     def _daily_key(self, guild_id: int, user_id: int, day: str) -> str:
         return f"{guild_id}:{day}:{user_id}"
@@ -1100,6 +1138,44 @@ class MongoMatchStore(MatchStore):
             "guild_id": int(doc["guild_id"]),
             "target_user_id": int(doc["target_user_id"]),
         }
+
+    async def set_resume_intent(
+        self, user_id: int, *, session_id: str, ttl_sec: int = 14400
+    ) -> None:
+        if self._activity is None:
+            await self.connect()
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        key = f"resume_intent:{user_id}"
+        await self._activity.update_one(
+            {"_id": key},
+            {
+                "$set": {
+                    "session_id": sid,
+                    "expires_at": time.time() + max(60, int(ttl_sec)),
+                }
+            },
+            upsert=True,
+        )
+
+    async def get_resume_intent(self, user_id: int) -> dict | None:
+        if self._activity is None:
+            await self.connect()
+        key = f"resume_intent:{user_id}"
+        doc = await self._activity.find_one({"_id": key})
+        if not doc:
+            return None
+        if time.time() > float(doc.get("expires_at") or 0):
+            await self._activity.delete_one({"_id": key})
+            return None
+        sid = str(doc.get("session_id") or "")
+        return {"session_id": sid} if sid else None
+
+    async def clear_resume_intent(self, user_id: int) -> None:
+        if self._activity is None:
+            await self.connect()
+        await self._activity.delete_one({"_id": f"resume_intent:{user_id}"})
 
     async def try_claim_daily_win(
         self,

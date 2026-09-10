@@ -117,7 +117,7 @@ def session_difficulty_key(session: dict | None) -> str | None:
 
 CHALLENGE_WIN_MULT = 2.0  # extra multiplier for speedrun winners
 MAX_CHALLENGE_PLAYERS = 5  # challenger + up to 4 opponents
-CHALLENGE_LOSER_COINS = 15
+CHALLENGE_LOSER_SHARE = 3  # consolation = winner sponges // this
 # Last standing when opponents forfeit — sponges only, no best_time / full win payout.
 CHALLENGE_FORFEIT_WIN_COINS = 40
 CHALLENGE_COOLDOWN_SEC = 60
@@ -2813,6 +2813,11 @@ def win_reward(
     return max(20, coins)
 
 
+def challenge_consolation_coins(winner_coins: int) -> int:
+    """Losers who didn't forfeit get 1/3 of the winner's sponge payout."""
+    return max(0, int(winner_coins) // CHALLENGE_LOSER_SHARE)
+
+
 # ---------------------------------------------------------------------------
 # Board image
 # ---------------------------------------------------------------------------
@@ -4713,6 +4718,7 @@ async def settle_challenge_match(
 
         guild = bot.get_guild(guild_id)
         reward_notes: list[str] = []
+        winner_payouts: list[int] = []
 
         async def _award_solved_winner(wid: int) -> None:
             winner_elapsed = 0.0
@@ -4764,6 +4770,7 @@ async def settle_challenge_match(
                 winner_game,
                 challenge_winner=True,
             )
+            winner_payouts.append(int(outcome.coins))
             reward_notes.append(
                 f"{format_sponges(int(outcome.coins), signed=True)} · "
                 f"+{int(outcome.xp)} XP → <@{wid}>"
@@ -4828,6 +4835,7 @@ async def settle_challenge_match(
                     winner_game,
                     challenge_winner=True,
                 )
+                winner_payouts.append(int(outcome.coins))
                 reward_notes.append(
                     f"{format_sponges(int(outcome.coins), signed=True)} · "
                     f"+{int(outcome.xp)} XP → <@{winner_id}>"
@@ -4837,6 +4845,7 @@ async def settle_challenge_match(
                 # Sponges + challenge_wins only; never best_time / full XP win.
                 coins = CHALLENGE_FORFEIT_WIN_COINS
                 wstats["coins"] = int(wstats.get("coins") or 0) + coins
+                winner_payouts.append(int(coins))
                 reward_notes.append(
                     f"Last standing — {format_sponges(coins, signed=True)} "
                     f"(no solve time) → <@{winner_id}>"
@@ -4844,6 +4853,9 @@ async def settle_challenge_match(
             wstats["challenge_wins"] = int(wstats.get("challenge_wins", 0) or 0) + 1
             save_data(bot.data)
 
+        consolation_coins = challenge_consolation_coins(
+            max(winner_payouts) if winner_payouts else 0
+        )
         gstats = guild_stats(bot.data, guild_id)
         for _slot, player in entries:
             uid = int(player["user_id"])
@@ -4857,7 +4869,7 @@ async def settle_challenge_match(
             loser_stats["losses"] += 1
             loser_stats["games"] += 1
             # Challenge loss does not wipe the calendar daily streak.
-            loser_stats["coins"] += CHALLENGE_LOSER_COINS
+            loser_stats["coins"] += consolation_coins
         save_data(bot.data)
 
         await match_store.update_match(
@@ -4880,6 +4892,7 @@ async def settle_challenge_match(
             "tied_user_ids": tied_user_ids,
             "detail": detail,
             "reward_notes": reward_notes,
+            "consolation_coins": consolation_coins,
             "channel_id": match.get("channel_id"),
             "lobby_message_id": match.get("lobby_message_id"),
             "launch_message_id": match.get("launch_message_id"),
@@ -4967,9 +4980,11 @@ async def settle_challenge_match(
             and int(p["user_id"]) != (int(winner_id) if winner_id is not None else -1)
             and int(p["user_id"]) not in tied_user_ids
         ]
-        if consolation_finishers:
+        consolation_coins = int(announce_payload.get("consolation_coins") or 0)
+        if consolation_finishers and consolation_coins:
             ranked_lines.append(
-                f"Other finishers: {format_sponges(CHALLENGE_LOSER_COINS, signed=True)} consolation each"
+                f"Other finishers: {format_sponges(consolation_coins, signed=True)} "
+                f"consolation each (⅓ of winner)"
             )
         if detail in ("fastest finish", "dead heat"):
             ranked_lines.append(
@@ -11191,6 +11206,10 @@ async def _launch_activity_window(
     if preferred_diff_index is not None and interaction.guild is not None:
         guild_id = interaction.guild.id
         user_id = interaction.user.id
+        try:
+            await match_store.clear_resume_intent(user_id)
+        except Exception:
+            pass
         session_id = f"activity:{guild_id}:{user_id}"
         try:
             idx = max(0, min(len(DIFF_KEYS_LIST) - 1, int(preferred_diff_index)))
@@ -11448,7 +11467,7 @@ async def help_cmd(interaction: discord.Interaction):
             "`/daily` — one pineapple puzzle a day\n"
             "`/challenge` — race your pals on the same puzzle\n"
             "`/watch` — spectate active `/play`, `/daily`, and challenge races\n"
-            "`/recover` — reopen a saved puzzle (e.g. almost finished)\n"
+            "`/resume` — reopen a saved puzzle (pick which, if you have several)\n"
             "`/cleargame` — abandon a stuck puzzle · `/quit` — leave any active game"
         ),
         inline=False,
@@ -11479,7 +11498,7 @@ async def help_cmd(interaction: discord.Interaction):
             f"Daily **+{DAILY_BONUS}** each · "
             f"Streak **+{STREAK_BONUS_PER}**/lvl · "
             f"Challenge win **×{CHALLENGE_WIN_MULT:g}** · "
-            f"loss **{format_sponges(CHALLENGE_LOSER_COINS, signed=True)}** (sponges only)\n"
+            f"loss **⅓** of winner sponges (sponges only)\n"
             f"**Hints** cost **{format_sponges(HINT_SPONGE_COST)}** from pocket sponges "
             f"(not career XP). All tiers are unlimited while you can pay "
             f"(/play, /daily, and challenges). "
@@ -11492,7 +11511,7 @@ async def help_cmd(interaction: discord.Interaction):
     )
     embed.add_field(
         name=f"{PINEAPPLE} More",
-        value="`/shop` · `/weekly` · `/stats` · `/achievements` · `/leaderboard` · `/recover` · `/cleargame` · `/quit`",
+        value="`/shop` · `/weekly` · `/stats` · `/achievements` · `/leaderboard` · `/resume` · `/cleargame` · `/quit`",
         inline=False,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -12736,56 +12755,215 @@ async def giftpin_autocomplete(
     return choices
 
 
-@bot.tree.command(
-    name="recover",
-    description="Reopen your saved in-progress puzzle in the Activity",
-)
-async def recover_cmd(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("Server only.", ephemeral=True)
-        return
+RESUME_CHALLENGE_VALUE = "__challenge__"
 
-    guild_id = interaction.guild.id
+
+def _resume_option_copy(doc: dict, *, challenge: bool = False) -> tuple[str, str]:
+    try:
+        filled = int(doc.get("filled") or 0)
+    except (TypeError, ValueError):
+        filled = 0
+    if challenge and not filled:
+        filled = game_filled_count(doc) if doc.get("board") else 0
+    elapsed = (
+        max(0, int(time.time() - float(doc.get("started_at") or time.time())))
+        if challenge
+        else activity_session_elapsed(doc)
+    )
+    clock = format_time_compact(elapsed)
+    if challenge:
+        tier = difficulty_label(doc.get("difficulty"))
+        return (f"Challenge · {tier}"[:100], f"{filled}/81 · {clock}"[:100])
+    kind = str(doc.get("session_kind") or "play")
+    if kind == "daily":
+        day = str(doc.get("daily_date") or "")
+        key = daily_difficulty_for_date(day) if day else resolve_session_difficulty(doc)[0]
+        tier = difficulty_label(key)
+        return (f"Daily · {tier}"[:100], f"{filled}/81 · {clock}"[:100])
+    if kind == "challenge":
+        tier = difficulty_label(resolve_session_difficulty(doc)[0])
+        return (f"Challenge · {tier}"[:100], f"{filled}/81 · {clock}"[:100])
+    tier = difficulty_label(resolve_session_difficulty(doc)[0])
+    return (f"Play · {tier}"[:100], f"{filled}/81 · {clock}"[:100])
+
+
+async def list_resumable_sessions(
+    guild_id: int, user_id: int
+) -> list[tuple[str, str, str]]:
+    """Newest-first (session_id, label, description) for /resume."""
+    rows: list[tuple[float, str, str, str]] = []
+    ch_key = await reconcile_challenge_game_for_user(user_id)
+    if ch_key and ch_key in games:
+        game = games[ch_key]
+        label, desc = _resume_option_copy(game, challenge=True)
+        rows.append((time.time(), RESUME_CHALLENGE_VALUE, label, desc))
+
+    listed: list[dict] = []
+    seen_ids: set[str] = set()
+    try:
+        scoped = await match_store.list_activity_sessions_for_user(
+            user_id, guild_id=guild_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"list_resumable_sessions failed: {exc}")
+        scoped = []
+    try:
+        all_docs = await match_store.list_activity_sessions_for_user(user_id)
+    except Exception:
+        all_docs = []
+    for doc in list(scoped) + list(all_docs):
+        sid = str(doc.get("_id") or "")
+        if not sid or sid in seen_ids:
+            continue
+        seen_ids.add(sid)
+        listed.append(doc)
+
+    today = utc_today()
+    seen: set[str] = set()
+    for doc in listed:
+        sid = str(doc.get("_id") or "")
+        if not sid or sid.startswith(("resume_intent:", "spectate_intent:")):
+            continue
+        if not (doc.get("board") or doc.get("solution")):
+            continue
+        if doc.get("won_at"):
+            continue
+        kind = str(doc.get("session_kind") or "play")
+        if kind == "challenge":
+            continue
+        if kind == "daily":
+            day = str(doc.get("daily_date") or "")
+            if day and day != today:
+                continue
+            dedupe = f"daily:{day or sid}"
+        else:
+            try:
+                filled = int(doc.get("filled") or 0)
+            except (TypeError, ValueError):
+                filled = 0
+            if filled >= 81:
+                continue
+            fp = play_puzzle_fingerprint(
+                doc.get("given"),
+                board=doc.get("board"),
+                solution=doc.get("solution"),
+            )
+            dedupe = f"play:{fp or sid}"
+        if dedupe in seen:
+            continue
+        seen.add(dedupe)
+        ts = float(doc.get("last_move_at") or doc.get("updated_at") or doc.get("started_at") or 0)
+        label, desc = _resume_option_copy(doc)
+        rows.append((ts, sid, label, desc))
+
+    rows.sort(key=lambda row: row[0], reverse=True)
+    return [(sid, label, desc) for _ts, sid, label, desc in rows[:25]]
+
+
+class ResumePickerView(discord.ui.View):
+    """Choose which in-progress puzzle to reopen in the Activity."""
+
+    def __init__(self, user_id: int, options: list[tuple[str, str, str]]):
+        super().__init__(timeout=90)
+        self.user_id = user_id
+        select = discord.ui.Select(
+            placeholder="Choose a puzzle to resume…",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label=label, value=sid, description=desc)
+                for sid, label, desc in options
+            ],
+        )
+        select.callback = self.on_pick
+        self.add_item(select)
+
+    async def on_pick(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("That's not your list.", ephemeral=True)
+            return
+        picked = ""
+        for child in self.children:
+            if isinstance(child, discord.ui.Select) and child.values:
+                picked = str(child.values[0])
+                break
+        if not picked:
+            data = getattr(interaction, "data", None) or {}
+            raw = data.get("values") if isinstance(data, dict) else None
+            if raw:
+                picked = str(raw[0])
+        if not picked:
+            await interaction.response.send_message("Pick a puzzle first.", ephemeral=True)
+            return
+        await launch_resume_session(interaction, picked)
+
+
+async def launch_resume_session(interaction: discord.Interaction, session_id: str) -> None:
     uid = interaction.user.id
-
+    if session_id == RESUME_CHALLENGE_VALUE:
+        try:
+            await match_store.clear_resume_intent(uid)
+        except Exception:
+            pass
+        await _launch_activity_window(interaction)
+        return
     if await reconcile_challenge_game_for_user(uid):
         await interaction.response.send_message(
             "Finish or `/quit` your speedrun challenge first.",
             ephemeral=True,
         )
         return
-    block = await challenge_blocks_user(uid)
-    if block:
-        await interaction.response.send_message(block, ephemeral=True)
+    session = await match_store.get_activity_session(session_id)
+    if (
+        not session
+        or str(session.get("user_id") or "") != str(uid)
+        or session.get("won_at")
+        or not (session.get("board") or session.get("solution"))
+    ):
+        await interaction.response.send_message(
+            f"{BUBBLE} That puzzle is gone — start with `/play` or `/daily`.",
+            ephemeral=True,
+        )
         return
+    try:
+        await match_store.set_resume_intent(uid, session_id=session_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"set_resume_intent failed: {exc}")
+    await _launch_activity_window(interaction)
 
-    session, _session_id = await lookup_user_activity_session(guild_id, uid)
-    if not session or not session.get("board"):
+
+async def resume_open_games(interaction: discord.Interaction) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+    guild_id = interaction.guild.id
+    uid = interaction.user.id
+    options = await list_resumable_sessions(guild_id, uid)
+    if not options:
         await interaction.response.send_message(
             f"{BUBBLE} No saved puzzle found. Start with `/play` or `/daily`.",
             ephemeral=True,
         )
         return
-    if session.get("won_at"):
-        await interaction.response.send_message(
-            "That puzzle is already finished — use `/play` for a new game.",
-            ephemeral=True,
-        )
+    if len(options) == 1:
+        sid, label, desc = options[0]
+        print(f"/resume user={uid} guild={guild_id} single={sid} {label} {desc}")
+        await launch_resume_session(interaction, sid)
         return
-
-    filled = int(session.get("filled") or 0)
-    kind = session.get("session_kind") or "play"
-    if kind == "daily":
-        day = str(session.get("daily_date") or utc_today())
-        tier = difficulty_label(daily_difficulty_for_date(day))
-    else:
-        tier = difficulty_label(resolve_session_difficulty(session)[0])
-    elapsed = activity_session_elapsed(session)
-    print(
-        f"/recover user={uid} guild={guild_id} kind={kind} "
-        f"filled={filled}/81 elapsed={elapsed}s"
+    print(f"/resume user={uid} guild={guild_id} choices={len(options)}")
+    await interaction.response.send_message(
+        f"{SPONGE} You have **{len(options)}** puzzles in progress — pick one:",
+        view=ResumePickerView(uid, options),
+        ephemeral=True,
     )
-    await _launch_activity_window(interaction)
+
+
+@bot.tree.command(
+    name="resume",
+    description="Reopen a saved puzzle (pick which one if you have several)",
+)
+async def resume_cmd(interaction: discord.Interaction):
+    await resume_open_games(interaction)
 
 
 @bot.tree.command(
