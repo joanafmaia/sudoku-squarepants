@@ -23,6 +23,223 @@ from typing import Any, Callable
 
 from activity_watchers import prune_watchers
 
+# Shared with bot.py login backoff — Render must not 503-restart while Discord
+# is globally rate-limiting static_login (that deepens the 429 block).
+_discord_gateway_status: dict[str, Any] = {
+    "login_state": "starting",  # starting | rate_limited | ready | error | connecting
+    "retry_after_s": 0.0,
+    "detail": "",
+    "updated_at": 0.0,
+}
+_discord_gateway_status_lock = threading.Lock()
+
+# Cloudflare / Discord "blocked from accessing our API temporarily" needs silence,
+# not 60s login spam. Persist across Render deploys via Mongo when available.
+DISCORD_API_BLOCK_FILE = Path(
+    os.getenv("DISCORD_BLOCK_STATE_PATH", "/tmp/discord_api_block.json")
+)
+GLOBAL_API_BLOCK_FLOOR_SEC = float(os.getenv("DISCORD_GLOBAL_BLOCK_FLOOR_S", "900") or 900)
+GLOBAL_API_BLOCK_CAP_SEC = float(os.getenv("DISCORD_GLOBAL_BLOCK_CAP_S", "3600") or 3600)
+_discord_api_gate_until = 0.0
+_discord_api_gate_detail = ""
+_discord_api_gate_lock = threading.Lock()
+
+
+def set_discord_gateway_status(
+    login_state: str,
+    *,
+    retry_after_s: float = 0.0,
+    detail: str = "",
+) -> None:
+    with _discord_gateway_status_lock:
+        _discord_gateway_status["login_state"] = login_state
+        _discord_gateway_status["retry_after_s"] = max(0.0, float(retry_after_s or 0.0))
+        _discord_gateway_status["detail"] = detail or ""
+        _discord_gateway_status["updated_at"] = time.time()
+
+
+def get_discord_gateway_status() -> dict[str, Any]:
+    with _discord_gateway_status_lock:
+        return dict(_discord_gateway_status)
+
+
+def discord_api_gate_remaining() -> float:
+    with _discord_api_gate_lock:
+        return max(0.0, _discord_api_gate_until - time.time())
+
+
+def is_discord_api_gated() -> bool:
+    return discord_api_gate_remaining() > 0
+
+
+def _write_discord_api_gate_file(until: float, detail: str) -> None:
+    try:
+        DISCORD_API_BLOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        DISCORD_API_BLOCK_FILE.write_text(
+            json.dumps({"until": until, "detail": detail, "updated_at": time.time()}),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"discord api gate file write failed: {exc}")
+
+
+def _read_discord_api_gate_file() -> tuple[float, str] | None:
+    try:
+        if not DISCORD_API_BLOCK_FILE.is_file():
+            return None
+        data = json.loads(DISCORD_API_BLOCK_FILE.read_text(encoding="utf-8"))
+        until = float(data.get("until") or 0)
+        detail = str(data.get("detail") or "")
+        if until > time.time():
+            return until, detail
+    except Exception as exc:  # noqa: BLE001
+        print(f"discord api gate file read failed: {exc}")
+    return None
+
+
+def _write_discord_api_gate_mongo(until: float, detail: str) -> None:
+    uri = (os.getenv("MONGODB_URI") or "").strip()
+    if not uri:
+        return
+    try:
+        from pymongo import MongoClient
+
+        db_name = (os.getenv("MONGODB_DB") or "sudoku").strip() or "sudoku"
+        client = MongoClient(uri, serverSelectionTimeoutMS=4000)
+        try:
+            client[db_name]["runtime_state"].update_one(
+                {"_id": "discord_api_gate"},
+                {
+                    "$set": {
+                        "until": until,
+                        "detail": detail,
+                        "updated_at": time.time(),
+                    }
+                },
+                upsert=True,
+            )
+        finally:
+            client.close()
+    except Exception as exc:  # noqa: BLE001
+        print(f"discord api gate mongo write failed: {exc}")
+
+
+def _read_discord_api_gate_mongo() -> tuple[float, str] | None:
+    uri = (os.getenv("MONGODB_URI") or "").strip()
+    if not uri:
+        return None
+    try:
+        from pymongo import MongoClient
+
+        db_name = (os.getenv("MONGODB_DB") or "sudoku").strip() or "sudoku"
+        client = MongoClient(uri, serverSelectionTimeoutMS=4000)
+        try:
+            doc = client[db_name]["runtime_state"].find_one({"_id": "discord_api_gate"})
+        finally:
+            client.close()
+        if not doc:
+            return None
+        until = float(doc.get("until") or 0)
+        detail = str(doc.get("detail") or "")
+        if until > time.time():
+            return until, detail
+    except Exception as exc:  # noqa: BLE001
+        print(f"discord api gate mongo read failed: {exc}")
+    return None
+
+
+def _clear_discord_api_gate_stores() -> None:
+    try:
+        if DISCORD_API_BLOCK_FILE.is_file():
+            DISCORD_API_BLOCK_FILE.unlink()
+    except Exception:
+        pass
+    uri = (os.getenv("MONGODB_URI") or "").strip()
+    if not uri:
+        return
+    try:
+        from pymongo import MongoClient
+
+        db_name = (os.getenv("MONGODB_DB") or "sudoku").strip() or "sudoku"
+        client = MongoClient(uri, serverSelectionTimeoutMS=4000)
+        try:
+            client[db_name]["runtime_state"].delete_one({"_id": "discord_api_gate"})
+        finally:
+            client.close()
+    except Exception as exc:  # noqa: BLE001
+        print(f"discord api gate mongo clear failed: {exc}")
+
+
+def load_discord_api_gate() -> float:
+    """Load persisted gate (Mongo first, then file). Returns seconds remaining."""
+    global _discord_api_gate_until, _discord_api_gate_detail
+    loaded = _read_discord_api_gate_mongo() or _read_discord_api_gate_file()
+    if not loaded:
+        return 0.0
+    until, detail = loaded
+    with _discord_api_gate_lock:
+        if until > _discord_api_gate_until:
+            _discord_api_gate_until = until
+            _discord_api_gate_detail = detail
+    remaining = discord_api_gate_remaining()
+    if remaining > 0:
+        print(
+            f"Loaded Discord API gate ({detail or 'persisted'}); "
+            f"waiting {remaining:.0f}s before any Discord login/API calls"
+        )
+        set_discord_gateway_status(
+            "rate_limited",
+            retry_after_s=remaining,
+            detail=detail or "persisted_gate",
+        )
+    return remaining
+
+
+def note_discord_api_block(
+    *,
+    wait_s: float,
+    detail: str = "global_api_block",
+) -> float:
+    """Engage the Discord API silence window and persist it."""
+    global _discord_api_gate_until, _discord_api_gate_detail
+    wait_s = max(1.0, float(wait_s))
+    until = time.time() + wait_s
+    with _discord_api_gate_lock:
+        if until > _discord_api_gate_until:
+            _discord_api_gate_until = until
+            _discord_api_gate_detail = detail
+        remaining = max(0.0, _discord_api_gate_until - time.time())
+        persist_until = _discord_api_gate_until
+        persist_detail = _discord_api_gate_detail
+    _write_discord_api_gate_file(persist_until, persist_detail)
+    _write_discord_api_gate_mongo(persist_until, persist_detail)
+    set_discord_gateway_status(
+        "rate_limited",
+        retry_after_s=remaining,
+        detail=persist_detail,
+    )
+    return remaining
+
+
+def clear_discord_api_gate() -> None:
+    global _discord_api_gate_until, _discord_api_gate_detail
+    with _discord_api_gate_lock:
+        _discord_api_gate_until = 0.0
+        _discord_api_gate_detail = ""
+    _clear_discord_api_gate_stores()
+
+
+def discord_api_gate_response() -> tuple[int, dict]:
+    remaining = discord_api_gate_remaining()
+    return 503, {
+        "error": "discord_rate_limited",
+        "retry_after_s": int(remaining + 0.999),
+        "message": (
+            "Discord API is temporarily blocked for this service. "
+            f"Retry in about {int(remaining + 0.999)}s."
+        ),
+    }
+
 
 async def _activity_challenge_pending_response(uid: int) -> dict | None:
     """Block play/daily Activity HTTP while the user waits on an unsettled race."""
@@ -365,6 +582,9 @@ async def _exchange_token_async(code: str) -> tuple[int, dict]:
     """
     import aiohttp
 
+    if is_discord_api_gated():
+        return discord_api_gate_response()
+
     client_id = _client_id()
     client_secret = _client_secret()
     if not client_id or not client_secret:
@@ -432,6 +652,8 @@ async def _exchange_token_async(code: str) -> tuple[int, dict]:
 def _discord_user_from_bearer(auth_header: str | None, bot: Any | None = None) -> dict | None:
     if not auth_header:
         return None
+    if is_discord_api_gated():
+        return None
     match = auth_header.strip()
     if not match.lower().startswith("bearer "):
         return None
@@ -442,6 +664,8 @@ def _discord_user_from_bearer(auth_header: str | None, bot: Any | None = None) -
     async def _fetch() -> dict | None:
         import aiohttp
 
+        if is_discord_api_gated():
+            return None
         headers = {
             "Authorization": f"Bearer {token}",
             "User-Agent": "DiscordBot (https://github.com/Rapptz/discord.py 2.7.1) Python/3.12 aiohttp/3.14",
@@ -2848,10 +3072,20 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                     user = str(bot.user)
             except Exception:
                 pass
+            gw = get_discord_gateway_status()
+            login_state = str(gw.get("login_state") or "starting")
+            retry_after_s = float(gw.get("retry_after_s") or 0.0)
+            # While Discord login is rate-limited we are intentionally alive and
+            # backing off. Returning 503 here makes Render restart the service,
+            # which immediately retries static_login and prolongs the block.
+            waiting_on_discord = login_state in {"starting", "rate_limited", "connecting"}
             aged_out = (time.monotonic() - started_at) >= ready_grace_s
-            status = 200 if ready or not aged_out else 503
+            status = 200 if ready or waiting_on_discord or not aged_out else 503
             label = "ok" if status == 200 else "not_ready"
-            body = f"{label} ready={ready} user={user}".encode()
+            body = (
+                f"{label} ready={ready} user={user} "
+                f"login={login_state} retry_after_s={retry_after_s:.0f}"
+            ).encode()
             self._send(status, body, "text/plain; charset=utf-8", extra={})
 
         def _serve_static(self, rel: str) -> bool:
