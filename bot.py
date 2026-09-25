@@ -121,6 +121,15 @@ CHALLENGE_LOSER_SHARE = 3  # consolation = winner sponges // this
 # Last standing when opponents forfeit — sponges only, no best_time / full win payout.
 CHALLENGE_FORFEIT_WIN_COINS = 40
 CHALLENGE_COOLDOWN_SEC = 60
+# Activity launch throttling — stacked /play under Discord 429s deepens global blocks.
+LAUNCH_ACTIVITY_COOLDOWN_SEC = 5
+LAUNCH_ACTIVITY_RATE_LIMIT_FLOOR_SEC = 3.0
+LAUNCH_ACTIVITY_RATE_LIMIT_CAP_SEC = 60.0
+# Login backoff for normal bucket 429s vs Cloudflare global API blocks.
+LOGIN_RATE_LIMIT_FLOOR_SEC = 60.0
+LOGIN_RATE_LIMIT_CAP_SEC = 300.0
+GLOBAL_API_BLOCK_FLOOR_SEC = 900.0  # 15 minutes
+GLOBAL_API_BLOCK_CAP_SEC = 3600.0  # 1 hour
 INVITE_TIMEOUT_SEC = 5 * 60
 DAILY_EPOCH = datetime(2024, 1, 1, tzinfo=timezone.utc).date()
 # Optional: set to your server ID for instant slash-command updates (global sync can lag).
@@ -841,6 +850,8 @@ intents = discord.Intents.default()
 games: dict = {}
 pending_challenges: dict[int, dict] = {}  # invite message_id → meta
 challenge_cooldowns: dict[int, float] = {}  # user_id → last /challenge timestamp
+launch_activity_cooldowns: dict[int, float] = {}  # user_id → last Activity launch attempt
+_discord_launch_rate_limited_until = 0.0  # wall-clock backoff after launch 429s
 _challenge_live_tasks: dict[str, asyncio.Task] = {}
 _activity_notify_inflight: set[str] = set()
 _daily_finish_locks: dict[str, asyncio.Lock] = {}
@@ -5597,6 +5608,185 @@ def mark_challenge_cooldown(user_id: int) -> None:
     challenge_cooldowns[user_id] = time.time()
 
 
+def _http_status(exc: BaseException) -> int | None:
+    status = getattr(exc, "status", None)
+    return status if isinstance(status, int) else None
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    rate_limited_cls = getattr(discord, "RateLimited", None)
+    if rate_limited_cls is not None and isinstance(exc, rate_limited_cls):
+        return True
+    if _http_status(exc) == 429:
+        return True
+    text = str(exc).lower()
+    return "too many requests" in text or "rate limit" in text
+
+
+def _is_global_api_block(exc: BaseException) -> bool:
+    """Cloudflare/Discord temporary IP/token block — not a normal bucket 429."""
+    text = str(exc).lower()
+    if "blocked from accessing" in text or "exceeding global rate limits" in text:
+        return True
+    # discord.py raises HTTPException for these (no automatic sleep/retry).
+    return _http_status(exc) == 429 and getattr(exc, "code", None) == 0
+
+
+def _short_discord_error(exc: BaseException, *, limit: int = 240) -> str:
+    """Avoid dumping full Cloudflare HTML pages into Render logs."""
+    text = str(exc)
+    lower = text.lower()
+    if "cf-error" in lower or "<html" in lower or "cloudflare" in lower:
+        status = _http_status(exc)
+        code = getattr(exc, "code", None)
+        return (
+            f"{type(exc).__name__} status={status} code={code} "
+            f"(Cloudflare/HTML body omitted, {len(text)} chars)"
+        )
+    if len(text) > limit:
+        return text[:limit] + "…"
+    return text
+
+
+def _extract_retry_after(exc: BaseException | None) -> float | None:
+    if exc is None:
+        return None
+    retry_after = getattr(exc, "retry_after", None)
+    if isinstance(retry_after, (int, float)) and retry_after > 0:
+        return float(retry_after)
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) if response is not None else None
+    if headers:
+        raw = headers.get("Retry-After") or headers.get("retry-after")
+        if raw is not None:
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                pass
+    text = getattr(exc, "text", None)
+    if isinstance(text, dict):
+        raw = text.get("retry_after")
+        if isinstance(raw, (int, float)) and raw > 0:
+            return float(raw)
+    return None
+
+
+def _retry_after_seconds(
+    exc: BaseException | None,
+    *,
+    floor: float = LAUNCH_ACTIVITY_RATE_LIMIT_FLOOR_SEC,
+    cap: float = LAUNCH_ACTIVITY_RATE_LIMIT_CAP_SEC,
+) -> float:
+    extracted = _extract_retry_after(exc)
+    if extracted is not None and extracted > 0:
+        return min(cap, max(floor, extracted))
+    return floor
+
+
+def note_discord_launch_rate_limit(exc: BaseException | None = None) -> float:
+    """Record a Discord 429 backoff window; returns seconds remaining."""
+    global _discord_launch_rate_limited_until
+    wait = _retry_after_seconds(exc)
+    until = time.time() + wait
+    if until > _discord_launch_rate_limited_until:
+        _discord_launch_rate_limited_until = until
+    return max(0.0, _discord_launch_rate_limited_until - time.time())
+
+
+def discord_launch_backoff_remaining() -> float:
+    return max(0.0, _discord_launch_rate_limited_until - time.time())
+
+
+def launch_activity_cooldown_remaining(user_id: int) -> int:
+    last = launch_activity_cooldowns.get(user_id)
+    if last is None:
+        return 0
+    left = int(LAUNCH_ACTIVITY_COOLDOWN_SEC - (time.time() - last))
+    return max(0, left)
+
+
+def mark_launch_activity_cooldown(user_id: int) -> None:
+    launch_activity_cooldowns[user_id] = time.time()
+
+
+async def _reply_launch_notice(interaction: discord.Interaction, message: str) -> None:
+    """Best-effort interaction ack. Never retries on 429 — that worsens global limits."""
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except discord.HTTPException as send_exc:
+        if _is_rate_limit_error(send_exc):
+            note_discord_launch_rate_limit(send_exc)
+        print(f"launch_activity notice reply failed: {_short_discord_error(send_exc)}")
+
+
+async def _prepare_launch_activity(interaction: discord.Interaction) -> bool:
+    """Gate Activity launches. Returns False after replying when blocked."""
+    backoff = discord_launch_backoff_remaining()
+    if backoff > 0:
+        wait = max(1, int(backoff + 0.999))
+        await _reply_launch_notice(
+            interaction,
+            f"Discord is rate-limiting Activity launches right now. "
+            f"Try again in **{wait}s**.",
+        )
+        return False
+
+    left = launch_activity_cooldown_remaining(interaction.user.id)
+    if left > 0:
+        await _reply_launch_notice(
+            interaction,
+            f"Wait **{left}s** before opening the Activity again.",
+        )
+        return False
+
+    mark_launch_activity_cooldown(interaction.user.id)
+    return True
+
+
+async def _execute_launch_activity(
+    interaction: discord.Interaction,
+    *,
+    tip: str,
+    tip_50234: str | None = None,
+    log_label: str = "launch_activity",
+) -> bool:
+    """Call launch_activity and only send tips when Discord is not rate-limiting."""
+    try:
+        await interaction.response.launch_activity()
+        print(
+            f"{log_label} ok user={interaction.user} "
+            f"guild={getattr(interaction.guild, 'id', None)} "
+            f"channel={getattr(interaction.channel, 'id', None)}"
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 — always acknowledge when safe
+        print(f"{log_label} failed: {type(exc).__name__}: {_short_discord_error(exc)}")
+        if _is_rate_limit_error(exc):
+            wait = note_discord_launch_rate_limit(exc)
+            print(
+                f"{log_label} rate-limited; skipping fallback reply "
+                f"(backoff≈{wait:.1f}s)"
+            )
+            # Extra reply during a 429 almost always fails and deepens the block.
+            return False
+
+        code = getattr(exc, "code", None)
+        message = tip_50234 if code == 50234 and tip_50234 else tip
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except discord.HTTPException as send_exc:
+            if _is_rate_limit_error(send_exc):
+                note_discord_launch_rate_limit(send_exc)
+            print(f"{log_label} fallback reply failed: {_short_discord_error(send_exc)}")
+        return False
+
+
 def challenge_board_filled(board_raw: list) -> int:
     board = normalize_board(board_raw or [])
     return sum(1 for r in range(9) for c in range(9) if cell_value(board, r, c) > 0)
@@ -6847,29 +7037,22 @@ async def open_activity_spectator_in_activity(
             ephemeral=True,
         )
         return
+    if not await _prepare_launch_activity(interaction):
+        return
     await match_store.set_spectate_intent(
         interaction.user.id,
         guild_id=resolved_guild,
         target_user_id=target_user_id,
     )
-    try:
-        await interaction.response.launch_activity()
-    except Exception as exc:  # noqa: BLE001
-        print(f"launch_activity spectate failed: {type(exc).__name__}: {exc}")
-        msg = "Couldn't open the Activity right now — try again in a moment."
-        code = getattr(exc, "code", None)
-        if code == 50234:
-            msg = (
-                "Activities aren't enabled for this app yet. "
-                "Ask the server owner to enable **Enable Activities** in the Developer Portal."
-            )
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(msg, ephemeral=True)
-        except discord.HTTPException:
-            pass
+    await _execute_launch_activity(
+        interaction,
+        tip="Couldn't open the Activity right now — try again in a moment.",
+        tip_50234=(
+            "Activities aren't enabled for this app yet. "
+            "Ask the server owner to enable **Enable Activities** in the Developer Portal."
+        ),
+        log_label="launch_activity spectate",
+    )
 
 
 class ActivityWatchMenuView(discord.ui.View):
@@ -10235,6 +10418,205 @@ def start_health_server_early() -> None:
     start_unified_http_server(lambda: bot)
 
 
+async def _prepare_bot_for_relogin(client: discord.Client) -> None:
+    """Allow another login attempt after a failed/closed HTTP session.
+
+    discord.py's static_login() always builds a new ClientSession. Closing that
+    session also closes its owned TCPConnector; static_login only creates a new
+    connector when ``http.connector is MISSING``. If we leave a closed connector
+    in place, every later retry fails with ``RuntimeError: Session is closed``
+    and never reaches Discord again.
+
+    Do not recreate SudokuBot — slash commands are bound to the global instance.
+    """
+    http = client.http
+    missing = getattr(discord.utils, "MISSING", None)
+
+    session = getattr(http, "_HTTPClient__session", None)
+    if session is not None and (missing is None or session is not missing):
+        try:
+            if not getattr(session, "closed", True):
+                await session.close()
+        except Exception as close_exc:  # noqa: BLE001
+            print(f"login session close before retry failed: {close_exc}")
+        if missing is not None:
+            try:
+                setattr(http, "_HTTPClient__session", missing)
+            except Exception:
+                pass
+
+    connector = getattr(http, "connector", None)
+    if connector is not None and (missing is None or connector is not missing):
+        try:
+            if not getattr(connector, "closed", True):
+                await connector.close()
+        except Exception as close_exc:  # noqa: BLE001
+            print(f"login connector close before retry failed: {close_exc}")
+        if missing is not None:
+            try:
+                http.connector = missing
+            except Exception:
+                pass
+
+    clear = getattr(http, "clear", None)
+    if callable(clear):
+        clear()
+    # Client.close() sets this; login/connect refuse to run while closed.
+    if getattr(client, "_closed", False):
+        client._closed = False
+
+
+def _is_closed_session_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return isinstance(exc, RuntimeError) and (
+        "session is closed" in text or "connector is closed" in text
+    )
+
+
+def run_bot_with_rate_limit_backoff(token: str) -> None:
+    """Start the Discord client with a silence gate for global API blocks.
+
+    Discord's ``blocked from accessing our API temporarily`` response is a
+    Cloudflare-style global block. discord.py does *not* auto-retry those; it
+    raises HTTPException. Hammering login every 30–120s (and redeploying) makes
+    the block last much longer.
+
+    Strategy:
+    1. Load any persisted gate (Mongo/file) and wait with **zero** Discord calls
+    2. Attempt login only when the gate is clear
+    3. On global block, engage a long silence window (15–60 min) and persist it
+    4. Keep /health up the whole time so Render does not restart-spam login
+    """
+    from activity_http import (
+        clear_discord_api_gate,
+        discord_api_gate_remaining,
+        load_discord_api_gate,
+        note_discord_api_block,
+        set_discord_gateway_status,
+    )
+
+    async def _sleep_gate(seconds: float, *, detail: str) -> None:
+        remaining = max(0.0, float(seconds))
+        if remaining <= 0:
+            return
+        print(
+            f"Discord API silence gate active ({detail}). "
+            f"No Discord calls for {remaining:.0f}s; /health stays up."
+        )
+        set_discord_gateway_status(
+            "rate_limited",
+            retry_after_s=remaining,
+            detail=detail,
+        )
+        # Chunked sleep so /health retry_after_s stays roughly accurate.
+        deadline = time.time() + remaining
+        while True:
+            left = deadline - time.time()
+            if left <= 0:
+                break
+            set_discord_gateway_status(
+                "rate_limited",
+                retry_after_s=left,
+                detail=detail,
+            )
+            await asyncio.sleep(min(30.0, left))
+
+    async def _runner() -> None:
+        bucket_delay = LOGIN_RATE_LIMIT_FLOOR_SEC
+        global_delay = GLOBAL_API_BLOCK_FLOOR_SEC
+        load_discord_api_gate()
+        set_discord_gateway_status("starting", detail="logging_in")
+        try:
+            while True:
+                gated = discord_api_gate_remaining()
+                if gated > 0:
+                    await _sleep_gate(gated, detail="persisted_gate")
+                    continue
+
+                try:
+                    await _prepare_bot_for_relogin(bot)
+                    set_discord_gateway_status("connecting", detail="bot.start")
+                    await bot.start(token)
+                    clear_discord_api_gate()
+                    set_discord_gateway_status("starting", detail="disconnected")
+                    return
+                except discord.LoginFailure:
+                    set_discord_gateway_status("error", detail="login_failure")
+                    raise
+                except Exception as exc:  # noqa: BLE001 — only swallow retryable login faults
+                    global_block = _is_global_api_block(exc)
+                    rate_limited = _is_rate_limit_error(exc)
+                    session_closed = _is_closed_session_error(exc)
+                    if not global_block and not rate_limited and not session_closed:
+                        set_discord_gateway_status(
+                            "error",
+                            detail=f"{type(exc).__name__}: {_short_discord_error(exc)}"[:180],
+                        )
+                        raise
+
+                    await _prepare_bot_for_relogin(bot)
+
+                    if session_closed and not global_block and not rate_limited:
+                        print(
+                            "Discord HTTP session/connector was stale after a failed "
+                            "login. Reset connector; retrying in 5s..."
+                        )
+                        set_discord_gateway_status(
+                            "connecting",
+                            retry_after_s=5.0,
+                            detail="session_closed_reset",
+                        )
+                        await asyncio.sleep(5.0)
+                        continue
+
+                    if global_block:
+                        wait = max(
+                            global_delay,
+                            _retry_after_seconds(
+                                exc,
+                                floor=GLOBAL_API_BLOCK_FLOOR_SEC,
+                                cap=GLOBAL_API_BLOCK_CAP_SEC,
+                            ),
+                        )
+                        wait = min(GLOBAL_API_BLOCK_CAP_SEC, wait)
+                        note_discord_api_block(
+                            wait_s=wait,
+                            detail="cloudflare_global_block",
+                        )
+                        print(
+                            "Discord GLOBAL API block (Cloudflare/temporary ban). "
+                            f"Stopping all Discord API traffic for {wait:.0f}s "
+                            "(persisted across deploys when Mongo is configured). "
+                            f"Cause: {_short_discord_error(exc)}"
+                        )
+                        global_delay = min(global_delay * 2, GLOBAL_API_BLOCK_CAP_SEC)
+                        await _sleep_gate(wait, detail="cloudflare_global_block")
+                        continue
+
+                    wait = max(
+                        bucket_delay,
+                        _retry_after_seconds(
+                            exc,
+                            floor=LOGIN_RATE_LIMIT_FLOOR_SEC,
+                            cap=LOGIN_RATE_LIMIT_CAP_SEC,
+                        ),
+                    )
+                    wait = min(LOGIN_RATE_LIMIT_CAP_SEC, wait)
+                    note_discord_api_block(wait_s=wait, detail="login_429")
+                    print(
+                        f"Discord login rate-limited (429). "
+                        f"Keeping /health up; retrying in {wait:.0f}s... "
+                        f"Cause: {_short_discord_error(exc)}"
+                    )
+                    bucket_delay = min(bucket_delay * 2, LOGIN_RATE_LIMIT_CAP_SEC)
+                    await _sleep_gate(wait, detail="login_429")
+        finally:
+            if not bot.is_closed():
+                await bot.close()
+
+    asyncio.run(_runner())
+
+
 class SudokuBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents, help_command=None)
@@ -10345,7 +10727,7 @@ async def on_app_command_error(
 ) -> None:
     """Never leave a slash command hanging on an uncaught exception."""
     root = error.original if isinstance(error, app_commands.CommandInvokeError) else error
-    print(f"app command error: {root}")
+    print(f"app command error: {_short_discord_error(root)}")
     if isinstance(error, app_commands.MissingPermissions):
         msg = "You need **Administrator** permission for that command."
     else:
@@ -11052,8 +11434,18 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
 
 @bot.event
 async def on_ready():
+    from activity_http import set_discord_gateway_status
+
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print(f"Activity watch channel id: {ACTIVITY_WATCH_CHANNEL_ID or 'unset'}")
+    set_discord_gateway_status("ready", detail=f"user={bot.user}")
+    try:
+        from activity_http import clear_discord_api_gate
+
+        # Never block the gateway event loop on sync Mongo/file I/O.
+        await asyncio.to_thread(clear_discord_api_gate)
+    except Exception as gate_exc:  # noqa: BLE001
+        print(f"clear discord api gate on ready failed: {gate_exc}")
     if not os.getenv("MONGODB_URI", "").strip():
         print(
             "WARNING: MONGODB_URI unset — in-memory store only; "
@@ -11242,6 +11634,8 @@ async def _launch_activity_window(
     Keep the pre-launch path minimal; orphan cleanup runs in the background.
     """
     t0 = time.monotonic()
+    if not await _prepare_launch_activity(interaction):
+        return
     # Write diff preference before launching so the Activity picks it up on load.
     if preferred_diff_index is not None and interaction.guild is not None:
         guild_id = interaction.guild.id
@@ -11314,42 +11708,26 @@ async def _launch_activity_window(
                 )
             )
     print(f"launch_activity pre-ack {(time.monotonic() - t0) * 1000:.0f}ms")
-    try:
-        await interaction.response.launch_activity()
-        print(
-            f"launch_activity ok user={interaction.user} "
-            f"guild={getattr(interaction.guild, 'id', None)} "
-            f"channel={getattr(interaction.channel, 'id', None)}"
-        )
-        return
-    except Exception as exc:  # noqa: BLE001 — always acknowledge the interaction
-        print(f"launch_activity failed: {type(exc).__name__}: {exc}")
-        code = getattr(exc, "code", None)
-        if code == 50234:
-            tip = (
-                "A app ainda **não tem Activities/EMBEDDED** ligado.\n"
-                "No [Developer Portal](https://discord.com/developers/applications):\n"
-                "1. Escolhe a app **Thcoku**\n"
-                "2. **Activities → URL Mappings**: `/` → `sudoku-squarepants.onrender.com` "
-                "(sem `https://`)\n"
-                "3. Também `/pyscript` → `pyscript.net` e `/jsdelivr` → `cdn.jsdelivr.net`\n"
-                "4. **Activities → Settings** → ativa **Enable Activities**\n"
-                "5. Reinicia o Discord e tenta `/play` outra vez"
-            )
-        else:
-            tip = (
-                "Não consegui abrir a janela da Activity.\n"
-                "Confirma **Activities → Enable** e URL Mapping `/` → "
-                "`sudoku-squarepants.onrender.com`.\n"
-                "Ou inicia a Activity num **canal de voz** (ícone Actividades)."
-            )
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(tip, ephemeral=True)
-        else:
-            await interaction.response.send_message(tip, ephemeral=True)
-    except discord.HTTPException as send_exc:
-        print(f"launch_activity fallback reply failed: {send_exc}")
+    await _execute_launch_activity(
+        interaction,
+        tip=(
+            "Não consegui abrir a janela da Activity.\n"
+            "Confirma **Activities → Enable** e URL Mapping `/` → "
+            "`sudoku-squarepants.onrender.com`.\n"
+            "Ou inicia a Activity num **canal de voz** (ícone Actividades)."
+        ),
+        tip_50234=(
+            "A app ainda **não tem Activities/EMBEDDED** ligado.\n"
+            "No [Developer Portal](https://discord.com/developers/applications):\n"
+            "1. Escolhe a app **Thcoku**\n"
+            "2. **Activities → URL Mappings**: `/` → `sudoku-squarepants.onrender.com` "
+            "(sem `https://`)\n"
+            "3. Também `/pyscript` → `pyscript.net` e `/jsdelivr` → `cdn.jsdelivr.net`\n"
+            "4. **Activities → Settings** → ativa **Enable Activities**\n"
+            "5. Reinicia o Discord e tenta `/play` outra vez"
+        ),
+        log_label="launch_activity",
+    )
 
 
 @bot.tree.command(
@@ -13459,5 +13837,12 @@ if __name__ == "__main__":
         raise SystemExit(
             "Missing DISCORD_TOKEN. Put it in .env:\n  DISCORD_TOKEN=seu_token_aqui"
         )
+    # Load gate before opening HTTP so OAuth cannot deepen a Cloudflare block.
+    try:
+        from activity_http import load_discord_api_gate
+
+        load_discord_api_gate()
+    except Exception as boot_gate_exc:  # noqa: BLE001
+        print(f"boot discord api gate load failed: {boot_gate_exc}")
     start_health_server_early()
-    bot.run(token)
+    run_bot_with_rate_limit_backoff(token)

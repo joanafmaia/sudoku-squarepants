@@ -67,6 +67,9 @@ One **Docker** Web Service builds the Activity and runs the bot.
 3. Health Check Path: `/health`
 4. After deploy: `https://YOUR-SERVICE.onrender.com/health` → `ok ready=True …`
 5. **UptimeRobot:** HTTP monitor every **5 min** on that `/health` URL
+   - If Discord Cloudflare-blocks the Render IP, `/health` stays **200** while the bot waits
+     (login=`rate_limited`). Do **not** Manual Deploy spam — that deepens the ban.
+   - Wait until logs show `Logged in as …` / `/health` shows `ready=True` again (often 15–60 min).
 6. Discord Developer Portal:
    - **OAuth2 → Redirects:** `https://127.0.0.1`
    - **Activities → URL Mappings** (sem `https://`):
