@@ -418,6 +418,9 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
     if (cosmetics && gameApi?.setPocketSponges) {
       gameApi.setPocketSponges(cosmetics.pocketSponges);
     }
+    if (cosmetics && gameApi?.setPuffNotesCharges) {
+      gameApi.setPuffNotesCharges(cosmetics.puffNotesCharges);
+    }
     applyTheme(currentTheme);
     return gameApi;
   }
@@ -428,6 +431,7 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
       cosmetics: cosmetics || { title: null, pins: [], seed: 1 },
       pocketSponges: Number(cosmetics?.pocketSponges) || 0,
       hintSpongeCost: Number(cosmetics?.hintSpongeCost) || 15,
+      puffNotesCharges: Number(cosmetics?.puffNotesCharges) || 0,
       autoStart: gameOptions.autoStart !== false,
       spectatorMode: Boolean(gameOptions.spectatorMode),
       sessionKind: gameOptions.sessionKind || null,
@@ -461,6 +465,30 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
       onProgress: () => {
         // Persist immediately so Discord "Exit" cannot race the async flush.
         saveSessionNow({ keepalive: false, force: true });
+      },
+      onAutoNotes: async () => {
+        if (!window.__DISCORD_ACCESS_TOKEN__) {
+          return { ok: false, error: "offline", message: "Buy Mrs. Puff's Notes in /shop" };
+        }
+        try {
+          const gid = await resolveGuildId(8000);
+          cachedGuildId = gid;
+          const res = await apiFetch("/api/activity/autonotes", {
+            method: "POST",
+            body: JSON.stringify({ guild_id: gid }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res?.ok) {
+            return { ok: false, ...(typeof data === "object" ? data : {}) };
+          }
+          if (gameApi?.setPuffNotesCharges && data.puff_notes_charges != null) {
+            gameApi.setPuffNotesCharges(data.puff_notes_charges);
+          }
+          return data;
+        } catch (err) {
+          console.warn("[Thcoku] autonotes request failed", err);
+          return { ok: false, error: "autonotes_failed", message: "Couldn't charge Auto notes" };
+        }
       },
       onHint: async ({ row, col, board }) => {
         if (!window.__DISCORD_ACCESS_TOKEN__) {
@@ -518,6 +546,7 @@ async function loadCosmetics() {
       seed: Number(data.user_id) || Date.now(),
       pocketSponges: Number(data.coins) || 0,
       hintSpongeCost: Number(data.hint_sponge_cost) || 15,
+      puffNotesCharges: Number(data.puff_notes_charges) || 0,
     };
   } catch (err) {
     console.warn("[Thcoku] profile load failed", err);

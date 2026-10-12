@@ -663,7 +663,9 @@ export function startThcokuGame(canvas, options = {}) {
     garyWisdomBonus: 0,
     hintSpongeCost: Number(options.hintSpongeCost) || 15,
     pocketSponges: Number(options.pocketSponges) || 0,
+    puffNotesCharges: Number(options.puffNotesCharges) || 0,
     hintInFlight: false,
+    autoNotesInFlight: false,
     serverHints: false,
     spectatorMode: Boolean(options.spectatorMode),
     spectatorName: "",
@@ -1153,7 +1155,15 @@ export function startThcokuGame(canvas, options = {}) {
     if (autoBtn) {
       autoBtn.hidden = isChallenge;
       autoBtn.style.display = isChallenge ? "none" : "";
-      autoBtn.disabled = isChallenge;
+      const charges = Math.max(0, state.puffNotesCharges | 0);
+      autoBtn.disabled = isChallenge || state.autoNotesInFlight;
+      autoBtn.textContent = charges > 0 ? `📝 Auto · ${charges}` : "📝 Auto";
+      autoBtn.style.opacity = isChallenge || state.autoNotesInFlight || charges <= 0 ? "0.55" : "";
+      autoBtn.title = isChallenge
+        ? "Auto notes are off in races"
+        : charges > 0
+          ? `Fill remaining candidates · ${charges} Mrs. Puff charge${charges === 1 ? "" : "s"} left`
+          : "Buy Mrs. Puff's Notes in /shop — 1 charge fills the board";
     }
     if (meta) {
       meta.classList.remove("is-solo");
@@ -1338,8 +1348,16 @@ export function startThcokuGame(canvas, options = {}) {
     }
   }
 
-  function autoFillNotes() {
-    if (state.spectatorMode || state.won || state.reportingWin || !state.board) return;
+  async function autoFillNotes() {
+    if (
+      state.spectatorMode
+      || state.won
+      || state.reportingWin
+      || state.autoNotesInFlight
+      || !state.board
+    ) {
+      return;
+    }
     if (state.sessionKind === "challenge") {
       state.status = "Auto notes are off in races";
       draw();
@@ -1352,6 +1370,33 @@ export function startThcokuGame(canvas, options = {}) {
       state.status = "Notes already filled";
       draw();
       return;
+    }
+    if (typeof options.onAutoNotes !== "function") {
+      undo();
+      state.status = "Buy Mrs. Puff's Notes in /shop";
+      draw();
+      return;
+    }
+    state.autoNotesInFlight = true;
+    syncControls();
+    let result = null;
+    try {
+      result = await options.onAutoNotes();
+    } catch (err) {
+      console.warn("[Thcoku] onAutoNotes", err);
+    }
+    state.autoNotesInFlight = false;
+    if (!result?.ok) {
+      undo();
+      state.status = result?.message || "Buy Mrs. Puff's Notes in /shop";
+      syncControls();
+      draw();
+      return;
+    }
+    if (result.puff_notes_charges != null) {
+      state.puffNotesCharges = Math.max(0, Number(result.puff_notes_charges) || 0);
+    } else {
+      state.puffNotesCharges = Math.max(0, (state.puffNotesCharges | 0) - 1);
     }
     state.status = `Auto notes · ${n} cell${n === 1 ? "" : "s"}`;
     playFx("pop");
@@ -1925,7 +1970,10 @@ export function startThcokuGame(canvas, options = {}) {
 
         let fill = isGiven ? RGB.given : RGB.empty;
         if (sameBox || sameLine) fill = isGiven ? RGB.givenHl : RGB.boxHl;
-        if (!cellVal && nakedSingles.has(`${r},${c}`)) fill = RGB.nakedHl || RGB.sand;
+        const hasNotes = (state.board[r][c]?.pencil_marks || []).length > 0;
+        if (!cellVal && hasNotes && nakedSingles.has(`${r},${c}`)) {
+          fill = RGB.nakedHl || RGB.sand;
+        }
         if (isMatch) fill = RGB.matchHl;
         if (isSel || flash) fill = RGB.select;
         if (conflict) fill = RGB.conflict;
@@ -2190,7 +2238,7 @@ export function startThcokuGame(canvas, options = {}) {
       syncControls();
       draw();
     } else if (action === "autonotes") {
-      autoFillNotes();
+      void autoFillNotes();
     }
   });
 
@@ -2283,6 +2331,10 @@ export function startThcokuGame(canvas, options = {}) {
     setPocketSponges(n) {
       state.pocketSponges = Number(n) || 0;
       syncHintButton();
+    },
+    setPuffNotesCharges(n) {
+      state.puffNotesCharges = Math.max(0, Number(n) || 0);
+      syncControls();
     },
     setTheme,
     getSnapshot,

@@ -55,6 +55,8 @@ KRABBY_SNACK_MULT = 1.25
 GOLDEN_SPATULA_MULT = 1.50
 REWARD_BOOST_GAMES_PER_PURCHASE = 3
 HINT_SPONGE_COST = 15
+PUFF_NOTES_FILLS_PER_PURCHASE = 1
+PUFF_NOTES_COST = 50
 
 # Ordered list of difficulty keys (matches DIFF_KEYS in sudoku-core.js)
 DIFF_KEYS_LIST: list[str] = list(DIFFICULTY_TIERS.keys())
@@ -324,6 +326,12 @@ SHOP_PINS = {
     "xp_boost": {"label": "🔮 Puff's Crystal Ball (2× XP & Sponges — 3 games)", "pin": "Crystal Ball", "emoji": "🔮", "cost": 120},
     "streak_shield": {"label": "🛡️ Krabby Shield (missed daily days)", "pin": "Shield", "emoji": "🛡️", "cost": 150},
     "gary_wisdom": {"label": "🐌 Gary's Wisdom (+3 free hints/game ×2)", "pin": "Gary", "emoji": "🐌", "cost": 60},
+    "puff_notes": {
+        "label": "📝 Mrs. Puff's Notes (1 auto-fill)",
+        "pin": "Notes",
+        "emoji": "📝",
+        "cost": PUFF_NOTES_COST,
+    },
     "krabby_snack": {"label": "🍟 Krabby Snack (+25% Sponges — 3 wins)", "pin": "Snack", "emoji": "🍟", "cost": 80},
     "golden_spatula": {"label": "🥇 Golden Spatula (+50% XP — 3 wins)", "pin": "Spatula", "emoji": "🥇", "cost": 80},
     "wave": {"label": "🌊 Wave Pin", "pin": "Wave", "emoji": "🌊", "cost": 0, "theme": "ocean"},
@@ -492,6 +500,7 @@ SHOP_BOOST_KEYS = frozenset({
     "xp_boost",
     "streak_shield",
     "gary_wisdom",
+    "puff_notes",
     "krabby_snack",
     "golden_spatula",
 })
@@ -3812,7 +3821,7 @@ def render_board(
                 fill = pal["select"]
             elif is_match:
                 fill = pal.get("match_hl") or pal["box_hl"]
-            elif (r, c) in naked_cells:
+            elif (r, c) in naked_cells and (board[r][c].get("pencil_marks") or []):
                 fill = pal.get("naked_hl") or pal["box_hl"]
             elif (r, c) in box_cells:
                 fill = pal["box_hl"]
@@ -3927,6 +3936,15 @@ WIN_BANNER_LINES = (
     "Bikini Bottom pays",
     "Goofy Goober bonus",
 )
+
+
+def try_consume_puff_notes(stats: dict) -> bool:
+    """Spend one Mrs. Puff's Notes charge. True if a fill was paid for."""
+    charges = int(stats.get("puff_notes_charges") or 0)
+    if charges <= 0:
+        return False
+    stats["puff_notes_charges"] = charges - 1
+    return True
 
 
 def try_consume_gary_wisdom(stats: dict) -> int:
@@ -8632,8 +8650,21 @@ class SudokuView(discord.ui.View):
         self.add_item(pencil)
 
         is_race = normalize_game_mode(game.get("mode")) == "challenge"
+        notes_left = 0
+        try:
+            gid = int(game.get("guild_id") or 0)
+            oid = int(game.get("owner_id") or 0)
+            if gid and oid:
+                notes_left = int(
+                    user_stats(guild_stats(self.bot.data, gid), oid).get(
+                        "puff_notes_charges"
+                    )
+                    or 0
+                )
+        except (TypeError, ValueError):
+            notes_left = 0
         fill_notes = discord.ui.Button(
-            label="  Auto  ",
+            label=f" Auto×{notes_left} " if notes_left else "  Auto  ",
             style=discord.ButtonStyle.secondary,
             row=3,
             disabled=is_race,
@@ -8887,9 +8918,60 @@ class SudokuView(discord.ui.View):
             except discord.HTTPException:
                 pass
             return
-        changed = fill_auto_notes(game["board"])
-        if changed:
-            game["pencil_mode"] = True
+        try:
+            gid = int(game.get("guild_id") or 0)
+            oid = int(game.get("owner_id") or 0)
+        except (TypeError, ValueError):
+            gid, oid = 0, 0
+        if not gid or not oid:
+            try:
+                await interaction.response.send_message(
+                    "Couldn't charge Auto notes — reopen `/play`.",
+                    ephemeral=True,
+                )
+            except discord.HTTPException:
+                pass
+            return
+        stats = user_stats(guild_stats(self.bot.data, gid), oid)
+        probe = fill_auto_notes(
+            [
+                [
+                    {
+                        "value": int(cell.get("value") or 0),
+                        "pencil_marks": list(cell.get("pencil_marks") or []),
+                    }
+                    for cell in row
+                ]
+                for row in game["board"]
+            ]
+        )
+        if not probe:
+            await self.refresh(interaction)
+            try:
+                await interaction.followup.send("Notes already filled.", ephemeral=True)
+            except discord.HTTPException:
+                pass
+            return
+        if not try_consume_puff_notes(stats):
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        f"📝 Buy **Mrs. Puff's Notes** in `/shop` "
+                        f"({format_sponges(PUFF_NOTES_COST)} each).",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.followup.send(
+                        f"📝 Buy **Mrs. Puff's Notes** in `/shop` "
+                        f"({format_sponges(PUFF_NOTES_COST)} each).",
+                        ephemeral=True,
+                    )
+            except discord.HTTPException:
+                pass
+            return
+        fill_auto_notes(game["board"])
+        game["pencil_mode"] = True
+        save_data(self.bot.data)
         await self.refresh(interaction)
 
     async def on_digit(self, interaction: discord.Interaction, digit: int) -> None:
@@ -9632,9 +9714,11 @@ def shop_page_embed(
     spatula_str = f"🥇 **Spatula:** {spatula_charges}" if spatula_charges > 0 else ""
     gary_charges = int(stats.get("gary_wisdom_charges") or 0)
     gary_str = f"🐌 **Gary:** {gary_charges}" if gary_charges > 0 else ""
+    notes_charges = int(stats.get("puff_notes_charges") or 0)
+    notes_str = f"📝 **Notes:** {notes_charges}" if notes_charges > 0 else ""
     shields = int(stats.get("streak_shields") or 0)
     eq_title = SHOP_TITLES[stats.get("title")]["label"] if stats.get("title") in SHOP_TITLES else "Civilian"
-    extra_boosts = " · ".join(x for x in (snack_str, spatula_str, gary_str) if x)
+    extra_boosts = " · ".join(x for x in (snack_str, spatula_str, gary_str, notes_str) if x)
     on_board_n, owned_n = shop_pin_board_counts(stats)
 
     status_banner = (
@@ -9710,6 +9794,11 @@ def shop_page_embed(
                 f"\n🐌 *{GARY_WISDOM_HINT_BONUS} free hints first (no sponge cost) "
                 f"for {GARY_WISDOM_GAMES_PER_PURCHASE} games. After that, paid hints "
                 f"at {format_sponges(HINT_SPONGE_COST)} each (unlimited while you can pay).*"
+            )
+        elif selected["id"] == "puff_notes":
+            detail += (
+                "\n📝 *Fills remaining candidates on empty cells (1 tap = 1 charge). "
+                "Off in races. Re-fill after placing digits costs another charge.*"
             )
         elif selected["id"] == "krabby_snack":
             detail += "\n🍟 *+25% pocket sponges only — career XP unchanged (3 wins).*"
@@ -9908,6 +9997,36 @@ def apply_shop_purchase(
                 f"**{GARY_WISDOM_HINT_BONUS} free hints**, then paid hints "
                 f"({format_sponges(HINT_SPONGE_COST)} each, unlimited). "
                 f"**{stats['gary_wisdom_charges']}** game(s) queued."
+            ),
+        }
+
+    if tid == "puff_notes":
+        if stats["coins"] < cost:
+            return {
+                "ok": False,
+                "bought": False,
+                "message": (
+                    f"Need **{format_sponges(cost)}** "
+                    f"(you have {format_sponges(stats['coins'])})."
+                ),
+            }
+        stats["coins"] -= cost
+        stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
+        stats["puff_notes_charges"] = (
+            int(stats.get("puff_notes_charges") or 0)
+            + PUFF_NOTES_FILLS_PER_PURCHASE * qty
+        )
+        save_data(bot.data)
+        return {
+            "ok": True,
+            "bought": True,
+            "label": item["label"],
+            "cost": cost,
+            "qty": qty,
+            "message": (
+                f"Bought {bought_name}! 📝 **Auto notes** ready — "
+                f"**{stats['puff_notes_charges']}** fill(s) left "
+                f"(off in races)."
             ),
         }
 
@@ -12393,6 +12512,7 @@ async def help_cmd(interaction: discord.Interaction):
             f"(/play, /daily, and challenges). "
             f"**Gary's Wisdom** in `/shop` grants {GARY_WISDOM_HINT_BONUS} free hints/game first "
             f"(then paid hints as usual). "
+            f"**Mrs. Puff's Notes** fills candidates (**{format_sponges(PUFF_NOTES_COST)}** per tap; off in races). "
             f"Challenge **no_hints** disables Gary + paid hints for that race.\n"
             f"{tiers}"
         ),

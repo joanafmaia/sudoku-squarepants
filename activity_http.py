@@ -2602,6 +2602,55 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
     }
 
 
+async def _apply_activity_autonotes(bot: Any, *, user: dict, body: dict) -> dict:
+    """Spend one Mrs. Puff's Notes charge so the client can fill candidates."""
+    uid = int(user["id"])
+    guild_id = str(body.get("guild_id") or "")
+    from bot import (
+        ensure_challenge_game_for_user,
+        guild_stats,
+        PUFF_NOTES_COST,
+        save_data,
+        try_consume_puff_notes,
+        user_stats,
+    )
+
+    if await ensure_challenge_game_for_user(bot, uid):
+        return {
+            "ok": False,
+            "error": "challenge",
+            "message": "Auto notes are off in races.",
+            "puff_notes_charges": 0,
+        }
+
+    try:
+        gid_key = int(guild_id) if str(guild_id) not in ("", "0") else 0
+    except (TypeError, ValueError):
+        gid_key = 0
+    if not gid_key:
+        return {
+            "ok": False,
+            "error": "no_guild",
+            "message": "Join a server to use Auto notes.",
+        }
+
+    stats = user_stats(guild_stats(bot.data, gid_key), uid)
+    async with _activity_win_lock(f"autonotes:{uid}"):
+        if not try_consume_puff_notes(stats):
+            return {
+                "ok": False,
+                "error": "no_charges",
+                "message": (
+                    f"Buy Mrs. Puff's Notes in /shop "
+                    f"({PUFF_NOTES_COST} sponges each)."
+                ),
+                "puff_notes_charges": 0,
+            }
+        save_data(bot.data)
+        left = int(stats.get("puff_notes_charges") or 0)
+    return {"ok": True, "puff_notes_charges": left}
+
+
 async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict:
     uid = int(user["id"])
     from bot import (
@@ -3175,6 +3224,9 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
             if path in ("/api/activity/hint", "/activity/hint"):
                 self._activity_hint()
                 return
+            if path in ("/api/activity/autonotes", "/activity/autonotes"):
+                self._activity_autonotes()
+                return
             if path in ("/api/activity/session", "/activity/session"):
                 self._activity_session_save()
                 return
@@ -3296,6 +3348,7 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                         "hint_sponge_cost": HINT_SPONGE_COST,
                         "gary_wisdom_charges": int(stats.get("gary_wisdom_charges") or 0),
                         "xp_boost_charges": int(stats.get("xp_boost_charges") or 0),
+                        "puff_notes_charges": int(stats.get("puff_notes_charges") or 0),
                     },
                 )
             except Exception as exc:  # noqa: BLE001
@@ -3339,6 +3392,30 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 result = _run_coro(bot, _apply_activity_hint(bot, user=user, body=body))
             except Exception as exc:  # noqa: BLE001
                 self._send_json(500, {"error": "hint_failed", "message": str(exc)})
+                return
+            if not result.get("ok"):
+                self._send_json(400, result)
+                return
+            self._send_json(200, result)
+
+        def _activity_autonotes(self) -> None:
+            bot = bot_getter()
+            user = _discord_user_from_bearer(self.headers.get("Authorization"), bot=bot)
+            if not user or not user.get("id"):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            try:
+                body = self._read_json()
+            except Exception:
+                self._send_json(400, {"error": "invalid_json"})
+                return
+            try:
+                result = _run_coro(
+                    bot, _apply_activity_autonotes(bot, user=user, body=body)
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"activity autonotes failed: {exc}")
+                self._send_json(500, {"error": "autonotes_failed", "message": str(exc)})
                 return
             if not result.get("ok"):
                 self._send_json(400, result)
