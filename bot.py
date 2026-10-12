@@ -516,6 +516,11 @@ SHOP_BUNDLE_DISCOUNT = SHOP_PIN_DEAL_MULT  # backward-compatible alias
 SHOP_PAGE_SIZE = 11
 SHOP_BOOST_MAX_QTY = 10
 SHOP_BOOST_DEFAULT_QTY = 10
+MYSTERY_BOX_DEFAULT_QTY = 1
+# 8 commons in a row → next box is at least Uncommon.
+MYSTERY_PITY_STREAK = 8
+MYSTERY_PITY_MIN_KEY = "uncommon"
+MYSTERY_CMD_MAX_QTY = 5
 
 ACHIEVEMENTS = {
     # Speed
@@ -1226,6 +1231,19 @@ async def restore_leaderboard_from_mongo(bot: "SudokuBot") -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"quit-loss inflation fix failed: {exc}")
 
+    # Backfill Mystery Box album from last unwrap (players who already bought).
+    try:
+        boxed = migrate_mystery_history(bot.data)
+        if boxed:
+            save_data(bot.data)
+            try:
+                await match_store.save_leaderboard(bot.data)
+            except Exception as save_exc:  # noqa: BLE001
+                print(f"mystery history mongo save failed: {save_exc}")
+            print(f"Mystery Box album backfilled for {boxed} player(s).")
+    except Exception as exc:  # noqa: BLE001
+        print(f"mystery history backfill failed: {exc}")
+
     await persist_season_payout(bot)
 
 
@@ -1299,6 +1317,33 @@ def migrate_clear_xiao_bogus_best_time(data: dict) -> list[str]:
 
 
 QUIT_LOSS_INFLATION_FIX_FLAG = "quit_loss_inflation_fix_v1"
+
+
+def migrate_mystery_history(data: dict) -> int:
+    """Fill mystery_history from last_mystery_unwrapped when the album is empty."""
+    changed = 0
+    for guild_key, gstats in list(data.items()):
+        if not isinstance(gstats, dict) or not str(guild_key).isdigit():
+            continue
+        for _uid, stats in iter_players(gstats):
+            if not isinstance(stats, dict):
+                continue
+            raw = stats.get("mystery_history")
+            if isinstance(raw, list) and any(
+                isinstance(e, dict) and e.get("id") for e in raw
+            ):
+                continue
+            last = stats.get("last_mystery_unwrapped") or []
+            if not last:
+                continue
+            recovered = parse_mystery_unwrap_names(
+                last if isinstance(last, list) else [last]
+            )
+            if not recovered:
+                continue
+            stats["mystery_history"] = recovered
+            changed += 1
+    return changed
 
 
 def migrate_drop_quit_inflated_losses(data: dict) -> int:
@@ -4037,6 +4082,28 @@ MYSTERY_RATTLE_LINES = (
     "📦 *Please be the formula—*",
     "📦 *Something's bouncing around in there…*",
 )
+MYSTERY_TEASE_LINES: dict[str, tuple[str, ...]] = {
+    "common": (
+        "🫧 A damp little rattle. Nothing fancy…?",
+        "🫧 The box smells like the fryer.",
+    ),
+    "uncommon": (
+        "🪸 A green shimmer through the cracks…",
+        "🪸 Ooh — that's not junk.",
+    ),
+    "rare": (
+        "💎 The box is humming. Blue light!",
+        "💎 Pearl would actually wait for this.",
+    ),
+    "epic": (
+        "👑 Purple sparks. Krabs is sweating.",
+        "👑 This one feels expensive.",
+    ),
+    "legendary": (
+        "🌌 THE BOX IS BLINDING— EVERYBODY LOOK!",
+        "🌌 Neptune himself is rattling this thing!",
+    ),
+}
 
 
 def mystery_rarity_for_cost(cost: int) -> dict:
@@ -4068,6 +4135,49 @@ def mystery_odds_line() -> str:
     return " · ".join(bits)
 
 
+def mystery_common_streak(stats: dict) -> int:
+    return max(0, int(stats.get("mystery_common_streak") or 0))
+
+
+def mystery_pity_ready(stats: dict) -> bool:
+    return mystery_common_streak(stats) >= MYSTERY_PITY_STREAK
+
+
+def mystery_pity_short(stats: dict) -> str:
+    n = min(mystery_common_streak(stats), MYSTERY_PITY_STREAK)
+    if n >= MYSTERY_PITY_STREAK:
+        return f"Pity {MYSTERY_PITY_STREAK}/{MYSTERY_PITY_STREAK} primed"
+    return f"Pity {n}/{MYSTERY_PITY_STREAK}"
+
+
+def mystery_pity_line(stats: dict) -> str:
+    n = min(mystery_common_streak(stats), MYSTERY_PITY_STREAK)
+    if n >= MYSTERY_PITY_STREAK:
+        return (
+            f"Pity **{MYSTERY_PITY_STREAK}/{MYSTERY_PITY_STREAK}** — "
+            "next is at least Uncommon"
+        )
+    return (
+        f"Pity **{n}/{MYSTERY_PITY_STREAK}** "
+        f"(8 commons → next ≥ Uncommon)"
+    )
+
+
+def _mystery_min_rank() -> int:
+    order = [key for key, *_ in MYSTERY_RARITY_TIERS]
+    try:
+        return order.index(MYSTERY_PITY_MIN_KEY)
+    except ValueError:
+        return 1
+
+
+def bump_mystery_pity(stats: dict, rarity_key: str) -> None:
+    if rarity_key == "common":
+        stats["mystery_common_streak"] = mystery_common_streak(stats) + 1
+    else:
+        stats["mystery_common_streak"] = 0
+
+
 def mystery_box_pool(stats: dict) -> list[tuple[str, dict]]:
     """Unowned paid pins that a Mystery Box can still drop."""
     owned = set(owned_pin_ids(stats))
@@ -4096,15 +4206,46 @@ def _weighted_choice(items: list, weight_of) -> int:
     return last
 
 
+def _mystery_bucket_for_roll(
+    buckets: dict[str, list],
+    rolled_key: str,
+    *,
+    min_rank: int = 0,
+) -> list | None:
+    order = [key for key, *_ in MYSTERY_RARITY_TIERS]
+    if rolled_key not in order:
+        rolled_key = order[0]
+    idx = max(order.index(rolled_key), min_rank)
+    for j in range(idx, len(order)):
+        bucket = buckets.get(order[j]) or []
+        if bucket:
+            return bucket
+    for j in range(idx - 1, min_rank - 1, -1):
+        if j < 0:
+            break
+        bucket = buckets.get(order[j]) or []
+        if bucket:
+            return bucket
+    for j in range(len(order)):
+        bucket = buckets.get(order[j]) or []
+        if bucket:
+            return bucket
+    return None
+
+
 def pick_mystery_pins(stats: dict, count: int) -> list[tuple[str, dict, dict]]:
     """Pick unowned pins. Rarity first (legendaries ~1%), then inverse-cost inside the band."""
     remaining = list(mystery_box_pool(stats))
     picked: list[tuple[str, dict, dict]] = []
     n = min(max(0, int(count)), len(remaining))
+    streak = mystery_common_streak(stats)
+    pity_floor = _mystery_min_rank()
     for _ in range(n):
         if not remaining:
             break
-        buckets: dict[str, list[tuple[str, dict, dict]]] = {key: [] for key, *_ in MYSTERY_RARITY_TIERS}
+        buckets: dict[str, list[tuple[str, dict, dict]]] = {
+            key: [] for key, *_ in MYSTERY_RARITY_TIERS
+        }
         for tid, meta in remaining:
             rarity = mystery_rarity_for_cost(int(meta.get("cost") or 0))
             buckets[rarity["key"]].append((tid, meta, rarity))
@@ -4113,25 +4254,8 @@ def pick_mystery_pins(stats: dict, count: int) -> list[tuple[str, dict, dict]]:
         rolled_key = MYSTERY_RARITY_TIERS[
             _weighted_choice(MYSTERY_RARITY_TIERS, lambda row: float(row[4]))
         ][0]
-        order = [key for key, *_ in MYSTERY_RARITY_TIERS]
-        chosen: list[tuple[str, dict, dict]] | None = None
-        idx = order.index(rolled_key) if rolled_key in order else 0
-        for delta in range(0, len(order)):
-            candidates = []
-            if delta == 0:
-                candidates.append(idx)
-            else:
-                if idx - delta >= 0:
-                    candidates.append(idx - delta)
-                if idx + delta < len(order):
-                    candidates.append(idx + delta)
-            for j in candidates:
-                bucket = buckets.get(order[j]) or []
-                if bucket:
-                    chosen = bucket
-                    break
-            if chosen:
-                break
+        min_rank = pity_floor if streak >= MYSTERY_PITY_STREAK else 0
+        chosen = _mystery_bucket_for_roll(buckets, rolled_key, min_rank=min_rank)
         if not chosen:
             break
         pick_i = _weighted_choice(
@@ -4139,9 +4263,53 @@ def pick_mystery_pins(stats: dict, count: int) -> list[tuple[str, dict, dict]]:
             lambda row: 1.0 / max(1.0, float(row[1].get("cost") or 1) ** 1.25),
         )
         tid, meta, rarity = chosen[pick_i]
+        rarity = dict(rarity)
+        rarity["pity"] = bool(min_rank > 0 and int(rarity.get("rank") or 0) >= min_rank)
         remaining = [(t, m) for t, m in remaining if t != tid]
         picked.append((tid, meta, rarity))
+        if rarity.get("key") == "common":
+            streak += 1
+        else:
+            streak = 0
     return picked
+
+
+def _mystery_progress_line(drop: dict) -> str:
+    total = int(drop.get("total") or 0)
+    index = int(drop.get("index") or 0)
+    if total > 1 and index > 0:
+        return f"Box **{index}/{total}**"
+    return ""
+
+
+def build_mystery_tease_embed(
+    drop: dict,
+    *,
+    mention: str | None = None,
+) -> discord.Embed:
+    key = str(drop.get("rarity") or "common")
+    emoji = drop.get("rarity_emoji") or "📦"
+    label = str(drop.get("rarity_label") or "Mystery")
+    color = discord.Color.from_str(str(drop.get("color") or "#FFE566"))
+    pool = MYSTERY_TEASE_LINES.get(key) or ("The box shivers.",)
+    tease = str(drop.get("tease") or random.choice(pool))
+    lines: list[str] = []
+    if mention:
+        lines.append(f"{mention} is cracking a box!")
+    progress = _mystery_progress_line(drop)
+    if progress:
+        lines.append(progress)
+    if drop.get("pity"):
+        lines.append("✨ **Pity popped** — at least Uncommon!")
+    lines.append(tease)
+    lines.append("\n*What's inside?*")
+    embed = discord.Embed(
+        title=f"{emoji} {label.upper()}…?",
+        description="\n".join(lines),
+        color=color,
+    )
+    embed.set_footer(text=f"{SPONGE} Bikini Bottom Sudoku  ·  I'm ready!")
+    return embed
 
 
 def build_mystery_reveal_embed(
@@ -4162,6 +4330,11 @@ def build_mystery_reveal_embed(
     lines = []
     if mention:
         lines.append(f"{mention} cracked a box!")
+    progress = _mystery_progress_line(drops[0]) if len(drops) == 1 else ""
+    if progress:
+        lines.append(progress)
+    if any(d.get("pity") for d in drops):
+        lines.append("✨ Pity broke the common streak!")
     for drop in drops:
         lines.append(
             f"{drop.get('rarity_emoji', '📦')} **{drop.get('rarity_label', 'Pin')}** — "
@@ -4170,9 +4343,166 @@ def build_mystery_reveal_embed(
     flavor = str(best.get("flavor") or "").strip()
     if flavor:
         lines.append(f"\n*{flavor}*")
-    lines.append("\nTick it under Pins → **My board** to stick it on the frame.")
+    lines.append(
+        "\nTick it under Pins → **My board**, or browse Pins → **Mystery Box** for your album."
+    )
     embed = discord.Embed(title=headline, description="\n".join(lines), color=color)
     embed.set_footer(text=f"{SPONGE} Bikini Bottom Sudoku  ·  I'm ready!")
+    return embed
+
+
+def _mystery_pin_label_index() -> dict[str, str]:
+    return {
+        str(meta.get("label") or ""): tid
+        for tid, meta in SHOP_PINS.items()
+        if tid not in SHOP_BOOST_KEYS
+    }
+
+
+def parse_mystery_unwrap_names(names: list) -> list[dict]:
+    """Recover pin ids from last_mystery_unwrapped display strings."""
+    by_label = _mystery_pin_label_index()
+    labels = sorted(by_label, key=len, reverse=True)
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for raw in names:
+        s = str(raw)
+        pid = None
+        start = s.find("**")
+        end = s.rfind("**")
+        if start != -1 and end > start + 2:
+            pid = by_label.get(s[start + 2 : end].strip())
+        if not pid:
+            for label in labels:
+                if label and label in s:
+                    pid = by_label[label]
+                    break
+        if not pid or pid in seen or pid not in SHOP_PINS:
+            continue
+        seen.add(pid)
+        meta = SHOP_PINS[pid]
+        rarity = mystery_rarity_for_cost(int(meta.get("cost") or 0))
+        entries.append(
+            {
+                "id": pid,
+                "rarity": rarity["key"],
+                "rarity_label": rarity["label"],
+                "rarity_emoji": rarity["emoji"],
+            }
+        )
+    return entries
+
+
+def mystery_history(stats: dict) -> list[dict]:
+    """Pins this player unwrapped from Mystery Boxes (oldest first)."""
+    raw = stats.get("mystery_history")
+    out: list[dict] = []
+    if isinstance(raw, list):
+        seen: set[str] = set()
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            pid = str(entry.get("id") or "")
+            if not pid or pid in seen or pid not in SHOP_PINS or pid in SHOP_BOOST_KEYS:
+                continue
+            seen.add(pid)
+            out.append(entry)
+        if out:
+            return out
+    last = stats.get("last_mystery_unwrapped") or []
+    if not last:
+        return []
+    recovered = parse_mystery_unwrap_names(last if isinstance(last, list) else [last])
+    if recovered:
+        stats["mystery_history"] = recovered
+    return recovered
+
+
+def mystery_unwrapped_ids(stats: dict) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for entry in mystery_history(stats):
+        pid = str(entry.get("id") or "")
+        if pid and pid not in seen:
+            seen.add(pid)
+            ids.append(pid)
+    return ids
+
+
+def record_mystery_drops(stats: dict, drops: list[dict]) -> None:
+    hist = list(mystery_history(stats))
+    have = {str(entry.get("id") or "") for entry in hist}
+    now = int(time.time())
+    for drop in drops:
+        pid = str(drop.get("id") or "")
+        if not pid or pid in have:
+            continue
+        have.add(pid)
+        hist.append(
+            {
+                "id": pid,
+                "rarity": drop.get("rarity"),
+                "rarity_label": drop.get("rarity_label"),
+                "rarity_emoji": drop.get("rarity_emoji"),
+                "ts": now,
+            }
+        )
+    stats["mystery_history"] = hist
+
+
+def format_mystery_history_lines(stats: dict, *, limit: int = 12) -> str:
+    hist = mystery_history(stats)
+    if not hist:
+        return "No boxes opened yet."
+    show = hist[-limit:]
+    older = len(hist) - len(show)
+    lines: list[str] = []
+    if older > 0:
+        lines.append(f"_…{older} older_")
+    for entry in reversed(show):
+        meta = SHOP_PINS.get(str(entry.get("id") or "")) or {}
+        emoji = meta.get("emoji") or ""
+        label = meta.get("label") or entry.get("id") or "Pin"
+        r_em = entry.get("rarity_emoji") or "📦"
+        r_lab = entry.get("rarity_label") or ""
+        lines.append(f"{r_em} {r_lab} · {emoji} {label}")
+    return "\n".join(lines)
+
+
+def mystery_catalog_item() -> dict:
+    meta = SHOP_PINS.get("mystery_box") or {}
+    cost = int(meta.get("cost") or 250)
+    return {
+        "kind": "boost",
+        "id": "mystery_box",
+        "label": meta.get("label") or "📦 Mystery Box",
+        "emoji": meta.get("emoji") or "📦",
+        "cost": cost,
+        "pin": meta.get("pin") or "Mystery",
+        "theme": None,
+        "on_sale": False,
+        "full_cost": cost,
+    }
+
+
+def mystery_desk_embed(stats: dict) -> discord.Embed:
+    item = mystery_catalog_item()
+    unit = int(item["cost"])
+    pool = len(mystery_box_pool(stats))
+    opened = len(mystery_unwrapped_ids(stats))
+    pocket = format_sponges(stats.get("coins", 0))
+    album = format_mystery_history_lines(stats, limit=10)
+    embed = paper_embed("📦 Mystery Box")
+    embed.description = (
+        f"Crack a random **unowned pin** — rarity first, then the pin, "
+        f"**in this channel**.\n"
+        f"Or browse the album anytime with `/mystery`.\n\n"
+        f"💰 Pocket: **{pocket}** · **{format_sponges(unit)}** each\n"
+        f"{mystery_pity_line(stats)}\n"
+        f"{mystery_odds_line()}\n"
+        f"Pool: **{pool}** unowned · Opened: **{opened}**\n\n"
+        f"**Album**\n{album}"
+    )
     return embed
 
 
@@ -9769,11 +10099,19 @@ def shop_item_status_text(stats: dict, item: dict) -> str:
             return f"🎟️ Until {until}" if until else "🎟️ Weekend"
         if iid == "mystery_box":
             n = len(mystery_box_pool(stats))
-            return "🔒 All pins owned" if n <= 0 else f"📦 {n} unowned"
+            opened = len(mystery_unwrapped_ids(stats))
+            opened_bit = f" · {opened} opened" if opened else ""
+            pity_bit = f" · {mystery_pity_short(stats)}"
+            if n <= 0:
+                return f"🔒 All pins owned{opened_bit}"
+            return f"📦 {n} unowned{opened_bit}{pity_bit}"
         return "🔮 Power-Up"
     owned = shop_item_owned(stats, item)
     if item["kind"] == "pin":
+        from_box = item["id"] in set(mystery_unwrapped_ids(stats))
         if not owned:
+            if from_box:
+                return "📦 Opened"
             if item["id"] in NEW_PIN_IDS:
                 return "🆕 New"
             return "🔒 Locked"
@@ -9803,9 +10141,8 @@ def shop_filter_label(kind: str, filt: str) -> str:
         "new": "New",
         "afford": "Can buy",
         "owned": "Owned",
-        "ocean": "Ocean",
-        "crew": "Crew",
         "pricey": "Pricey",
+        "mystery": "Mystery Box",
     }.get(filt, "All")
 
 
@@ -9844,6 +10181,15 @@ def shop_select_emoji(raw: Any) -> str | None:
     return text
 
 
+def shop_option_label(item: dict) -> str:
+    """Dropdown text without the leading emoji — Discord already draws option.emoji."""
+    label = str(item.get("label") or "").strip()
+    em = str(item.get("emoji") or "").strip()
+    if em and label.startswith(em):
+        label = label[len(em) :].strip()
+    return (label or str(item.get("pin") or "Item"))[:100]
+
+
 def shop_item_can_buy(stats: dict, item: dict) -> bool:
     if item["kind"] != "boost" and shop_item_owned(stats, item):
         return False
@@ -9880,7 +10226,7 @@ def shop_boost_max_qty(stats: dict, item: dict) -> int:
 def shop_filter_catalog(
     items: list[dict], stats: dict, filt: str
 ) -> list[dict]:
-    """filt: all | new | afford | owned | ocean | crew | pricey"""
+    """filt: all | new | afford | owned | pricey | mystery"""
     if filt == "owned":
         owned = [it for it in items if shop_item_owned(stats, it)]
         if items and items[0].get("kind") == "pin":
@@ -9895,8 +10241,11 @@ def shop_filter_catalog(
         return owned
     if filt == "afford":
         return [it for it in items if shop_item_can_buy(stats, it)]
-    if filt in ("ocean", "crew"):
-        return [it for it in items if (it.get("theme") or "ocean") == filt]
+    if filt == "mystery":
+        order = {pid: i for i, pid in enumerate(mystery_unwrapped_ids(stats))}
+        found = [it for it in items if it["id"] in order]
+        found.sort(key=lambda it: -order[it["id"]])
+        return found
     if filt == "new":
         fresh = [it for it in items if it.get("id") in NEW_PIN_IDS]
         fresh.sort(
@@ -9983,6 +10332,7 @@ def shop_page_embed(
 
     lines: list[str] = []
     selected_id = (selected or {}).get("id")
+    boxed_ids = set(mystery_unwrapped_ids(stats))
     for it in page_items:
         mark = "▶ " if it["id"] == selected_id else "• "
         status = shop_item_status_text(stats, it)
@@ -9995,12 +10345,18 @@ def shop_page_embed(
             if it.get("kind") == "pin" and it["id"] in NEW_PIN_IDS
             else ""
         )
+        box_mark = " 📦" if it.get("kind") == "pin" and it["id"] in boxed_ids else ""
         lines.append(
-            f"{mark}**{it['label']}**{sale_mark}{new_mark} — `{price}` ({status})"
+            f"{mark}**{it['label']}**{sale_mark}{new_mark}{box_mark} — `{price}` ({status})"
         )
 
     if not lines:
-        lines.append("_No items match this filter._")
+        if filt == "mystery":
+            lines.append(
+                "_No Mystery Box drops yet. Buy 📦 Mystery Box under Boosts._"
+            )
+        else:
+            lines.append("_No items match this filter._")
 
     embed.description = (
         f"{status_banner}{deal_line}\n"
@@ -10040,16 +10396,20 @@ def shop_page_embed(
         elif selected["id"] == "golden_spatula":
             detail += "\n🥇 *+50% career XP only — sponges unchanged (3 wins).*"
         elif selected["id"] == "mystery_box":
-            last = stats.get("last_mystery_unwrapped") or []
-            last_line = (
-                f"\nLast unwrap: {', '.join(str(x) for x in last)}"
-                if last
-                else ""
+            opened = len(mystery_unwrapped_ids(stats))
+            album = format_mystery_history_lines(stats, limit=8)
+            album_title = (
+                f"\n**Opened ({opened}):**\n{album}"
+                if opened
+                else "\nNo boxes opened yet — Pins → **Mystery Box** fills as you unwrap."
             )
             detail += (
-                "\n📦 *Buy rattles the box, then reveals a pin you don't own.*\n"
+                "\n📦 *Opens **in chat** — rarity first, then the pin. "
+                "Buy more than one and crack them one at a time.* "
+                "Dedicated desk: `/mystery`.\n"
+                f"{mystery_pity_line(stats)}\n"
                 f"{mystery_odds_line()}"
-                f"{last_line}"
+                f"{album_title}"
             )
         elif selected["kind"] == "title":
             sample = titled_header_line("Easy", selected.get("pin") or "Civilian", emoji=str(selected.get("emoji") or ""))
@@ -10059,11 +10419,12 @@ def shop_page_embed(
                 detail += "\n🔥 *Today's title deal — 25% off!*"
             detail += "\nUse **Preview** to see it on a sample board header."
         else:
-            theme = (selected.get("theme") or "ocean").title()
             detail += (
-                f"\n🎨 Border sticker ({selected['emoji']} · {theme}). "
+                f"\n🎨 Border sticker ({selected['emoji']}). "
                 "On the board unless you untick it in **My board**."
             )
+            if selected["id"] in set(mystery_unwrapped_ids(stats)):
+                detail += "\n📦 Unwrapped from a **Mystery Box**."
             if selected.get("on_sale"):
                 detail += "\n🔥 *Today's pin deal — 50% off!*"
             if shop_item_owned(stats, selected):
@@ -10496,7 +10857,8 @@ def apply_shop_purchase(
         stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
         names: list[str] = []
         drops: list[dict] = []
-        for pid, meta, rarity in picked:
+        total = len(picked)
+        for i, (pid, meta, rarity) in enumerate(picked, start=1):
             grant_owned_pin(stats, pid)
             flavor_pool = MYSTERY_RARITY_FLAVOR.get(rarity["key"]) or ("Nice pin.",)
             drop = {
@@ -10510,13 +10872,18 @@ def apply_shop_purchase(
                 "rarity_rank": int(rarity["rank"]),
                 "color": rarity["color"],
                 "flavor": random.choice(flavor_pool),
+                "pity": bool(rarity.get("pity")),
+                "index": i,
+                "total": total,
             }
             drops.append(drop)
             names.append(
                 f"{drop['rarity_emoji']} {drop['rarity_label']} · "
                 f"{drop['emoji']} **{drop['label']}**"
             )
+            bump_mystery_pity(stats, str(rarity.get("key") or "common"))
         stats["last_mystery_unwrapped"] = names
+        record_mystery_drops(stats, drops)
         save_data(bot.data)
         push_cosmetics_sync(user_id, guild_id, stats)
         got = "\n".join(names)
@@ -10778,6 +11145,269 @@ class GiftPinUserView(discord.ui.View):
             pass
 
 
+async def play_mystery_unwrap(
+    interaction: discord.Interaction,
+    drop: dict,
+    *,
+    mention: str,
+    leftover_view: discord.ui.View | None = None,
+) -> discord.Message | None:
+    """Public rattle → rarity glow → pin, editing one channel message."""
+    rattle = f"{mention} {random.choice(MYSTERY_RATTLE_LINES)}"
+    msg: discord.Message | None = None
+    channel = interaction.channel
+    if channel is not None:
+        try:
+            msg = await channel.send(rattle)
+        except discord.HTTPException:
+            msg = None
+    if msg is None:
+        try:
+            msg = await interaction.followup.send(rattle, wait=True)
+        except discord.HTTPException:
+            return None
+    await asyncio.sleep(0.9)
+    tease = build_mystery_tease_embed(drop, mention=mention)
+    try:
+        await msg.edit(content=None, embed=tease)
+    except discord.HTTPException:
+        pass
+    await asyncio.sleep(1.15)
+    reveal = build_mystery_reveal_embed([drop], mention=mention)
+    if leftover_view is not None:
+        leftover_view.message = msg  # type: ignore[attr-defined]
+    try:
+        await msg.edit(content=None, embed=reveal, view=leftover_view)
+    except discord.HTTPException:
+        try:
+            await msg.edit(content=None, embed=reveal)
+        except discord.HTTPException:
+            pass
+    return msg
+
+
+class MysteryUnwrapView(discord.ui.View):
+    """Crack remaining Mystery Boxes one at a time, in public chat."""
+
+    def __init__(self, *, owner_id: int, remaining: list[dict], mention: str):
+        super().__init__(timeout=180)
+        self.owner_id = owner_id
+        self.remaining = list(remaining)
+        self.mention = mention
+        self.message: discord.Message | None = None
+        n = len(self.remaining)
+        btn = discord.ui.Button(
+            label=f"Open next ({n} left)",
+            emoji="📦",
+            style=discord.ButtonStyle.primary,
+        )
+        btn.callback = self.on_open_next
+        self.add_item(btn)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "That's not your Mystery Box.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True  # type: ignore[attr-defined]
+        if self.message is None:
+            return
+        try:
+            await self.message.edit(view=self)
+        except discord.HTTPException:
+            pass
+
+    async def on_open_next(self, interaction: discord.Interaction) -> None:
+        if not self.remaining:
+            await interaction.response.send_message(
+                "All boxes are open — check Pins → **Mystery Box**.",
+                ephemeral=True,
+            )
+            return
+        drop = self.remaining.pop(0)
+        leftover: MysteryUnwrapView | None = None
+        if self.remaining:
+            leftover = MysteryUnwrapView(
+                owner_id=self.owner_id,
+                remaining=self.remaining,
+                mention=self.mention,
+            )
+        for child in self.children:
+            child.disabled = True  # type: ignore[attr-defined]
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.edit_message(view=self)
+            except discord.HTTPException:
+                try:
+                    await interaction.response.defer()
+                except discord.HTTPException:
+                    pass
+        await play_mystery_unwrap(
+            interaction, drop, mention=self.mention, leftover_view=leftover
+        )
+        self.stop()
+
+
+async def present_mystery_drops(
+    interaction: discord.Interaction,
+    drops: list[dict],
+    *,
+    owner_id: int,
+) -> None:
+    """Public rattle → rarity tease → pin. Extra boxes wait behind Open next."""
+    if not drops:
+        return
+    who = interaction.user.mention
+    try:
+        await interaction.followup.send(
+            "👀 Your Mystery Box is opening **in chat**…",
+            ephemeral=True,
+        )
+    except discord.HTTPException:
+        pass
+    leftover = None
+    if len(drops) > 1:
+        leftover = MysteryUnwrapView(
+            owner_id=owner_id,
+            remaining=drops[1:],
+            mention=who,
+        )
+    await play_mystery_unwrap(
+        interaction, drops[0], mention=who, leftover_view=leftover
+    )
+
+
+async def buy_and_open_mystery(
+    bot: "SudokuBot",
+    interaction: discord.Interaction,
+    qty: int,
+) -> dict:
+    if interaction.guild is None:
+        return {"ok": False, "bought": False, "message": "Server only."}
+    item = mystery_catalog_item()
+    result = apply_shop_purchase(
+        bot, interaction.guild.id, interaction.user.id, item, qty=qty
+    )
+    if not result.get("ok"):
+        return result
+    stats = user_stats(guild_stats(bot.data, interaction.guild.id), interaction.user.id)
+    await sync_cosmetics_to_activity_sessions(
+        interaction.user.id,
+        interaction.guild.id,
+        title_id=equipped_title_id(stats),
+        pin_emojis=owned_pin_emojis(stats),
+    )
+    await present_mystery_drops(
+        interaction,
+        list(result.get("drops") or []),
+        owner_id=interaction.user.id,
+    )
+    return result
+
+
+class MysteryDeskView(discord.ui.View):
+    """Dedicated `/mystery` desk: album, pity, open in chat."""
+
+    def __init__(self, bot: "SudokuBot", *, owner_id: int, guild_id: int):
+        super().__init__(timeout=180)
+        self.bot = bot
+        self.owner_id = owner_id
+        self.guild_id = guild_id
+        self.message: discord.Message | None = None
+        self._rebuild()
+
+    def _stats(self) -> dict:
+        return user_stats(guild_stats(self.bot.data, self.guild_id), self.owner_id)
+
+    def _rebuild(self) -> None:
+        self.clear_items()
+        stats = self._stats()
+        item = mystery_catalog_item()
+        unit = int(item["cost"])
+        pool = len(mystery_box_pool(stats))
+        coins = int(stats.get("coins") or 0)
+        cap = shop_boost_max_qty(stats, item)
+        for n, style in (
+            (1, discord.ButtonStyle.primary),
+            (3, discord.ButtonStyle.secondary),
+        ):
+            can = pool >= n and coins >= unit * n and n <= cap
+            total = unit * n
+            label = f"Open ×{n}" if n == 1 else f"Open ×{n} — {total}"
+            btn = discord.ui.Button(
+                label=label[:80],
+                emoji="📦",
+                style=style,
+                disabled=not can,
+            )
+            btn.callback = self._bind_open(n)
+            self.add_item(btn)
+
+    def _bind_open(self, qty: int):
+        async def _cb(interaction: discord.Interaction) -> None:
+            await self._open(interaction, qty)
+
+        return _cb
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "This Mystery Box desk isn't yours — run `/mystery`.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def _open(self, interaction: discord.Interaction, qty: int) -> None:
+        result = apply_shop_purchase(
+            self.bot,
+            self.guild_id,
+            self.owner_id,
+            mystery_catalog_item(),
+            qty=qty,
+        )
+        if not result.get("ok"):
+            await interaction.response.send_message(result["message"], ephemeral=True)
+            return
+        stats = self._stats()
+        await sync_cosmetics_to_activity_sessions(
+            self.owner_id,
+            self.guild_id,
+            title_id=equipped_title_id(stats),
+            pin_emojis=owned_pin_emojis(stats),
+        )
+        self._rebuild()
+        try:
+            await interaction.response.edit_message(
+                embed=mystery_desk_embed(stats),
+                view=self,
+            )
+        except discord.HTTPException:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        await present_mystery_drops(
+            interaction,
+            list(result.get("drops") or []),
+            owner_id=self.owner_id,
+        )
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True  # type: ignore[attr-defined]
+        if self.message is None:
+            return
+        try:
+            await self.message.edit(view=self)
+        except discord.HTTPException:
+            pass
+
+
 class KrustyShopView(discord.ui.View):
     """Paginated catalog: Buy/Equip plus My board multi-select for border pins."""
 
@@ -10799,16 +11429,17 @@ class KrustyShopView(discord.ui.View):
         self.kind = kind if kind in ("boosts", "titles", "pins") else "boosts"
         self.filt = (
             filt
-            if filt in ("all", "new", "afford", "owned", "ocean", "crew", "pricey")
+            if filt in ("all", "new", "afford", "owned", "pricey", "mystery")
             else "all"
         )
-        if self.kind != "pins" and self.filt in ("ocean", "crew", "new", "pricey"):
+        if self.kind != "pins" and self.filt in ("new", "pricey", "mystery"):
             self.filt = "all"
         self.page = max(0, page)
         self.selected_id = selected_id
-        self.qty = SHOP_BOOST_DEFAULT_QTY if self.kind == "boosts" else 1
+        self.qty = 1
         self.message: discord.Message | None = None
         self._ensure_selection()
+        self._reset_qty()
         self._rebuild()
 
     def _stats(self) -> dict:
@@ -10887,7 +11518,14 @@ class KrustyShopView(discord.ui.View):
         return self.kind == "pins" and self.filt == "owned"
 
     def _reset_qty(self) -> None:
-        self.qty = SHOP_BOOST_DEFAULT_QTY if self.kind == "boosts" else 1
+        if self.kind != "boosts":
+            self.qty = 1
+            return
+        selected = self.selected_item()
+        if selected and selected.get("id") == "mystery_box":
+            self.qty = MYSTERY_BOX_DEFAULT_QTY
+            return
+        self.qty = SHOP_BOOST_DEFAULT_QTY
 
     def shop_attachments(self) -> list[discord.File]:
         """Live frame preview while picking which pins sit on the board."""
@@ -10954,8 +11592,7 @@ class KrustyShopView(discord.ui.View):
                 ("pricey", "💎 Pricey"),
                 ("afford", "Can buy"),
                 ("owned", "My board"),
-                ("ocean", "Ocean"),
-                ("crew", "Crew"),
+                ("mystery", "📦 Mystery Box"),
             )
         else:
             filter_defs = (
@@ -10992,7 +11629,7 @@ class KrustyShopView(discord.ui.View):
                     status = f"🔥 {status}"
                 price = shop_item_price_text(it)
                 desc = f"{price} · {status}"[:100]
-                label = it["label"][:100]
+                label = shop_option_label(it)
                 if my_board:
                     default = it["id"] not in hidden
                 else:
@@ -11170,7 +11807,7 @@ class KrustyShopView(discord.ui.View):
         values = (interaction.data or {}).get("values") or []
         if values:
             self.filt = str(values[0])
-            if self.kind != "pins" and self.filt in ("ocean", "crew", "new", "pricey"):
+            if self.kind != "pins" and self.filt in ("new", "pricey", "mystery"):
                 self.filt = "all"
         self.page = 0
         self.selected_id = None
@@ -11379,35 +12016,11 @@ class KrustyShopView(discord.ui.View):
     async def _present_mystery_box(
         self, interaction: discord.Interaction, result: dict
     ) -> None:
-        """Rattle, then reveal rarity + pin. Rare+ also flexes in the channel."""
-        drops = list(result.get("drops") or [])
-        who = interaction.user.mention
-        rattle = random.choice(MYSTERY_RATTLE_LINES)
-        try:
-            teaser = await interaction.followup.send(rattle, ephemeral=True, wait=True)
-        except discord.HTTPException:
-            try:
-                await interaction.followup.send(result["message"], ephemeral=True)
-            except discord.HTTPException:
-                pass
-            return
-        await asyncio.sleep(1.35)
-        reveal = build_mystery_reveal_embed(drops)
-        try:
-            await teaser.edit(content=None, embed=reveal)
-        except discord.HTTPException:
-            try:
-                await interaction.followup.send(embed=reveal, ephemeral=True)
-            except discord.HTTPException:
-                pass
-        best_rank = max((int(d.get("rarity_rank") or 0) for d in drops), default=0)
-        if best_rank < 2 or interaction.channel is None:
-            return
-        public = build_mystery_reveal_embed(drops, mention=who)
-        try:
-            await interaction.channel.send(embed=public)
-        except discord.HTTPException:
-            pass
+        await present_mystery_drops(
+            interaction,
+            list(result.get("drops") or []),
+            owner_id=self.owner_id,
+        )
 
     async def on_gift(self, interaction: discord.Interaction) -> None:
         item = self.selected_item()
@@ -13004,7 +13617,7 @@ async def help_cmd(interaction: discord.Interaction):
     embed.add_field(
         name=f"{PINEAPPLE} More",
         value=(
-            "`/shop` · `/weekly` · `/stats` · `/achievements` · `/leaderboard` · `/resume` · `/cleargame` · `/quit`\n"
+            "`/shop` · `/mystery` · `/weekly` · `/stats` · `/achievements` · `/leaderboard` · `/resume` · `/cleargame` · `/quit`\n"
             "Power-ups: 🎫 Daily Double · 🪼 Jellyfish Jam · 📦 Mystery Box · 🎟️ Weekend Pass · 📢 Karate Yell · 📒 Mrs. Puff's Notes"
         ),
         inline=False,
@@ -14134,6 +14747,51 @@ async def claimdaily_cmd(interaction: discord.Interaction, member: discord.Membe
 
 
 bot.tree.add_command(admin_group)
+
+
+@bot.tree.command(
+    name="mystery",
+    description="Open a Mystery Box in chat — album, pity, random unowned pin",
+)
+@app_commands.describe(
+    qty="Crack this many now (1–5). Skip to open the desk first."
+)
+async def mystery_cmd(
+    interaction: discord.Interaction,
+    qty: app_commands.Range[int, 1, 5] | None = None,
+):
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    gstats = guild_stats(bot.data, interaction.guild.id)
+    stats = user_stats(gstats, interaction.user.id)
+    stats["name"] = interaction.user.display_name
+    save_data(bot.data)
+    view = MysteryDeskView(
+        bot, owner_id=interaction.user.id, guild_id=interaction.guild.id
+    )
+    msg = await interaction.followup.send(
+        embed=mystery_desk_embed(view._stats()),
+        view=view,
+        ephemeral=True,
+        wait=True,
+    )
+    view.message = msg
+    if qty is None:
+        return
+    result = await buy_and_open_mystery(bot, interaction, int(qty))
+    if not result.get("ok"):
+        try:
+            await interaction.followup.send(result["message"], ephemeral=True)
+        except discord.HTTPException:
+            pass
+        return
+    view._rebuild()
+    try:
+        await msg.edit(embed=mystery_desk_embed(view._stats()), view=view)
+    except discord.HTTPException:
+        pass
 
 
 @bot.tree.command(name="shop", description="Spend sponges at the Krusty Shop")
