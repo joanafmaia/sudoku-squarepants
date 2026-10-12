@@ -233,6 +233,58 @@ function peers(r, c) {
   return [...cells].map((k) => k.split(",").map(Number));
 }
 
+export function cellCandidates(board, r, c) {
+  if (cellValue(board, r, c)) return [];
+  const used = Array(10).fill(false);
+  for (let j = 0; j < 9; j++) {
+    const v = cellValue(board, r, j);
+    if (v >= 1 && v <= 9) used[v] = true;
+  }
+  for (let i = 0; i < 9; i++) {
+    const v = cellValue(board, i, c);
+    if (v >= 1 && v <= 9) used[v] = true;
+  }
+  const br = Math.floor(r / 3) * 3;
+  const bc = Math.floor(c / 3) * 3;
+  for (let i = br; i < br + 3; i++) {
+    for (let j = bc; j < bc + 3; j++) {
+      const v = cellValue(board, i, j);
+      if (v >= 1 && v <= 9) used[v] = true;
+    }
+  }
+  const out = [];
+  for (let v = 1; v <= 9; v++) if (!used[v]) out.push(v);
+  return out;
+}
+
+export function nakedSingleKeys(board) {
+  const out = new Set();
+  if (!board?.length) return out;
+  for (let r = 0; r < 9; r++) {
+    for (let c = 0; c < 9; c++) {
+      if (cellValue(board, r, c)) continue;
+      if (cellCandidates(board, r, c).length === 1) out.add(`${r},${c}`);
+    }
+  }
+  return out;
+}
+
+export function fillAutoNotes(board) {
+  let n = 0;
+  if (!board?.length) return n;
+  for (let r = 0; r < 9; r++) {
+    for (let c = 0; c < 9; c++) {
+      if (cellValue(board, r, c)) continue;
+      const cands = cellCandidates(board, r, c);
+      const prev = [...(board[r][c]?.pencil_marks || [])].map((d) => d | 0).sort((a, b) => a - b);
+      if (prev.length === cands.length && cands.every((d, i) => prev[i] === d)) continue;
+      board[r][c].pencil_marks = cands;
+      n += 1;
+    }
+  }
+  return n;
+}
+
 /** Pencil digits that appear once in a box, row, or column (hidden singles among notes). */
 export function uniqueBoxPencilKeys(board) {
   const unique = new Set();

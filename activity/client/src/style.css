@@ -281,6 +281,18 @@ body {
   margin: 0 auto;
 }
 
+.ctrl-actions-edit {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ctrl-actions-edit.is-challenge {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ctrl-actions-edit.is-challenge #ctrl-autonotes {
+  display: none !important;
+}
+
 /* /play /daily /challenge: Diff hidden — Quit · Hint · Reset */
 .ctrl-actions-meta.is-compact {
   grid-template-columns: repeat(3, minmax(0, 1fr));

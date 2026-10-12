@@ -9,9 +9,11 @@ import {
   digitCounts,
   difficultyLabel,
   filledCount,
+  fillAutoNotes,
   findConflicts,
   isSolved,
   makePuzzle,
+  nakedSingleKeys,
   setCellValue,
   togglePencil,
   uniqueBoxPencilKeys,
@@ -23,6 +25,7 @@ const LIGHT_PALETTE = {
   given: "#facc15",
   givenHl: "#fde047",
   matchHl: "#bbf7d0",
+  nakedHl: "#fde68a",
   select: "#fde047",
   boxHl: "#a5f3fc",
   conflict: "#fda4af",
@@ -61,6 +64,7 @@ const DARK_PALETTE = {
   given: "#b45309",
   givenHl: "#ca8a04",
   matchHl: "#164e63",
+  nakedHl: "#854d0e",
   select: "#d97706",
   boxHl: "#0e7490",
   conflict: "#9f1239",
@@ -99,6 +103,7 @@ const JELLYFISH_PALETTE = {
   given: "#9333ea",
   givenHl: "#a855f7",
   matchHl: "#581c87",
+  nakedHl: "#6b21a8",
   select: "#c084fc",
   boxHl: "#581c87",
   conflict: "#be123c",
@@ -137,6 +142,7 @@ const KRABS_PALETTE = {
   given: "#ea580c",
   givenHl: "#fbbf24",
   matchHl: "#075985",
+  nakedHl: "#9a3412",
   select: "#f59e0b",
   boxHl: "#0284c7",
   conflict: "#9f1239",
@@ -175,6 +181,7 @@ const ROCKBOTTOM_PALETTE = {
   given: "#4338ca",
   givenHl: "#6366f1",
   matchHl: "#1e293b",
+  nakedHl: "#1e3a5f",
   select: "#4f46e5",
   boxHl: "#1e293b",
   conflict: "#881337",
@@ -213,9 +220,9 @@ let activeTheme = "light";
 
 const WIDTH = 720;
 const HEIGHT = 780;
-// Extra side margin so pin badges sit fully outside the pineapple frame.
-const BOARD_ORIGIN = { x: 64, y: 108 };
-const CELL = 64;
+// Extra side/bottom margin so every catalog pin can sit outside the pineapple frame.
+const BOARD_ORIGIN = { x: 90, y: 108 };
+const CELL = 60;
 const BOARD_SIZE = CELL * 9;
 const FRAME_PAD = 16;
 // Default badge size; drawBorderPins shrinks this so every on-board pin fits.
@@ -518,6 +525,7 @@ function ensureControls(shell) {
       <button type="button" data-action="undo" id="ctrl-undo" title="Undo move">↩ Undo</button>
       <button type="button" data-action="clear" class="ctrl-clear" title="Clear selected cell">Clear</button>
       <button type="button" data-action="pencil" id="ctrl-pencil" title="Lock notes mode · or hold a number for a note">Lock notes</button>
+      <button type="button" data-action="autonotes" id="ctrl-autonotes" title="Fill every empty cell with remaining candidates">📝 Auto</button>
     </div>
     <div class="ctrl-actions ctrl-actions-meta" id="ctrl-meta" role="group" aria-label="Game Setup Actions">
       <button type="button" data-action="quit" id="ctrl-quit" class="btn-danger">🚪 Quit</button>
@@ -555,6 +563,16 @@ function ensureControls(shell) {
   const pencil = bar.querySelector("#ctrl-pencil");
   if (pencil && pencil.textContent.trim() === "Notes") {
     pencil.textContent = "Lock notes";
+  }
+  const editRow = bar.querySelector(".ctrl-actions-edit");
+  if (editRow && !bar.querySelector("#ctrl-autonotes")) {
+    const autoBtn = document.createElement("button");
+    autoBtn.type = "button";
+    autoBtn.id = "ctrl-autonotes";
+    autoBtn.dataset.action = "autonotes";
+    autoBtn.title = "Fill every empty cell with remaining candidates";
+    autoBtn.textContent = "📝 Auto";
+    editRow.appendChild(autoBtn);
   }
   bar.querySelectorAll(".ctrl-digit").forEach((btn) => {
     const n = btn.dataset.digit;
@@ -722,12 +740,25 @@ export function startThcokuGame(canvas, options = {}) {
     const frameLeft = ox - FRAME_PAD - 4;
     const frameRight = ox + BOARD_SIZE + FRAME_PAD + 4;
     const frameBottom = oy + BOARD_SIZE + FRAME_PAD + 4;
-    const leftX = Math.max(radius + 2, frameLeft - radius - 4);
-    const rightX = Math.min(WIDTH - radius - 2, frameRight + radius + 4);
+    const gap = radius * 2 + 4;
+    const leftXs = [];
+    for (let x = radius + 2; x + radius <= frameLeft - 1; x += gap) leftXs.push(x);
+    const rightXs = [];
+    for (let x = WIDTH - radius - 2; x - radius >= frameRight + 1; x -= gap) {
+      rightXs.push(x);
+    }
+    const colXs = [...leftXs, ...rightXs];
     const bottomY = Math.min(HEIGHT - radius - 6, frameBottom + radius + 6);
-    const leftN = Math.ceil(need / 3);
-    const rightN = Math.ceil((need - leftN) / 2);
-    const bottomN = need - leftN - rightN;
+    const useBottom = bottomY - radius >= frameBottom + 1;
+    const groups = colXs.length + (useBottom ? 1 : 0);
+    if (!groups) return [];
+    const counts = [];
+    const base = Math.floor(need / groups);
+    let rem = need % groups;
+    for (let i = 0; i < groups; i++) {
+      counts.push(base + (rem > 0 ? 1 : 0));
+      if (rem > 0) rem -= 1;
+    }
     const along = (n, x0, y0, x1, y1) => {
       if (n <= 0) return [];
       if (n === 1) return [{ x: (x0 + x1) / 2, y: (y0 + y1) / 2 }];
@@ -738,11 +769,16 @@ export function startThcokuGame(canvas, options = {}) {
       }
       return out;
     };
-    return [
-      ...along(leftN, leftX, oy, leftX, oy + BOARD_SIZE),
-      ...along(rightN, rightX, oy, rightX, oy + BOARD_SIZE),
-      ...along(bottomN, ox, bottomY, ox + BOARD_SIZE, bottomY),
-    ];
+    const slots = [];
+    colXs.forEach((x, i) => {
+      slots.push(...along(counts[i], x, oy, x, oy + BOARD_SIZE));
+    });
+    if (useBottom) {
+      slots.push(
+        ...along(counts[counts.length - 1], ox, bottomY, ox + BOARD_SIZE, bottomY)
+      );
+    }
+    return slots;
   }
 
   function drawBorderPins() {
@@ -1110,6 +1146,15 @@ export function startThcokuGame(canvas, options = {}) {
       pencilBtn.hidden = false;
       pencilBtn.style.display = "";
     }
+    const autoBtn = controls.querySelector("#ctrl-autonotes");
+    const editRow = controls.querySelector(".ctrl-actions-edit");
+    const isChallenge = state.sessionKind === "challenge";
+    if (editRow) editRow.classList.toggle("is-challenge", isChallenge);
+    if (autoBtn) {
+      autoBtn.hidden = isChallenge;
+      autoBtn.style.display = isChallenge ? "none" : "";
+      autoBtn.disabled = isChallenge;
+    }
     if (meta) {
       meta.classList.remove("is-solo");
       // Compact = Diff gone, Reset shown → still 3 equal slots (Quit · Hint · Reset)
@@ -1281,6 +1326,34 @@ export function startThcokuGame(canvas, options = {}) {
       }))
     );
     state.status = "Move undone ↩";
+    playFx("pop");
+    syncControls();
+    draw();
+    if (typeof options.onProgress === "function") {
+      try {
+        options.onProgress();
+      } catch (err) {
+        console.warn("[Thcoku] onProgress", err);
+      }
+    }
+  }
+
+  function autoFillNotes() {
+    if (state.spectatorMode || state.won || state.reportingWin || !state.board) return;
+    if (state.sessionKind === "challenge") {
+      state.status = "Auto notes are off in races";
+      draw();
+      return;
+    }
+    saveUndoState();
+    const n = fillAutoNotes(state.board);
+    if (!n) {
+      state.undoStack.pop();
+      state.status = "Notes already filled";
+      draw();
+      return;
+    }
+    state.status = `Auto notes · ${n} cell${n === 1 ? "" : "s"}`;
     playFx("pop");
     syncControls();
     draw();
@@ -1817,6 +1890,7 @@ export function startThcokuGame(canvas, options = {}) {
 
     const conflicts = findConflicts(state.board);
     const uniqueNotes = uniqueBoxPencilKeys(state.board);
+    const nakedSingles = nakedSingleKeys(state.board);
     // Spectators: no cell selection / peer wash — keep the board readable.
     const sel = state.selected;
     const highlightSel =
@@ -1851,6 +1925,7 @@ export function startThcokuGame(canvas, options = {}) {
 
         let fill = isGiven ? RGB.given : RGB.empty;
         if (sameBox || sameLine) fill = isGiven ? RGB.givenHl : RGB.boxHl;
+        if (!cellVal && nakedSingles.has(`${r},${c}`)) fill = RGB.nakedHl || RGB.sand;
         if (isMatch) fill = RGB.matchHl;
         if (isSel || flash) fill = RGB.select;
         if (conflict) fill = RGB.conflict;
@@ -2114,6 +2189,8 @@ export function startThcokuGame(canvas, options = {}) {
       state.status = state.pencilMode ? "Pencil ON — Mrs. Puff mode" : "Pencil OFF";
       syncControls();
       draw();
+    } else if (action === "autonotes") {
+      autoFillNotes();
     }
   });
 

@@ -189,6 +189,7 @@ RGB_GIVEN_CELL = "#FEF3C7"        # soft sand wash for locked clues
 RGB_SELECT = "#FDE047"            # selected cell — sponge yellow
 RGB_BOX_HL = "#A5F3FC"            # selected 3×3 wash — bubble blue
 RGB_MATCH_HL = "#BBF7D0"          # same digit as selected — soft kelp green
+RGB_NAKED_HL = "#FDE68A"          # naked single (only one legal digit)
 RGB_CONFLICT = "#FDA4AF"          # soft coral conflict wash
 RGB_LINE = "#94A3B8"              # soft sea-gray cell lines
 RGB_THICK = "#0F766E"             # deep lagoon 3×3 borders
@@ -210,6 +211,7 @@ DEFAULT_BOARD_PALETTE = {
     "select": RGB_SELECT,
     "box_hl": RGB_BOX_HL,
     "match_hl": RGB_MATCH_HL,
+    "naked_hl": RGB_NAKED_HL,
     "conflict": RGB_CONFLICT,
     "line": RGB_LINE,
     "thick": RGB_THICK,
@@ -226,7 +228,9 @@ BOARD_CANVAS = 860
 BOARD_HEADER_H = 72
 BOARD_CARD_PAD = 0          # full-bleed so the board aligns with the keyboard
 BOARD_CARD_RADIUS = 0
-BOARD_INNER_PAD = 14        # margin around grid — room for random emoji pins
+BOARD_INNER_PAD = 14        # cream under the header
+BOARD_PIN_SIDE = 72         # left/right cream — two pin columns at full size
+BOARD_PIN_BOTTOM = 42       # bottom cream — one pin row
 PIN_EMOJI_SIZE = 26
 # Circular backing is pin_size+6, pasted at (x-3, y-3). Keep badges inside the gold rim.
 PIN_BADGE_PAD = 3
@@ -361,6 +365,60 @@ SHOP_PINS = {
     "formula": {"label": "🧪 Formula Pin", "pin": "Formula", "emoji": "🧪", "cost": 2000, "theme": "ocean"},
     "glove": {"label": "🎢 Glove World Pin", "pin": "Glove World", "emoji": "🎢", "cost": 2200, "theme": "ocean"},
     "moon": {"label": "🌙 Rock Bottom Pin", "pin": "Rock Bottom", "emoji": "🌙", "cost": 2500, "theme": "ocean"},
+    "sun": {"label": "☀️ Sun Pin", "pin": "Sun", "emoji": "☀️", "cost": 45, "theme": "ocean"},
+    "cloud": {"label": "☁️ Cloud Pin", "pin": "Cloud", "emoji": "☁️", "cost": 75, "theme": "ocean"},
+    "drop": {"label": "💧 Drop Pin", "pin": "Drop", "emoji": "💧", "cost": 100, "theme": "ocean"},
+    "rain": {"label": "🌧️ Rain Pin", "pin": "Rain", "emoji": "🌧️", "cost": 140, "theme": "ocean"},
+    "fire": {"label": "🔥 Fire Pin", "pin": "Fire", "emoji": "🔥", "cost": 175, "theme": "ocean"},
+    "snow": {"label": "❄️ Snow Pin", "pin": "Snow", "emoji": "❄️", "cost": 245, "theme": "ocean"},
+    "bolt": {"label": "⚡ Bolt Pin", "pin": "Bolt", "emoji": "⚡", "cost": 355, "theme": "ocean"},
+    "pizza": {"label": "🍕 Pizza Pin", "pin": "Pizza", "emoji": "🍕", "cost": 2700, "theme": "ocean"},
+    "cookie": {"label": "🍪 Cookie Pin", "pin": "Cookie", "emoji": "🍪", "cost": 2850, "theme": "ocean"},
+    "shrimp": {"label": "🦐 Shrimp Pin", "pin": "Shrimp", "emoji": "🦐", "cost": 3000, "theme": "ocean"},
+    "balloon": {"label": "🎈 Balloon Pin", "pin": "Balloon", "emoji": "🎈", "cost": 3150, "theme": "ocean"},
+    "oyster": {"label": "🦪 Oyster Pin", "pin": "Oyster", "emoji": "🦪", "cost": 3300, "theme": "ocean"},
+    "party": {"label": "🎉 Party Pin", "pin": "Party", "emoji": "🎉", "cost": 3450, "theme": "ocean"},
+    "dolphin": {"label": "🐬 Dolphin Pin", "pin": "Dolphin", "emoji": "🐬", "cost": 3600, "theme": "ocean"},
+    "house": {"label": "🏠 Home Pin", "pin": "Home", "emoji": "🏠", "cost": 3750, "theme": "ocean"},
+    "turtle": {"label": "🐢 Turtle Pin", "pin": "Turtle", "emoji": "🐢", "cost": 3900, "theme": "ocean"},
+    "rock": {"label": "🪨 Boulder Pin", "pin": "Boulder", "emoji": "🪨", "cost": 4100, "theme": "ocean"},
+    "seal": {"label": "🦭 Seal Pin", "pin": "Seal", "emoji": "🦭", "cost": 4300, "theme": "ocean"},
+    "flower": {"label": "🌺 Flower Pin", "pin": "Flower", "emoji": "🌺", "cost": 4500, "theme": "ocean"},
+    "cheese": {"label": "🧀 Stinky Cheese Pin", "pin": "Cheese", "emoji": "🧀", "cost": 4700, "theme": "ocean"},
+    "mushroom": {"label": "🍄 Mushroom Pin", "pin": "Mushroom", "emoji": "🍄", "cost": 4900, "theme": "ocean"},
+    "suds": {"label": "🧼 Suds Pin", "pin": "Suds", "emoji": "🧼", "cost": 5100, "theme": "ocean"},
+    "hat": {"label": "🎩 Fancy Pin", "pin": "Fancy", "emoji": "🎩", "cost": 5300, "theme": "ocean"},
+    "popcorn": {"label": "🍿 Movie Night Pin", "pin": "Movie", "emoji": "🍿", "cost": 5500, "theme": "ocean"},
+    "sparkle": {"label": "🌟 Sparkle Pin", "pin": "Sparkle", "emoji": "🌟", "cost": 5700, "theme": "ocean"},
+    "tv": {"label": "📺 Boating TV Pin", "pin": "TV", "emoji": "📺", "cost": 5800, "theme": "ocean"},
+    "sock": {"label": "🧦 Missing Sock Pin", "pin": "Sock", "emoji": "🧦", "cost": 5900, "theme": "ocean"},
+    "gift": {"label": "🎁 Gift Pin", "pin": "Gift", "emoji": "🎁", "cost": 5950, "theme": "ocean"},
+    "lifering": {"label": "🛟 Life Ring Pin", "pin": "Life Ring", "emoji": "🛟", "cost": 55, "theme": "ocean"},
+    "school": {"label": "🐟 School Fish Pin", "pin": "School", "emoji": "🐟", "cost": 85, "theme": "ocean"},
+    "puffer": {"label": "🐡 Puffer Pin", "pin": "Puffer", "emoji": "🐡", "cost": 115, "theme": "ocean"},
+    "canoe": {"label": "🛶 Canoe Pin", "pin": "Canoe", "emoji": "🛶", "cost": 190, "theme": "ocean"},
+    "speedboat": {"label": "🚤 Speedboat Pin", "pin": "Speedboat", "emoji": "🚤", "cost": 280, "theme": "ocean"},
+    "ship": {"label": "🚢 Ship Pin", "pin": "Ship", "emoji": "🚢", "cost": 365, "theme": "ocean"},
+    "map": {"label": "🗺️ Treasure Map Pin", "pin": "Map", "emoji": "🗺️", "cost": 480, "theme": "ocean"},
+    "puzzle": {"label": "🧩 Puzzle Pin", "pin": "Puzzle", "emoji": "🧩", "cost": 1020, "theme": "ocean"},
+    "otter": {"label": "🦦 Otter Pin", "pin": "Otter", "emoji": "🦦", "cost": 1180, "theme": "ocean"},
+    "flamingo": {"label": "🦩 Flamingo Pin", "pin": "Flamingo", "emoji": "🦩", "cost": 1320, "theme": "ocean"},
+    "butterfly": {"label": "🦋 Butterfly Pin", "pin": "Butterfly", "emoji": "🦋", "cost": 1480, "theme": "ocean"},
+    "compass": {"label": "🧭 Compass Pin", "pin": "Compass", "emoji": "🧭", "cost": 1620, "theme": "ocean"},
+    "guitar": {"label": "🎸 Guitar Pin", "pin": "Guitar", "emoji": "🎸", "cost": 1780, "theme": "ocean"},
+    "drums": {"label": "🥁 Drum Pin", "pin": "Drum", "emoji": "🥁", "cost": 1920, "theme": "ocean"},
+    "sax": {"label": "🎷 Sax Pin", "pin": "Sax", "emoji": "🎷", "cost": 2080, "theme": "ocean"},
+    "cake": {"label": "🎂 Cake Pin", "pin": "Cake", "emoji": "🎂", "cost": 2180, "theme": "ocean"},
+    "cupcake": {"label": "🧁 Cupcake Pin", "pin": "Cupcake", "emoji": "🧁", "cost": 2320, "theme": "ocean"},
+    "candy": {"label": "🍭 Lollipop Pin", "pin": "Lollipop", "emoji": "🍭", "cost": 2420, "theme": "ocean"},
+    "honey": {"label": "🍯 Honey Pin", "pin": "Honey", "emoji": "🍯", "cost": 2580, "theme": "ocean"},
+    "coffee": {"label": "☕ Coffee Pin", "pin": "Coffee", "emoji": "☕", "cost": 2680, "theme": "ocean"},
+    "art": {"label": "🎨 Art Pin", "pin": "Art", "emoji": "🎨", "cost": 2780, "theme": "ocean"},
+    "camera": {"label": "📷 Camera Pin", "pin": "Camera", "emoji": "📷", "cost": 2920, "theme": "ocean"},
+    "dice": {"label": "🎲 Dice Pin", "pin": "Dice", "emoji": "🎲", "cost": 3220, "theme": "ocean"},
+    "kite": {"label": "🪁 Kite Pin", "pin": "Kite", "emoji": "🪁", "cost": 3520, "theme": "ocean"},
+    "wood": {"label": "🪵 Driftwood Pin", "pin": "Driftwood", "emoji": "🪵", "cost": 3980, "theme": "ocean"},
+    "teddy": {"label": "🧸 Teddy Pin", "pin": "Teddy", "emoji": "🧸", "cost": 4750, "theme": "ocean"},
     # Crew tribute pins (ids/labels aligned with matching SHOP_TITLES)
     "pin_striker": {"label": "🦹 Dark Striker Pin", "pin": "Striker", "emoji": "🦹", "cost": 250, "theme": "crew"},
     "pin_shadow": {"label": "👀 Behind You Pin", "pin": "Behind You", "emoji": "👀", "cost": 380, "theme": "crew"},
@@ -375,25 +433,60 @@ SHOP_PINS = {
     # Endgame chase stickers — priced well above titles so pins stay the long grind
     "lagoon": {"label": "🏖️ Goo Lagoon Pin", "pin": "Lagoon", "emoji": "🏖️", "cost": 6000, "theme": "ocean"},
     "bikini": {"label": "👙 Bikini Bottom Pin", "pin": "Bikini", "emoji": "👙", "cost": 7000, "theme": "ocean"},
+    "karate_pin": {"label": "🥊 Karate Island Pin", "pin": "Karate", "emoji": "🥊", "cost": 7500, "theme": "ocean"},
     "dive": {"label": "🤿 Deep Dive Pin", "pin": "Dive", "emoji": "🤿", "cost": 8000, "theme": "ocean"},
+    "trident_pin": {"label": "🔱 Trident Pin", "pin": "Trident", "emoji": "🔱", "cost": 8500, "theme": "ocean"},
     "lobster": {"label": "🦞 Lobster Pin", "pin": "Lobster", "emoji": "🦞", "cost": 9000, "theme": "ocean"},
     "taco": {"label": "🌮 Taco Tuesday Pin", "pin": "Taco", "emoji": "🌮", "cost": 10000, "theme": "ocean"},
+    "acres_pin": {"label": "🎪 Tentacle Acres Pin", "pin": "Acres", "emoji": "🎪", "cost": 10500, "theme": "ocean"},
     "donut": {"label": "🍩 Donut Pin", "pin": "Donut", "emoji": "🍩", "cost": 11500, "theme": "ocean"},
+    "ice_pin": {"label": "🧊 Ice King Pin", "pin": "Ice King", "emoji": "🧊", "cost": 12000, "theme": "ocean"},
     "texas": {"label": "🌵 Texas Pin", "pin": "Texas", "emoji": "🌵", "cost": 13000, "theme": "ocean"},
     "cowboy": {"label": "🤠 Cowboy Pin", "pin": "Cowboy", "emoji": "🤠", "cost": 14500, "theme": "ocean"},
+    "squilliam_pin": {"label": "🎭 Squilliam Pin", "pin": "Squilliam", "emoji": "🎭", "cost": 15000, "theme": "ocean"},
     "piano": {"label": "🎹 Piano Pin", "pin": "Piano", "emoji": "🎹", "cost": 16000, "theme": "ocean"},
     "karaoke": {"label": "🎤 Sweet Victory Pin", "pin": "Victory", "emoji": "🎤", "cost": 18000, "theme": "ocean"},
     "robot": {"label": "🤖 SpongeBot Pin", "pin": "SpongeBot", "emoji": "🤖", "cost": 20000, "theme": "ocean"},
+    "scroll_pin": {"label": "📜 Formula Scroll Pin", "pin": "Scroll", "emoji": "📜", "cost": 21000, "theme": "ocean"},
     "gar": {"label": "🦖 SpongeGar Pin", "pin": "SpongeGar", "emoji": "🦖", "cost": 22000, "theme": "ocean"},
     "doodle": {"label": "✏️ DoodleBob Pin", "pin": "DoodleBob", "emoji": "✏️", "cost": 24500, "theme": "ocean"},
     "conch": {"label": "🧿 Magic Conch Pin", "pin": "Conch", "emoji": "🧿", "cost": 27000, "theme": "ocean"},
     "atlantis_pin": {"label": "🏰 Atlantis Pin", "pin": "Atlantis", "emoji": "🏰", "cost": 30000, "theme": "ocean"},
     "volcano": {"label": "🌋 Volcano Pin", "pin": "Volcano", "emoji": "🌋", "cost": 33000, "theme": "ocean"},
     "space": {"label": "🚀 Space Cadet Pin", "pin": "Space", "emoji": "🚀", "cost": 36000, "theme": "ocean"},
+    "galaxy_pin": {"label": "🌌 Galaxy Pin", "pin": "Galaxy", "emoji": "🌌", "cost": 38000, "theme": "ocean"},
     "ufo": {"label": "🛸 UFO Pin", "pin": "UFO", "emoji": "🛸", "cost": 40000, "theme": "ocean"},
     "rainbow": {"label": "🌈 Rainbow Road Pin", "pin": "Rainbow", "emoji": "🌈", "cost": 45000, "theme": "ocean"},
+    "comet_pin": {"label": "💫 Tidal Overlord Pin", "pin": "Overlord", "emoji": "💫", "cost": 48000, "theme": "ocean"},
     "eternal_pin": {"label": "♾️ Eternal Pin", "pin": "Eternal", "emoji": "♾️", "cost": 50000, "theme": "ocean"},
+    "wand": {"label": "🪄 Magic Wand Pin", "pin": "Wand", "emoji": "🪄", "cost": 55000, "theme": "ocean"},
+    "ring": {"label": "💍 Neptune's Ring Pin", "pin": "Ring", "emoji": "💍", "cost": 60000, "theme": "ocean"},
+    "trophy": {"label": "🏆 Arena Trophy Pin", "pin": "Trophy", "emoji": "🏆", "cost": 65000, "theme": "ocean"},
+    "genie": {"label": "🧞 Lamp Genie Pin", "pin": "Genie", "emoji": "🧞", "cost": 72000, "theme": "ocean"},
+    "dragon": {"label": "🐉 Sea Dragon Pin", "pin": "Dragon", "emoji": "🐉", "cost": 80000, "theme": "ocean"},
+    "wizard": {"label": "🧙 Sea Wizard Pin", "pin": "Wizard", "emoji": "🧙", "cost": 88000, "theme": "ocean"},
+    "disco": {"label": "🪩 Disco Pin", "pin": "Disco", "emoji": "🪩", "cost": 96000, "theme": "ocean"},
+    "fireworks": {"label": "🎆 Fireworks Pin", "pin": "Fireworks", "emoji": "🎆", "cost": 105000, "theme": "ocean"},
+    "planet": {"label": "🪐 Planet Pin", "pin": "Planet", "emoji": "🪐", "cost": 115000, "theme": "ocean"},
+    "enchanted": {"label": "✨ Enchanted Pin", "pin": "Enchanted", "emoji": "✨", "cost": 125000, "theme": "ocean"},
 }
+
+# Pins added in the Oct 2026 catalog expansion — shop "New" filter + 🆕 badge.
+NEW_PIN_IDS = frozenset({
+    "sun", "cloud", "drop", "rain", "fire", "snow", "bolt",
+    "pizza", "cookie", "shrimp", "balloon", "oyster", "party",
+    "dolphin", "house", "turtle", "rock", "seal", "flower",
+    "cheese", "mushroom", "suds", "hat", "popcorn", "sparkle",
+    "tv", "sock", "gift",
+    "lifering", "school", "puffer", "canoe", "speedboat", "ship",
+    "map", "puzzle", "otter", "flamingo", "butterfly", "compass",
+    "guitar", "drums", "sax", "cake", "cupcake", "candy", "honey",
+    "coffee", "art", "camera", "dice", "kite", "wood", "teddy",
+    "karate_pin", "trident_pin", "acres_pin", "ice_pin", "squilliam_pin",
+    "scroll_pin", "galaxy_pin", "comet_pin",
+    "wand", "ring", "trophy", "genie", "dragon", "wizard",
+    "disco", "fireworks", "planet", "enchanted",
+})
 
 SHOP_BOOST_KEYS = frozenset({
     "xp_boost",
@@ -409,6 +502,7 @@ SHOP_BUNDLE_DISCOUNT = SHOP_PIN_DEAL_MULT  # backward-compatible alias
 
 SHOP_PAGE_SIZE = 11
 SHOP_BOOST_MAX_QTY = 10
+SHOP_BOOST_DEFAULT_QTY = 10
 
 ACHIEVEMENTS = {
     # Speed
@@ -417,24 +511,33 @@ ACHIEVEMENTS = {
     # Streaks
     "streak_master": {"label": "🔥 Streak Master", "desc": "Reach a 7-day daily streak"},
     "kelp_calendar": {"label": "📅 Kelp Calendar", "desc": "Reach a 30-day daily streak"},
+    "kelp_season": {"label": "🗓️ Kelp Season", "desc": "Reach a 60-day daily streak"},
     # Economy
     "sponge_boss": {"label": "🧽 Sponge Boss", "desc": "Earn 1,000 Sponges lifetime"},
     "krusty_whale": {"label": "🐋 Krusty Whale", "desc": "Earn 5,000 Sponges lifetime"},
+    "krusty_vault": {"label": "🏦 Krusty Vault", "desc": "Earn 25,000 Sponges lifetime"},
     # Wins
     "first_order": {"label": "🍔 First Order Up", "desc": "Win your first puzzle"},
     "puzzle_master": {"label": "🧩 Puzzle Master", "desc": "Complete 25 total wins"},
     "century_fry": {"label": "🍍 Century Fry Cook", "desc": "Complete 100 total wins"},
+    "fry_empire": {"label": "🍔 Fry Empire", "desc": "Complete 250 total wins"},
+    "grill_god": {"label": "🔥 Grill God", "desc": "Complete 500 total wins"},
     # Daily
     "daily_diver": {"label": "🌊 Daily Diver", "desc": "Clear 10 Daily Sudokus"},
     "pineapple_regular": {"label": "🍍 Pineapple Regular", "desc": "Clear 50 Daily Sudokus"},
+    "daily_devotee": {"label": "🍍 Daily Devotee", "desc": "Clear 100 Daily Sudokus"},
     # Challenge
     "chum_challenger": {"label": "⚔️ Chum Challenger", "desc": "Win 5 speedrun challenges"},
     "arena_ace": {"label": "🏆 Arena Ace", "desc": "Win 25 speedrun challenges"},
+    "arena_king": {"label": "👑 Arena King", "desc": "Win 50 speedrun challenges"},
     # Cosmetics / career
     "pin_hoarder": {"label": "🎨 Pin Hoarder", "desc": "Own 8 border pins"},
     "pin_collector": {"label": "🪸 Pin Collector", "desc": "Own 16 border pins"},
     "pin_museum": {"label": "🏛️ Pin Museum", "desc": "Own 32 border pins"},
     "pin_vault": {"label": "🗄️ Pin Vault", "desc": "Own 48 border pins"},
+    "pin_gallery": {"label": "🖼️ Pin Gallery", "desc": "Own 64 border pins"},
+    "pin_legend": {"label": "🌟 Pin Legend", "desc": "Own 80 border pins"},
+    "pin_forever": {"label": "♾️ Pin Forever", "desc": "Own 100 border pins"},
     "title_tour": {"label": "👑 Title Tour", "desc": "Own 5 shop titles"},
     "title_wardrobe": {"label": "👗 Title Wardrobe", "desc": "Own 10 shop titles"},
     "title_hall": {"label": "🏅 Title Hall", "desc": "Own 20 shop titles"},
@@ -442,6 +545,8 @@ ACHIEVEMENTS = {
     "xp_reef": {"label": "🪸 XP Reef Walker", "desc": "Reach 15,000 career XP"},
     "xp_king": {"label": "👑 XP King Tide", "desc": "Reach 40,000 career XP"},
     "xp_neptune": {"label": "🔱 XP Neptune", "desc": "Reach 100,000 career XP"},
+    "xp_heir": {"label": "👑 XP Neptune's Heir", "desc": "Reach 320,000 career XP"},
+    "xp_atlantis": {"label": "🏰 XP Atlantis", "desc": "Reach 1,550,000 career XP"},
 }
 
 # ISO-week quests (UTC). Progress resets each Monday 00:00 UTC.
@@ -452,7 +557,7 @@ WEEKLY_QUESTS: tuple[dict, ...] = (
         "emoji": "🍍",
         "counter": "weekly_dailies",
         "need": 3,
-        "reward": 75,
+        "reward": 300,
     },
     {
         "id": "board_five",
@@ -460,7 +565,7 @@ WEEKLY_QUESTS: tuple[dict, ...] = (
         "emoji": "🧩",
         "counter": "weekly_boards",
         "need": 5,
-        "reward": 60,
+        "reward": 250,
     },
     {
         "id": "race_win",
@@ -468,13 +573,17 @@ WEEKLY_QUESTS: tuple[dict, ...] = (
         "emoji": "⚔️",
         "counter": "weekly_challenges",
         "need": 1,
-        "reward": 100,
+        "reward": 400,
     },
 )
+WEEKLY_FULL_BONUS = 250
+WEEKLY_FULL_CLAIM_ID = "full_set"
+# Season (UTC month) payouts for the top 3 by month XP.
+SEASON_PRIZES = (3000, 1500, 750)
 
 # Career XP thresholds (XP mirrors sponge grants on win).
 # Curve stays friendly early, then accelerates so endgame is a long grind.
-# Rough wins at ~100 XP/avg: L2≈3 · L5≈28 · L8≈140 · L10≈400 · L12≈1000 · L15≈3200
+# Rough wins at ~100 XP/avg: L2≈3 · L5≈28 · L8≈140 · L10≈400 · L12≈1000 · L15≈3200 · L20≈15500 · L25≈65000
 LEVEL_RANKS = [
     (0, 1, "🍔 Fry Cook"),
     (250, 2, "🍔 Senior Fry Cook"),
@@ -491,6 +600,16 @@ LEVEL_RANKS = [
     (150000, 13, "👻 Dutchman's Crew"),
     (220000, 14, "🍍 Pineapple Immortal"),
     (320000, 15, "👑 Neptune's Heir"),
+    (450000, 16, "🧂 Salty Spitoon Prospect"),
+    (620000, 17, "🧂 Salty Spitoon Regular"),
+    (850000, 18, "🐙 Tentacle's Rival"),
+    (1150000, 19, "🪄 Magic Conch Oracle"),
+    (1550000, 20, "🔱 Atlantis Champion"),
+    (2100000, 21, "🧊 Freeze Frame Champ"),
+    (2800000, 22, "🎸 Sweet Victory"),
+    (3700000, 23, "🫧 Bubble Bowl Legend"),
+    (4900000, 24, "🌌 Galaxy Wanderer"),
+    (6500000, 25, "🌊 Lord of the Deep"),
 ]
 
 
@@ -534,7 +653,7 @@ def format_rank_compact(xp: int) -> str:
     nxt = next_level_threshold(xp_n)
     if nxt is None:
         return f"L{lvl} {title}"
-    return f"L{lvl} {title} · {xp_n}/{nxt}"
+    return f"L{lvl} {title} · {xp_n}/{nxt} XP"
 
 
 def weekly_progress_compact(stats: dict) -> str:
@@ -620,11 +739,6 @@ def build_stats_embed(
     longest_n = positive_solve_seconds(stats.get("longest_time"))
     best = format_time(best_n) if best_n is not None else "—"
     longest = format_time(longest_n) if longest_n is not None else "—"
-    title = (
-        SHOP_TITLES[stats["title"]]["label"]
-        if stats.get("title") in SHOP_TITLES
-        else "Civilian"
-    )
     streak = int(stats.get("streak", 0) or 0)
     best_streak = int(stats.get("best_streak", 0) or 0)
     wins = int(stats.get("wins", 0) or 0)
@@ -634,6 +748,8 @@ def build_stats_embed(
     race_n = chall + losses
     race_rate = f" ({100 * chall / race_n:.0f}%)" if race_n else ""
     shields = int(stats.get("streak_shields") or 0)
+    daily_wins = int(stats.get("daily_wins", 0) or 0)
+    spent = int(stats.get("sponges_spent", 0) or 0)
     badge_ids = [b for b in (stats.get("badges") or []) if b in ACHIEVEMENTS]
     have = len(badge_ids)
     total = len(ACHIEVEMENTS)
@@ -657,16 +773,13 @@ def build_stats_embed(
     embed = paper_embed(f"{SPONGE} {display_name(stats)}")
     embed.description = (
         f"**{format_rank_compact(stats.get('xp', 0))}**\n"
-        f"{title} · {STAR} **{streak}** (best {best_streak})\n"
-        f"{format_sponges(stats.get('coins', 0))} · "
-        f"spent {int(stats.get('sponges_spent', 0) or 0)} · "
-        f"{format_xp(stats.get('xp', 0))}\n"
+        f"Streak {STAR} **{streak}** (best {best_streak})\n"
+        f"{format_sponges(stats.get('coins', 0))} · spent **{spent}**\n"
         f"**{wins}** solved · races **{chall}**W–**{losses}**L{race_rate} · "
         f"best **{best}** · longest **{longest}**\n"
-        f"PBs · {format_best_times_by_difficulty(stats)}\n"
-        f"{PINEAPPLE} **{int(stats.get('daily_wins', 0) or 0)}** · "
-        f"{JELLY} **{int(stats.get('challenge_wins', 0) or 0)}** · "
-        f"**{games_n}** boards · 🛡️ **{shields}**\n"
+        f"PBs (VE–X) · {format_best_times_by_difficulty(stats)}\n"
+        f"{PINEAPPLE} dailies **{daily_wins}** · **{games_n}** boards · "
+        f"🛡️ **{shields}** shields\n"
         f"📆 Season **{month_label}** · **{format_xp(month_xp)}** · `/leaderboard`\n"
         f"📅 Weekly {weekly_line} · `/weekly`\n"
         f"Last 7 · {history_line}\n"
@@ -708,6 +821,8 @@ def evaluate_user_achievements(stats: dict) -> list[str]:
         unlocked.add("streak_master")
     if streak >= 30:
         unlocked.add("kelp_calendar")
+    if streak >= 60:
+        unlocked.add("kelp_season")
 
     try:
         coins = int(stats.get("coins") or 0) + int(stats.get("sponges_spent") or 0)
@@ -717,6 +832,8 @@ def evaluate_user_achievements(stats: dict) -> list[str]:
         unlocked.add("sponge_boss")
     if coins >= 5000:
         unlocked.add("krusty_whale")
+    if coins >= 25000:
+        unlocked.add("krusty_vault")
 
     try:
         wins = max(int(stats.get("wins") or 0), int(stats.get("activity_wins") or 0))
@@ -728,6 +845,10 @@ def evaluate_user_achievements(stats: dict) -> list[str]:
         unlocked.add("puzzle_master")
     if wins >= 100:
         unlocked.add("century_fry")
+    if wins >= 250:
+        unlocked.add("fry_empire")
+    if wins >= 500:
+        unlocked.add("grill_god")
 
     try:
         daily_wins = int(stats.get("daily_wins") or 0)
@@ -737,6 +858,8 @@ def evaluate_user_achievements(stats: dict) -> list[str]:
         unlocked.add("daily_diver")
     if daily_wins >= 50:
         unlocked.add("pineapple_regular")
+    if daily_wins >= 100:
+        unlocked.add("daily_devotee")
 
     try:
         chall = int(stats.get("challenge_wins") or 0)
@@ -746,6 +869,8 @@ def evaluate_user_achievements(stats: dict) -> list[str]:
         unlocked.add("chum_challenger")
     if chall >= 25:
         unlocked.add("arena_ace")
+    if chall >= 50:
+        unlocked.add("arena_king")
 
     pin_count = len(owned_pin_ids(stats))
     if pin_count >= 8:
@@ -756,6 +881,12 @@ def evaluate_user_achievements(stats: dict) -> list[str]:
         unlocked.add("pin_museum")
     if pin_count >= 48:
         unlocked.add("pin_vault")
+    if pin_count >= 64:
+        unlocked.add("pin_gallery")
+    if pin_count >= 80:
+        unlocked.add("pin_legend")
+    if pin_count >= 100:
+        unlocked.add("pin_forever")
 
     try:
         title_count = len(list(stats.get("owned_titles") or []))
@@ -780,6 +911,10 @@ def evaluate_user_achievements(stats: dict) -> list[str]:
         unlocked.add("xp_king")
     if xp_n >= 100000:
         unlocked.add("xp_neptune")
+    if xp_n >= 320000:
+        unlocked.add("xp_heir")
+    if xp_n >= 1550000:
+        unlocked.add("xp_atlantis")
 
     # Stable catalog order for known badges; keep any legacy ids at the end
     ordered = [b for b in ACHIEVEMENTS if b in unlocked]
@@ -952,6 +1087,7 @@ async def restore_leaderboard_from_mongo(bot: "SudokuBot") -> None:
         claims = await match_store.list_daily_completions()
     except Exception as exc:  # noqa: BLE001
         print(f"list_daily_completions failed: {exc}")
+        await persist_season_payout(bot)
         return
 
     changed = False
@@ -1076,6 +1212,8 @@ async def restore_leaderboard_from_mongo(bot: "SudokuBot") -> None:
             print(f"Dropped quit-inflated losses for {dropped} player(s)")
     except Exception as exc:  # noqa: BLE001
         print(f"quit-loss inflation fix failed: {exc}")
+
+    await persist_season_payout(bot)
 
 
 STREAK_FAIR_RESET_FLAG = "streak_calendar_fair_reset_v1"
@@ -2046,10 +2184,143 @@ def ensure_monthly_progress(stats: dict, *, day: str | None = None) -> str:
     """Reset month_xp when the UTC month rolls over. Returns current month key."""
     key = utc_month_key(day)
     if stats.get("month_key") != key:
+        stats["last_month_key"] = stats.get("month_key")
+        stats["last_month_xp"] = int(stats.get("month_xp") or 0)
         stats["month_key"] = key
         stats["month_xp"] = 0
     stats.setdefault("month_xp", 0)
+    stats.setdefault("last_month_key", None)
+    stats.setdefault("last_month_xp", 0)
     return key
+
+
+def previous_utc_month_key(day: str | None = None) -> str:
+    key = utc_month_key(day)
+    year = int(key[:4])
+    month = int(key[5:7])
+    if month == 1:
+        return f"{year - 1}-12"
+    return f"{year}-{month - 1:02d}"
+
+
+def season_xp_for_month(stats: dict, month_key: str) -> int:
+    if str(stats.get("month_key") or "") == month_key:
+        return int(stats.get("month_xp") or 0)
+    if str(stats.get("last_month_key") or "") == month_key:
+        return int(stats.get("last_month_xp") or 0)
+    return 0
+
+
+def apply_season_payout(data: dict) -> list[dict]:
+    """Pay top 3 of the previous UTC month once. No-op if already paid or too late."""
+    current = utc_month_key()
+    prev = previous_utc_month_key()
+    if current == prev or data.get("season_last_paid") == prev:
+        return []
+    today = datetime.fromisoformat(utc_today()).date()
+    has_stashed = False
+    best: dict[int, tuple[int, int, dict]] = {}
+    for guild_key, gstats in list(data.items()):
+        if not isinstance(gstats, dict) or not str(guild_key).isdigit():
+            continue
+        for uid, stats in iter_players(gstats):
+            if not isinstance(stats, dict):
+                continue
+            if str(stats.get("last_month_key") or "") == prev:
+                has_stashed = True
+            xp = season_xp_for_month(stats, prev)
+            if xp <= 0:
+                continue
+            try:
+                uid_i = int(uid)
+            except (TypeError, ValueError):
+                continue
+            prior = best.get(uid_i)
+            if prior is None or xp > prior[0]:
+                best[uid_i] = (xp, int(guild_key), stats)
+    # First deploy mid-month: don't crown a partial leftover field.
+    if not has_stashed and today.day > 2:
+        data["season_last_paid"] = prev
+        return []
+    data["season_last_paid"] = prev
+    ranked = sorted(best.items(), key=lambda item: (-item[1][0], item[0]))[:3]
+    results: list[dict] = []
+    for place, (uid, (xp, guild_id, stats)) in enumerate(ranked, start=1):
+        coins = int(SEASON_PRIZES[place - 1])
+        stats["coins"] = int(stats.get("coins") or 0) + coins
+        results.append(
+            {
+                "place": place,
+                "user_id": uid,
+                "guild_id": guild_id,
+                "name": stats.get("name") or str(uid),
+                "xp": xp,
+                "coins": coins,
+            }
+        )
+    return results
+
+
+async def persist_season_payout(bot: "SudokuBot") -> None:
+    """Pay last month's top 3 after restore, then stash names for the on_ready announce."""
+    prior = bot.data.get("season_last_paid")
+    try:
+        payouts = apply_season_payout(bot.data)
+    except Exception as exc:  # noqa: BLE001
+        print(f"season payout failed: {exc}")
+        bot._season_payout_pending = []
+        return
+    bot._season_payout_pending = payouts
+    if bot.data.get("season_last_paid") == prior:
+        return
+    try:
+        save_data(bot.data)
+        await match_store.save_leaderboard(bot.data)
+    except Exception as exc:  # noqa: BLE001
+        print(f"season payout save failed: {exc}")
+    if payouts:
+        print(f"Season payout applied for {len(payouts)} player(s).")
+    else:
+        print(f"Season {bot.data.get('season_last_paid')} marked paid (no podium).")
+
+
+async def announce_season_payout(bot: "SudokuBot") -> None:
+    payouts = list(getattr(bot, "_season_payout_pending", None) or [])
+    bot._season_payout_pending = []
+    if not payouts:
+        return
+    prev = previous_utc_month_key()
+    try:
+        month_label = datetime.fromisoformat(f"{prev}-01").strftime("%B %Y")
+    except ValueError:
+        month_label = prev
+    medals = ["🥇", "🥈", "🥉"]
+    lines = [
+        f"Last month's season closed — **{month_label}**.",
+        "Top 3 by season XP split the Krusty vault:",
+        "",
+    ]
+    for row in payouts:
+        place = int(row.get("place") or 0)
+        medal = medals[place - 1] if 1 <= place <= 3 else f"`{place}.`"
+        uid = int(row["user_id"])
+        lines.append(
+            f"{medal} <@{uid}> — **{format_xp(row.get('xp') or 0)}** · "
+            f"{format_sponges(int(row.get('coins') or 0), signed=True)}"
+        )
+    embed = paper_embed("📆 Season payout", description="\n".join(lines))
+    channel_id = DAILY_ANNOUNCE_CHANNEL_ID or ACTIVITY_WATCH_CHANNEL_ID
+    if not channel_id:
+        print("season payout: no announce channel")
+        return
+    try:
+        channel = await resolve_channel(bot, channel_id)
+        if channel is None:
+            print(f"season payout: channel {channel_id} missing")
+            return
+        await channel.send(embed=embed)
+    except Exception as exc:  # noqa: BLE001
+        print(f"season payout announce failed: {exc}")
 
 
 def note_monthly_xp(stats: dict, xp: int, *, day: str | None = None) -> None:
@@ -2109,7 +2380,18 @@ def claim_ready_weekly_quests(stats: dict) -> list[str]:
         notes.append(
             f"{quest['emoji']} {quest['label']} · {format_sponges(reward, signed=True)}"
         )
-    stats["weekly_claimed"] = [q["id"] for q in WEEKLY_QUESTS if q["id"] in claimed]
+    quest_ids = {str(q["id"]) for q in WEEKLY_QUESTS}
+    if quest_ids <= claimed and WEEKLY_FULL_CLAIM_ID not in claimed:
+        stats["coins"] = int(stats.get("coins") or 0) + WEEKLY_FULL_BONUS
+        claimed.add(WEEKLY_FULL_CLAIM_ID)
+        notes.append(
+            f"🎁 All 3 weekly goals · {format_sponges(WEEKLY_FULL_BONUS, signed=True)}"
+        )
+    stats["weekly_claimed"] = [
+        qid
+        for qid in [*(str(q["id"]) for q in WEEKLY_QUESTS), WEEKLY_FULL_CLAIM_ID]
+        if qid in claimed
+    ]
     return notes
 
 
@@ -2133,6 +2415,14 @@ def weekly_progress_lines(stats: dict) -> list[str]:
         lines.append(
             f"{mark} {quest['emoji']} **{quest['label']}** · "
             f"{shown}/{need} · {format_sponges(int(quest['reward']))}"
+        )
+    if WEEKLY_FULL_CLAIM_ID in claimed:
+        lines.append(
+            f"✅ 🎁 **All 3 goals** · {format_sponges(WEEKLY_FULL_BONUS)}"
+        )
+    else:
+        lines.append(
+            f"⬜ 🎁 **All 3 goals** · {format_sponges(WEEKLY_FULL_BONUS)} bonus"
         )
     lines.append(f"_Week `{week}` (resets Monday UTC)_")
     return lines
@@ -2290,6 +2580,59 @@ def toggle_pencil(board: list[list[dict]], r: int, c: int, digit: int) -> list[i
         marks.sort()
     board[r][c]["pencil_marks"] = marks
     return marks
+
+
+def cell_candidates(board: list[list[dict]], r: int, c: int) -> list[int]:
+    """Legal digits for an empty cell from the current grid (row/col/box)."""
+    if cell_value(board, r, c):
+        return []
+    used = [False] * 10
+    for i in range(9):
+        v = cell_value(board, r, i)
+        if 1 <= v <= 9:
+            used[v] = True
+        v = cell_value(board, i, c)
+        if 1 <= v <= 9:
+            used[v] = True
+    br, bc = (r // 3) * 3, (c // 3) * 3
+    for i in range(3):
+        for j in range(3):
+            v = cell_value(board, br + i, bc + j)
+            if 1 <= v <= 9:
+                used[v] = True
+    return [d for d in range(1, 10) if not used[d]]
+
+
+def naked_single_cells(board: list[list[dict]]) -> set[tuple[int, int]]:
+    """Empty cells with exactly one legal digit."""
+    out: set[tuple[int, int]] = set()
+    if not board:
+        return out
+    for r in range(9):
+        for c in range(9):
+            if cell_value(board, r, c):
+                continue
+            if len(cell_candidates(board, r, c)) == 1:
+                out.add((r, c))
+    return out
+
+
+def fill_auto_notes(board: list[list[dict]]) -> int:
+    """Write remaining candidates into every empty cell. Returns cells changed."""
+    n = 0
+    for r in range(9):
+        for c in range(9):
+            if cell_value(board, r, c):
+                continue
+            cands = cell_candidates(board, r, c)
+            prev = sorted(
+                int(m) for m in (board[r][c].get("pencil_marks") or []) if str(m).isdigit()
+            )
+            if prev == cands:
+                continue
+            board[r][c]["pencil_marks"] = cands
+            n += 1
+    return n
 
 
 def unique_box_pencil_keys(board: list[list[dict]]) -> set[tuple[int, int, int]]:
@@ -3046,10 +3389,48 @@ def _centered_bottom_pin_y(canvas: int, origin_y: int, grid: int, pin_size: int)
 
 def _pin_column_fits(n: int, y0: int, y1: int, pin_size: int) -> bool:
     """True when ``n`` badges can sit on a column without overlapping."""
+    if n <= 0:
+        return True
     if n <= 1:
         return y1 >= y0
     pitch = (y1 - y0) / (n - 1)
     return pitch >= pin_size + PIN_BADGE_PAD * 2 + 2
+
+
+def _split_pin_counts(need: int, n_groups: int) -> list[int]:
+    if n_groups <= 0:
+        return []
+    base, rem = divmod(max(0, need), n_groups)
+    return [base + (1 if i < rem else 0) for i in range(n_groups)]
+
+
+def _side_pin_columns(
+    *,
+    side: str,
+    canvas: int,
+    origin_x: int,
+    grid: int,
+    pin_size: int,
+    n_cols: int,
+) -> list[int]:
+    """Centered x origins for ``n_cols`` pin columns in the left or right cream."""
+    if n_cols <= 0:
+        return []
+    gap = pin_size + PIN_BADGE_PAD * 2 + 2
+    block = pin_size + (n_cols - 1) * gap
+    if side == "left":
+        x0 = max(_pin_min_x(), (origin_x - block) // 2)
+        xs = [x0 + i * gap for i in range(n_cols)]
+        if xs[-1] + pin_size + PIN_BADGE_PAD > origin_x - 2:
+            return []
+        return xs
+    margin0 = origin_x + grid
+    room = canvas - margin0
+    x0 = margin0 + max(PIN_EDGE_INSET, (room - block) // 2)
+    xs = [x0 + i * gap for i in range(n_cols)]
+    if xs[0] < margin0 + 2 or xs[-1] > _pin_max_x(canvas, pin_size):
+        return []
+    return xs
 
 
 def _border_pin_slots(
@@ -3116,26 +3497,14 @@ def _pack_pins_to_fit(
     grid: int,
     pin_size: int,
 ) -> list[tuple[int, int]]:
-    """Evenly space ``need`` pins, centered in the left/right (and bottom) cream margins."""
+    """Evenly space ``need`` pins in the cream margins (1–2 cols/side + bottom)."""
     if need <= 0:
         return []
-    left_x = _centered_left_pin_x(origin_x, pin_size)
-    right_x = _centered_right_pin_x(canvas, origin_x, grid, pin_size)
     y0 = max(origin_y, header_h + 2)
     y1 = max(y0, origin_y + grid - pin_size)
     bottom_y = _centered_bottom_pin_y(canvas, origin_y, grid, pin_size)
-    if bottom_y is not None:
-        left_n = (need + 2) // 3
-        right_n = (need - left_n + 1) // 2
-        bottom_n = need - left_n - right_n
-    else:
-        left_n = (need + 1) // 2
-        right_n = need - left_n
-        bottom_n = 0
-    if not _pin_column_fits(max(left_n, right_n), y0, y1, pin_size):
-        return []
-    if bottom_n and not _pin_column_fits(bottom_n, origin_x, origin_x + grid - pin_size, pin_size):
-        return []
+    bx0 = origin_x
+    bx1 = origin_x + grid - pin_size
 
     def _along(n: int, x0: int, ya: int, x1: int, yb: int) -> list[tuple[int, int]]:
         if n <= 0:
@@ -3148,13 +3517,44 @@ def _pack_pins_to_fit(
             out.append((int(x0 + (x1 - x0) * t), int(ya + (yb - ya) * t)))
         return out
 
-    slots = _along(left_n, left_x, y0, left_x, y1)
-    slots.extend(_along(right_n, right_x, y0, right_x, y1))
-    if bottom_n and bottom_y is not None:
-        slots.extend(
-            _along(bottom_n, origin_x, bottom_y, origin_x + grid - pin_size, bottom_y)
+    # Prefer one column per side; add a second column only when the catalog needs it.
+    for n_cols in (1, 2):
+        left_xs = _side_pin_columns(
+            side="left",
+            canvas=canvas,
+            origin_x=origin_x,
+            grid=grid,
+            pin_size=pin_size,
+            n_cols=n_cols,
         )
-    return slots
+        right_xs = _side_pin_columns(
+            side="right",
+            canvas=canvas,
+            origin_x=origin_x,
+            grid=grid,
+            pin_size=pin_size,
+            n_cols=n_cols,
+        )
+        if not left_xs or not right_xs:
+            continue
+        col_xs = [*left_xs, *right_xs]
+        use_bottom = bottom_y is not None
+        n_groups = len(col_xs) + (1 if use_bottom else 0)
+        counts = _split_pin_counts(need, n_groups)
+        col_counts = counts[: len(col_xs)]
+        bottom_n = counts[-1] if use_bottom else 0
+        if not _pin_column_fits(max(col_counts, default=0), y0, y1, pin_size):
+            continue
+        if bottom_n and not _pin_column_fits(bottom_n, bx0, bx1, pin_size):
+            continue
+        slots: list[tuple[int, int]] = []
+        for x, n in zip(col_xs, col_counts):
+            slots.extend(_along(n, x, y0, x, y1))
+        if bottom_n and bottom_y is not None:
+            slots.extend(_along(bottom_n, bx0, bottom_y, bx1, bottom_y))
+        if len(slots) >= need:
+            return slots[:need]
+    return []
 
 
 def paste_owned_emoji_pins(
@@ -3368,10 +3768,10 @@ def render_board(
     else:
         draw.rectangle(card, fill=pal["card"], outline=pal["card_border"], width=3)
 
-    grid_left = pad + inner
+    grid_left = pad + BOARD_PIN_SIDE
     grid_top = header_h + inner
-    grid_right = canvas - pad - inner
-    grid_bottom = card_bottom - inner
+    grid_right = canvas - pad - BOARD_PIN_SIDE
+    grid_bottom = card_bottom - BOARD_PIN_BOTTOM
     grid_w = grid_right - grid_left
     grid_h = grid_bottom - grid_top
     cell = min(grid_w, grid_h) // 9
@@ -3384,6 +3784,7 @@ def render_board(
     pencil_font = board_font(max(13, cell * 15 // 48), bold=False)
     pencil_unique_font = board_font(max(15, cell * 17 // 48), bold=True)
     unique_notes = unique_box_pencil_keys(board)
+    naked_cells = naked_single_cells(board)
 
     box_cells: set[tuple[int, int]] = set()
     if highlight_box is not None:
@@ -3411,6 +3812,8 @@ def render_board(
                 fill = pal["select"]
             elif is_match:
                 fill = pal.get("match_hl") or pal["box_hl"]
+            elif (r, c) in naked_cells:
+                fill = pal.get("naked_hl") or pal["box_hl"]
             elif (r, c) in box_cells:
                 fill = pal["box_hl"]
             elif given[r][c]:
@@ -4770,21 +5173,23 @@ async def settle_challenge_match(
         reward_notes: list[str] = []
         winner_payouts: list[int] = []
 
-        async def _award_solved_winner(wid: int) -> None:
-            winner_elapsed = 0.0
-            winner_solved = False
+        awarded_solve_ids: set[int] = set()
+
+        async def _award_solved_board(wid: int, *, as_winner: bool) -> int:
+            elapsed = 0.0
+            solved = False
             for _, p in entries:
                 if int(p.get("user_id") or 0) != int(wid):
                     continue
                 if p.get("elapsed") is not None:
-                    winner_elapsed = float(p["elapsed"])
-                    winner_solved = True
+                    elapsed = float(p["elapsed"])
+                    solved = True
                 elif p.get("finished_time") is not None:
-                    winner_elapsed = max(0.0, float(p["finished_time"]) - start)
-                    winner_solved = True
+                    elapsed = max(0.0, float(p["finished_time"]) - start)
+                    solved = True
                 break
-            if not winner_solved:
-                return
+            if not solved:
+                return 0
             winner_user = guild.get_member(wid) if guild else None
             if winner_user is None:
                 try:
@@ -4798,7 +5203,7 @@ async def settle_challenge_match(
                         pname = p.get("name") or p.get("username")
                         break
                 print(
-                    f"settle_challenge_match: fetch_user failed for winner {wid}; "
+                    f"settle_challenge_match: fetch_user failed for {'winner' if as_winner else 'finisher'} {wid}; "
                     "awarding via stub user"
                 )
                 winner_user = _stub_discord_user(wid, pname)
@@ -4806,10 +5211,10 @@ async def settle_challenge_match(
             gstats_w = guild_stats(bot.data, guild_id)
             wstats = user_stats(gstats_w, wid)
             wstats["name"] = wname or wstats.get("name") or "Unknown"
-            winner_game = {
+            finisher_game = {
                 "mode": "challenge",
-                "started_at": time.time() - winner_elapsed,
-                "elapsed": int(winner_elapsed),
+                "started_at": time.time() - elapsed,
+                "elapsed": int(elapsed),
                 "difficulty": match.get("difficulty"),
                 "hints_used": 0,
             }
@@ -4817,19 +5222,24 @@ async def settle_challenge_match(
                 bot.data,
                 guild_id,
                 winner_user,
-                winner_game,
-                challenge_winner=True,
+                finisher_game,
+                challenge_winner=as_winner,
             )
-            winner_payouts.append(int(outcome.coins))
+            coins = int(outcome.coins)
+            if as_winner:
+                winner_payouts.append(coins)
+                wstats["challenge_wins"] = int(wstats.get("challenge_wins", 0) or 0) + 1
+            tag = "winner" if as_winner else "solved board"
             reward_notes.append(
-                f"{format_sponges(int(outcome.coins), signed=True)} · "
+                f"{tag} — {format_sponges(coins, signed=True)} · "
                 f"+{int(outcome.xp)} XP → <@{wid}>"
             )
-            wstats["challenge_wins"] = int(wstats.get("challenge_wins", 0) or 0) + 1
+            awarded_solve_ids.add(int(wid))
+            return coins
 
         if detail == "dead heat" and tied_user_ids:
             for wid in sorted(tied_user_ids):
-                await _award_solved_winner(wid)
+                await _award_solved_board(wid, as_winner=True)
             save_data(bot.data)
         elif winner_id is not None:
             winner_elapsed = 0.0
@@ -4871,25 +5281,7 @@ async def settle_challenge_match(
             wstats["name"] = wname or wstats.get("name") or "Unknown"
             if winner_solved:
                 # Real solve — full challenge win payout + best_time.
-                winner_game = {
-                    "mode": "challenge",
-                    "started_at": time.time() - winner_elapsed,
-                    "elapsed": int(winner_elapsed),
-                    "difficulty": match.get("difficulty"),
-                    "hints_used": 0,
-                }
-                outcome = finish_win(
-                    bot.data,
-                    guild_id,
-                    winner_user,
-                    winner_game,
-                    challenge_winner=True,
-                )
-                winner_payouts.append(int(outcome.coins))
-                reward_notes.append(
-                    f"{format_sponges(int(outcome.coins), signed=True)} · "
-                    f"+{int(outcome.xp)} XP → <@{winner_id}>"
-                )
+                await _award_solved_board(winner_id, as_winner=True)
             else:
                 # Last standing after opponents forfeit — no board solve.
                 # Sponges + challenge_wins only; never best_time / full XP win.
@@ -4900,7 +5292,20 @@ async def settle_challenge_match(
                     f"Last standing — {format_sponges(coins, signed=True)} "
                     f"(no solve time) → <@{winner_id}>"
                 )
-            wstats["challenge_wins"] = int(wstats.get("challenge_wins", 0) or 0) + 1
+                wstats["challenge_wins"] = int(wstats.get("challenge_wins", 0) or 0) + 1
+            save_data(bot.data)
+
+        # Finishers who didn't win still get a regular solved-board payout.
+        for _, player in entries:
+            uid = int(player.get("user_id") or 0)
+            if uid in awarded_solve_ids or uid in tied_user_ids:
+                continue
+            if player.get("forfeit"):
+                continue
+            if player.get("finished_time") is None and player.get("elapsed") is None:
+                continue
+            await _award_solved_board(uid, as_winner=False)
+        if awarded_solve_ids:
             save_data(bot.data)
 
         consolation_coins = challenge_consolation_coins(
@@ -4918,7 +5323,9 @@ async def settle_challenge_match(
             loser_stats = user_stats(gstats, uid)
             # Only finished (or still-standing) challenge losses count as L.
             loser_stats["losses"] += 1
-            loser_stats["games"] += 1
+            # finish_win already counted the board; don't double-count games.
+            if uid not in awarded_solve_ids:
+                loser_stats["games"] += 1
             # Challenge loss does not wipe the calendar daily streak.
             loser_stats["coins"] += consolation_coins
         save_data(bot.data)
@@ -5034,7 +5441,8 @@ async def settle_challenge_match(
         consolation_coins = int(announce_payload.get("consolation_coins") or 0)
         if consolation_finishers and consolation_coins:
             ranked_lines.append(
-                f"Other finishers: {format_sponges(consolation_coins, signed=True)} "
+                f"Other finishers: solved board + "
+                f"{format_sponges(consolation_coins, signed=True)} "
                 f"consolation each (⅓ of winner)"
             )
         if detail in ("fastest finish", "dead heat"):
@@ -8200,7 +8608,7 @@ class SudokuView(discord.ui.View):
     def _add_fixed_nav(self, game: dict, stage: str) -> None:
         """
         Row 3 — nav strip:
-          Back | Notes | Quit
+          Back | Notes | Auto | Quit
         """
         back = discord.ui.Button(
             label="  Back  ",
@@ -8222,6 +8630,17 @@ class SudokuView(discord.ui.View):
         )
         pencil.callback = self.on_toggle_pencil
         self.add_item(pencil)
+
+        is_race = normalize_game_mode(game.get("mode")) == "challenge"
+        fill_notes = discord.ui.Button(
+            label="  Auto  ",
+            style=discord.ButtonStyle.secondary,
+            row=3,
+            disabled=is_race,
+            custom_id=self._cid("nav:autonotes"),
+        )
+        fill_notes.callback = self.on_fill_notes
+        self.add_item(fill_notes)
 
         quit_btn = discord.ui.Button(
             label="  Quit  ",
@@ -8452,6 +8871,25 @@ class SudokuView(discord.ui.View):
     async def on_toggle_pencil(self, interaction: discord.Interaction) -> None:
         game = games[self.game_key]
         game["pencil_mode"] = not game.get("pencil_mode", False)
+        await self.refresh(interaction)
+
+    async def on_fill_notes(self, interaction: discord.Interaction) -> None:
+        game = games.get(self.game_key)
+        if not game:
+            await interaction.response.send_message("This game has ended.", ephemeral=True)
+            return
+        if normalize_game_mode(game.get("mode")) == "challenge":
+            try:
+                await interaction.response.send_message(
+                    "Auto notes are off in races — fill them yourself.",
+                    ephemeral=True,
+                )
+            except discord.HTTPException:
+                pass
+            return
+        changed = fill_auto_notes(game["board"])
+        if changed:
+            game["pencil_mode"] = True
         await self.refresh(interaction)
 
     async def on_digit(self, interaction: discord.Interaction, digit: int) -> None:
@@ -9037,6 +9475,8 @@ def shop_item_status_text(stats: dict, item: dict) -> str:
     owned = shop_item_owned(stats, item)
     if item["kind"] == "pin":
         if not owned:
+            if item["id"] in NEW_PIN_IDS:
+                return "🆕 New"
             return "🔒 Locked"
         if item["id"] in hidden_pin_ids(stats):
             return "🙈 Off board"
@@ -9061,10 +9501,12 @@ def shop_filter_label(kind: str, filt: str) -> str:
         return "My board"
     return {
         "all": "All",
+        "new": "New",
         "afford": "Can buy",
         "owned": "Owned",
         "ocean": "Ocean",
         "crew": "Crew",
+        "pricey": "Pricey",
     }.get(filt, "All")
 
 
@@ -9128,7 +9570,7 @@ def shop_boost_max_qty(stats: dict, item: dict) -> int:
 def shop_filter_catalog(
     items: list[dict], stats: dict, filt: str
 ) -> list[dict]:
-    """filt: all | afford | owned | ocean | crew"""
+    """filt: all | new | afford | owned | ocean | crew | pricey"""
     if filt == "owned":
         owned = [it for it in items if shop_item_owned(stats, it)]
         if items and items[0].get("kind") == "pin":
@@ -9145,6 +9587,18 @@ def shop_filter_catalog(
         return [it for it in items if shop_item_can_buy(stats, it)]
     if filt in ("ocean", "crew"):
         return [it for it in items if (it.get("theme") or "ocean") == filt]
+    if filt == "new":
+        fresh = [it for it in items if it.get("id") in NEW_PIN_IDS]
+        fresh.sort(
+            key=lambda it: (-int(it.get("full_cost") or it.get("cost") or 0), it["label"])
+        )
+        return fresh
+    if filt == "pricey":
+        pricey = list(items)
+        pricey.sort(
+            key=lambda it: (-int(it.get("full_cost") or it.get("cost") or 0), it["label"])
+        )
+        return pricey
     return list(items)
 
 
@@ -9212,7 +9666,14 @@ def shop_page_embed(
             status = "⚡ Can Buy"
         price = shop_item_price_text(it)
         sale_mark = " 🔥" if it.get("on_sale") else ""
-        lines.append(f"{mark}**{it['label']}**{sale_mark} — `{price}` ({status})")
+        new_mark = (
+            " 🆕"
+            if it.get("kind") == "pin" and it["id"] in NEW_PIN_IDS
+            else ""
+        )
+        lines.append(
+            f"{mark}**{it['label']}**{sale_mark}{new_mark} — `{price}` ({status})"
+        )
 
     if not lines:
         lines.append("_No items match this filter._")
@@ -9771,12 +10232,16 @@ class KrustyShopView(discord.ui.View):
         self.owner_id = owner_id
         self.guild_id = guild_id
         self.kind = kind if kind in ("boosts", "titles", "pins") else "boosts"
-        self.filt = filt if filt in ("all", "afford", "owned", "ocean", "crew") else "all"
-        if self.kind != "pins" and self.filt in ("ocean", "crew"):
+        self.filt = (
+            filt
+            if filt in ("all", "new", "afford", "owned", "ocean", "crew", "pricey")
+            else "all"
+        )
+        if self.kind != "pins" and self.filt in ("ocean", "crew", "new", "pricey"):
             self.filt = "all"
         self.page = max(0, page)
         self.selected_id = selected_id
-        self.qty = 1
+        self.qty = SHOP_BOOST_DEFAULT_QTY if self.kind == "boosts" else 1
         self.message: discord.Message | None = None
         self._ensure_selection()
         self._rebuild()
@@ -9856,6 +10321,9 @@ class KrustyShopView(discord.ui.View):
     def _is_my_board(self) -> bool:
         return self.kind == "pins" and self.filt == "owned"
 
+    def _reset_qty(self) -> None:
+        self.qty = SHOP_BOOST_DEFAULT_QTY if self.kind == "boosts" else 1
+
     def shop_attachments(self) -> list[discord.File]:
         """Live frame preview while picking which pins sit on the board."""
         if not self._is_my_board():
@@ -9917,6 +10385,8 @@ class KrustyShopView(discord.ui.View):
         if self.kind == "pins":
             filter_defs = (
                 ("all", "All"),
+                ("new", "🆕 New"),
+                ("pricey", "💎 Pricey"),
                 ("afford", "Can buy"),
                 ("owned", "My board"),
                 ("ocean", "Ocean"),
@@ -10135,11 +10605,11 @@ class KrustyShopView(discord.ui.View):
         values = (interaction.data or {}).get("values") or []
         if values:
             self.filt = str(values[0])
-            if self.kind != "pins" and self.filt in ("ocean", "crew"):
+            if self.kind != "pins" and self.filt in ("ocean", "crew", "new", "pricey"):
                 self.filt = "all"
         self.page = 0
         self.selected_id = None
-        self.qty = 1
+        self._reset_qty()
         self._ensure_selection()
         await self._refresh(interaction)
 
@@ -10195,14 +10665,14 @@ class KrustyShopView(discord.ui.View):
             try:
                 self.qty = max(1, int(values[0]))
             except (TypeError, ValueError):
-                self.qty = 1
+                self._reset_qty()
         await self._refresh(interaction)
 
     async def on_boosts(self, interaction: discord.Interaction) -> None:
         self.kind = "boosts"
         self.page = 0
         self.selected_id = None
-        self.qty = 1
+        self._reset_qty()
         self._ensure_selection()
         await self._refresh(interaction)
 
@@ -10210,7 +10680,7 @@ class KrustyShopView(discord.ui.View):
         self.kind = "titles"
         self.page = 0
         self.selected_id = None
-        self.qty = 1
+        self._reset_qty()
         self._ensure_selection()
         await self._refresh(interaction)
 
@@ -10218,7 +10688,7 @@ class KrustyShopView(discord.ui.View):
         self.kind = "pins"
         self.page = 0
         self.selected_id = None
-        self.qty = 1
+        self._reset_qty()
         self._ensure_selection()
         await self._refresh(interaction)
 
@@ -10251,7 +10721,7 @@ class KrustyShopView(discord.ui.View):
             return
         if values:
             self.selected_id = values[0]
-            self.qty = 1
+            self._reset_qty()
         await self._refresh(interaction)
 
     async def _apply_board_pins(self, shown_ids: list[str]) -> None:
@@ -11462,6 +11932,7 @@ async def on_ready():
     await restore_challenge_watch_views(bot)
     await restore_activity_play_watch_views(bot)
     bot.add_view(ChallengeLaunchActivityView())
+    await announce_season_payout(bot)
     print("on_ready complete — slash commands should respond now")
 
 
@@ -13706,7 +14177,12 @@ async def leaderboard_cmd(
         except ValueError:
             month_label = month_key
         title = f"📆 Season · {month_label}"
-        blurb = "XP earned this UTC month (resets on the 1st). Career XP stays forever."
+        blurb = (
+            "XP earned this UTC month (resets on the 1st). "
+            f"Top 3 split {format_sponges(SEASON_PRIZES[0])} / "
+            f"{format_sponges(SEASON_PRIZES[1])} / "
+            f"{format_sponges(SEASON_PRIZES[2])}."
+        )
         fmt = lambda s: (
             f"**{format_xp(int(s.get('month_xp') or 0))}** · "
             f"career {format_xp(s.get('xp', 0))}"
