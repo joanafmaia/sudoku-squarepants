@@ -8,12 +8,11 @@ import {
   clearPencilDigitPeers,
   digitCounts,
   difficultyLabel,
+  fillLegalPencilMarks,
   filledCount,
-  fillAutoNotes,
   findConflicts,
   isSolved,
   makePuzzle,
-  nakedSingleKeys,
   setCellValue,
   togglePencil,
   uniqueBoxPencilKeys,
@@ -25,7 +24,6 @@ const LIGHT_PALETTE = {
   given: "#facc15",
   givenHl: "#fde047",
   matchHl: "#bbf7d0",
-  nakedHl: "#fde68a",
   select: "#fde047",
   boxHl: "#a5f3fc",
   conflict: "#fda4af",
@@ -64,7 +62,6 @@ const DARK_PALETTE = {
   given: "#b45309",
   givenHl: "#ca8a04",
   matchHl: "#164e63",
-  nakedHl: "#854d0e",
   select: "#d97706",
   boxHl: "#0e7490",
   conflict: "#9f1239",
@@ -103,7 +100,6 @@ const JELLYFISH_PALETTE = {
   given: "#9333ea",
   givenHl: "#a855f7",
   matchHl: "#581c87",
-  nakedHl: "#6b21a8",
   select: "#c084fc",
   boxHl: "#581c87",
   conflict: "#be123c",
@@ -142,7 +138,6 @@ const KRABS_PALETTE = {
   given: "#ea580c",
   givenHl: "#fbbf24",
   matchHl: "#075985",
-  nakedHl: "#9a3412",
   select: "#f59e0b",
   boxHl: "#0284c7",
   conflict: "#9f1239",
@@ -181,7 +176,6 @@ const ROCKBOTTOM_PALETTE = {
   given: "#4338ca",
   givenHl: "#6366f1",
   matchHl: "#1e293b",
-  nakedHl: "#1e3a5f",
   select: "#4f46e5",
   boxHl: "#1e293b",
   conflict: "#881337",
@@ -525,7 +519,7 @@ function ensureControls(shell) {
       <button type="button" data-action="undo" id="ctrl-undo" title="Undo move">↩ Undo</button>
       <button type="button" data-action="clear" class="ctrl-clear" title="Clear selected cell">Clear</button>
       <button type="button" data-action="pencil" id="ctrl-pencil" title="Lock notes mode · or hold a number for a note">Lock notes</button>
-      <button type="button" data-action="autonotes" id="ctrl-autonotes" title="Fill every empty cell with remaining candidates">📝 Auto</button>
+      <button type="button" data-action="puffnotes" id="ctrl-puffnotes" hidden title="Mrs. Puff fills notes after 10 hints">📒 Notes</button>
     </div>
     <div class="ctrl-actions ctrl-actions-meta" id="ctrl-meta" role="group" aria-label="Game Setup Actions">
       <button type="button" data-action="quit" id="ctrl-quit" class="btn-danger">🚪 Quit</button>
@@ -564,15 +558,16 @@ function ensureControls(shell) {
   if (pencil && pencil.textContent.trim() === "Notes") {
     pencil.textContent = "Lock notes";
   }
-  const editRow = bar.querySelector(".ctrl-actions-edit");
-  if (editRow && !bar.querySelector("#ctrl-autonotes")) {
-    const autoBtn = document.createElement("button");
-    autoBtn.type = "button";
-    autoBtn.id = "ctrl-autonotes";
-    autoBtn.dataset.action = "autonotes";
-    autoBtn.title = "Fill every empty cell with remaining candidates";
-    autoBtn.textContent = "📝 Auto";
-    editRow.appendChild(autoBtn);
+  bar.querySelector("#ctrl-autonotes")?.remove();
+  if (pencil && !bar.querySelector("#ctrl-puffnotes")) {
+    const puff = document.createElement("button");
+    puff.type = "button";
+    puff.id = "ctrl-puffnotes";
+    puff.dataset.action = "puffnotes";
+    puff.hidden = true;
+    puff.title = "Mrs. Puff fills notes after 10 hints";
+    puff.textContent = "📒 Notes";
+    pencil.insertAdjacentElement("afterend", puff);
   }
   bar.querySelectorAll(".ctrl-digit").forEach((btn) => {
     const n = btn.dataset.digit;
@@ -663,15 +658,17 @@ export function startThcokuGame(canvas, options = {}) {
     garyWisdomBonus: 0,
     hintSpongeCost: Number(options.hintSpongeCost) || 15,
     pocketSponges: Number(options.pocketSponges) || 0,
-    puffNotesCharges: Number(options.puffNotesCharges) || 0,
     hintInFlight: false,
-    autoNotesInFlight: false,
     serverHints: false,
     spectatorMode: Boolean(options.spectatorMode),
     spectatorName: "",
     spectatorTargetId: null,
     noHints: false,
     watchers: [],
+    puffNotesCharges: Number(options.cosmetics?.puffNotesCharges) || 0,
+    puffNotesHintGate: Number(options.cosmetics?.puffNotesHintGate) || 10,
+    puffNotesUsed: false,
+    puffNotesInFlight: false,
   };
 
   const diffBtn = controls.querySelector("#ctrl-diff");
@@ -913,6 +910,7 @@ export function startThcokuGame(canvas, options = {}) {
       hints_gary_used: state.hintsGaryUsed,
       gary_wisdom_bonus: state.garyWisdomBonus,
       no_hints: Boolean(state.noHints),
+      puff_notes_used: Boolean(state.puffNotesUsed),
       // Original open time (metadata only) — elapsed is active screen time.
       started_at: (state.sessionStartedAt || Date.now()) / 1000,
       timer_active: Boolean(state.runStartedAt) && !state.won && !state.spectatorMode,
@@ -948,6 +946,16 @@ export function startThcokuGame(canvas, options = {}) {
     }
     if (snap.hint_sponge_cost != null) {
       state.hintSpongeCost = Number(snap.hint_sponge_cost) || 15;
+    }
+    if (snap.puff_notes_used != null) {
+      state.puffNotesUsed = Boolean(snap.puff_notes_used);
+    }
+    if (snap.puff_notes_hint_gate != null) {
+      const n = Number(snap.puff_notes_hint_gate);
+      if (Number.isFinite(n) && n > 0) state.puffNotesHintGate = n;
+    }
+    if (snap.puff_notes_charges != null) {
+      state.puffNotesCharges = Number(snap.puff_notes_charges) || 0;
     }
     if (snap.pocket != null) {
       state.pocketSponges = Number(snap.pocket) || 0;
@@ -1038,6 +1046,14 @@ export function startThcokuGame(canvas, options = {}) {
     cosmetics.title = next?.title || null;
     cosmetics.pins = Array.isArray(next?.pins) ? next.pins.slice() : [];
     if (next?.seed != null) cosmetics.seed = Number(next.seed) || cosmetics.seed;
+    if (next?.puffNotesCharges != null) {
+      state.puffNotesCharges = Number(next.puffNotesCharges) || 0;
+    }
+    if (next?.puffNotesHintGate != null) {
+      const n = Number(next.puffNotesHintGate);
+      if (Number.isFinite(n) && n > 0) state.puffNotesHintGate = n;
+    }
+    syncPuffNotesButton();
     draw();
   }
 
@@ -1077,6 +1093,16 @@ export function startThcokuGame(canvas, options = {}) {
     if (meta.hint_sponge_cost != null) {
       state.hintSpongeCost = Number(meta.hint_sponge_cost) || 15;
     }
+    if (meta.puff_notes_used != null) {
+      state.puffNotesUsed = Boolean(meta.puff_notes_used);
+    }
+    if (meta.puff_notes_charges != null) {
+      state.puffNotesCharges = Number(meta.puff_notes_charges) || 0;
+    }
+    if (meta.puff_notes_hint_gate != null) {
+      const n = Number(meta.puff_notes_hint_gate);
+      if (Number.isFinite(n) && n > 0) state.puffNotesHintGate = n;
+    }
     syncHintButton();
   }
 
@@ -1109,6 +1135,39 @@ export function startThcokuGame(canvas, options = {}) {
         hintBtn.style.opacity = "0.65";
       }
     }
+    syncPuffNotesButton();
+  }
+
+  function syncPuffNotesButton() {
+    const btn = controls.querySelector("#ctrl-puffnotes");
+    const edit = controls.querySelector(".ctrl-actions-edit");
+    if (!btn) return;
+    const show =
+      !state.spectatorMode &&
+      !state.noHints &&
+      (state.puffNotesCharges > 0 || state.puffNotesUsed);
+    btn.hidden = !show;
+    if (edit) edit.classList.toggle("has-puff", show);
+    if (!show) return;
+    const need = state.puffNotesHintGate || 10;
+    if (state.puffNotesUsed) {
+      btn.disabled = true;
+      btn.textContent = "📒 Done";
+      btn.title = "Mrs. Puff already filled notes this puzzle";
+      btn.style.opacity = "0.55";
+      return;
+    }
+    if (state.hintsUsed < need) {
+      btn.disabled = true;
+      btn.textContent = `📒 ${state.hintsUsed}/${need}`;
+      btn.title = `Mrs. Puff's Notes unlock after ${need} hints this puzzle`;
+      btn.style.opacity = "0.55";
+      return;
+    }
+    btn.disabled = Boolean(state.puffNotesInFlight);
+    btn.textContent = "📒 Notes";
+    btn.title = "Fill every empty cell with legal pencil notes";
+    btn.style.opacity = state.puffNotesInFlight ? "0.55" : "";
   }
 
   function syncControls() {
@@ -1147,23 +1206,6 @@ export function startThcokuGame(canvas, options = {}) {
     if (pencilBtn) {
       pencilBtn.hidden = false;
       pencilBtn.style.display = "";
-    }
-    const autoBtn = controls.querySelector("#ctrl-autonotes");
-    const editRow = controls.querySelector(".ctrl-actions-edit");
-    const isChallenge = state.sessionKind === "challenge";
-    if (editRow) editRow.classList.toggle("is-challenge", isChallenge);
-    if (autoBtn) {
-      autoBtn.hidden = isChallenge;
-      autoBtn.style.display = isChallenge ? "none" : "";
-      const charges = Math.max(0, state.puffNotesCharges | 0);
-      autoBtn.disabled = isChallenge || state.autoNotesInFlight;
-      autoBtn.textContent = charges > 0 ? `📝 Auto · ${charges}` : "📝 Auto";
-      autoBtn.style.opacity = isChallenge || state.autoNotesInFlight || charges <= 0 ? "0.55" : "";
-      autoBtn.title = isChallenge
-        ? "Auto notes are off in races"
-        : charges > 0
-          ? `Fill remaining candidates · ${charges} Mrs. Puff charge${charges === 1 ? "" : "s"} left`
-          : "Buy Mrs. Puff's Notes in /shop — 1 charge fills the board";
     }
     if (meta) {
       meta.classList.remove("is-solo");
@@ -1297,6 +1339,7 @@ export function startThcokuGame(canvas, options = {}) {
       state.hintsUsed = 0;
       state.hintsGaryUsed = 0;
       state.garyWisdomBonus = 0;
+      state.puffNotesUsed = false;
       state.hintsMax = hintsMaxForDifficulty(state.difficulty);
       state.noHints = false;
       state.serverHints = false;
@@ -1336,69 +1379,6 @@ export function startThcokuGame(canvas, options = {}) {
       }))
     );
     state.status = "Move undone ↩";
-    playFx("pop");
-    syncControls();
-    draw();
-    if (typeof options.onProgress === "function") {
-      try {
-        options.onProgress();
-      } catch (err) {
-        console.warn("[Thcoku] onProgress", err);
-      }
-    }
-  }
-
-  async function autoFillNotes() {
-    if (
-      state.spectatorMode
-      || state.won
-      || state.reportingWin
-      || state.autoNotesInFlight
-      || !state.board
-    ) {
-      return;
-    }
-    if (state.sessionKind === "challenge") {
-      state.status = "Auto notes are off in races";
-      draw();
-      return;
-    }
-    saveUndoState();
-    const n = fillAutoNotes(state.board);
-    if (!n) {
-      state.undoStack.pop();
-      state.status = "Notes already filled";
-      draw();
-      return;
-    }
-    if (typeof options.onAutoNotes !== "function") {
-      undo();
-      state.status = "Buy Mrs. Puff's Notes in /shop";
-      draw();
-      return;
-    }
-    state.autoNotesInFlight = true;
-    syncControls();
-    let result = null;
-    try {
-      result = await options.onAutoNotes();
-    } catch (err) {
-      console.warn("[Thcoku] onAutoNotes", err);
-    }
-    state.autoNotesInFlight = false;
-    if (!result?.ok) {
-      undo();
-      state.status = result?.message || "Buy Mrs. Puff's Notes in /shop";
-      syncControls();
-      draw();
-      return;
-    }
-    if (result.puff_notes_charges != null) {
-      state.puffNotesCharges = Math.max(0, Number(result.puff_notes_charges) || 0);
-    } else {
-      state.puffNotesCharges = Math.max(0, (state.puffNotesCharges | 0) - 1);
-    }
-    state.status = `Auto notes · ${n} cell${n === 1 ? "" : "s"}`;
     playFx("pop");
     syncControls();
     draw();
@@ -1647,6 +1627,7 @@ export function startThcokuGame(canvas, options = {}) {
     state.flashUntil = Date.now() + 300;
     state.status = `Hint applied! 💡 (${correctVal}) · ${state.hintsUsed} used`;
     playFx("hint");
+    syncHintButton();
     syncDigitPad();
     if (isSolved(state.board, state.solution)) {
       celebrateWin();
@@ -1659,6 +1640,81 @@ export function startThcokuGame(canvas, options = {}) {
       } catch (err) {
         console.warn("[Thcoku] onProgress", err);
       }
+    }
+  }
+
+  async function puffNotes() {
+    if (state.spectatorMode || state.won || state.reportingWin || !state.board) return;
+    if (state.puffNotesInFlight || state.noHints) return;
+    const need = state.puffNotesHintGate || 10;
+    if (state.puffNotesUsed) {
+      state.status = "Mrs. Puff already filled notes this puzzle.";
+      syncPuffNotesButton();
+      draw();
+      return;
+    }
+    if (state.puffNotesCharges <= 0) {
+      state.status = "Buy 📒 Mrs. Puff's Notes in /shop first.";
+      syncPuffNotesButton();
+      draw();
+      return;
+    }
+    if (state.hintsUsed < need) {
+      state.status = `Mrs. Puff's Notes unlock after ${need} hints (${state.hintsUsed}/${need}).`;
+      syncPuffNotesButton();
+      draw();
+      return;
+    }
+    if (typeof options.onPuffNotes !== "function") {
+      state.status = "Mrs. Puff's Notes unavailable offline.";
+      draw();
+      return;
+    }
+    state.puffNotesInFlight = true;
+    syncPuffNotesButton();
+    try {
+      const result = await options.onPuffNotes();
+      applyHintMeta(result);
+      if (!result?.ok) {
+        if (result?.error === "need_hints") {
+          const gate = Number(result.puff_notes_hint_gate) || need;
+          state.status = `Mrs. Puff's Notes unlock after ${gate} hints (${state.hintsUsed}/${gate}).`;
+        } else if (result?.error === "already_used") {
+          state.status = "Mrs. Puff already filled notes this puzzle.";
+        } else if (result?.error === "no_charges") {
+          state.status = "Buy 📒 Mrs. Puff's Notes in /shop first.";
+        } else if (result?.error === "no_hints") {
+          state.status = "No notes in this race.";
+        } else {
+          state.status = "Mrs. Puff's Notes unavailable — try again.";
+        }
+        draw();
+        return;
+      }
+      saveUndoState();
+      const filled = fillLegalPencilMarks(state.board);
+      state.status =
+        filled > 0
+          ? `📒 Mrs. Puff filled notes on ${filled} cells.`
+          : "📒 Mrs. Puff — notes already complete.";
+      playFx("hint");
+      syncPuffNotesButton();
+      syncDigitPad();
+      draw();
+      if (typeof options.onProgress === "function") {
+        try {
+          options.onProgress();
+        } catch (err) {
+          console.warn("[Thcoku] onProgress", err);
+        }
+      }
+    } catch (err) {
+      console.warn("[Thcoku] onPuffNotes", err);
+      state.status = "Mrs. Puff's Notes failed — check connection.";
+      draw();
+    } finally {
+      state.puffNotesInFlight = false;
+      syncPuffNotesButton();
     }
   }
 
@@ -1935,7 +1991,6 @@ export function startThcokuGame(canvas, options = {}) {
 
     const conflicts = findConflicts(state.board);
     const uniqueNotes = uniqueBoxPencilKeys(state.board);
-    const nakedSingles = nakedSingleKeys(state.board);
     // Spectators: no cell selection / peer wash — keep the board readable.
     const sel = state.selected;
     const highlightSel =
@@ -1970,10 +2025,6 @@ export function startThcokuGame(canvas, options = {}) {
 
         let fill = isGiven ? RGB.given : RGB.empty;
         if (sameBox || sameLine) fill = isGiven ? RGB.givenHl : RGB.boxHl;
-        const hasNotes = (state.board[r][c]?.pencil_marks || []).length > 0;
-        if (!cellVal && hasNotes && nakedSingles.has(`${r},${c}`)) {
-          fill = RGB.nakedHl || RGB.sand;
-        }
         if (isMatch) fill = RGB.matchHl;
         if (isSel || flash) fill = RGB.select;
         if (conflict) fill = RGB.conflict;
@@ -2211,6 +2262,7 @@ export function startThcokuGame(canvas, options = {}) {
     else if (action === "reset") resetBoard();
     else if (action === "undo") undo();
     else if (action === "hint") void hint();
+    else if (action === "puffnotes") void puffNotes();
     else if (action === "quit") {
       if (state.sessionKind === "challenge") {
         const ok = window.confirm(
@@ -2237,8 +2289,6 @@ export function startThcokuGame(canvas, options = {}) {
       state.status = state.pencilMode ? "Pencil ON — Mrs. Puff mode" : "Pencil OFF";
       syncControls();
       draw();
-    } else if (action === "autonotes") {
-      void autoFillNotes();
     }
   });
 
@@ -2331,10 +2381,6 @@ export function startThcokuGame(canvas, options = {}) {
     setPocketSponges(n) {
       state.pocketSponges = Number(n) || 0;
       syncHintButton();
-    },
-    setPuffNotesCharges(n) {
-      state.puffNotesCharges = Math.max(0, Number(n) || 0);
-      syncControls();
     },
     setTheme,
     getSnapshot,

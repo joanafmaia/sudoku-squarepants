@@ -316,6 +316,8 @@ def _preserve_server_hint_progress(existing: dict | None, doc: dict) -> None:
     client_gary = int(doc.get("hints_gary_used") or 0)
     doc["hints_used"] = max(server_hints, client_hints)
     doc["hints_gary_used"] = max(server_gary, client_gary)
+    # Server-only flag — client snapshots cannot mark Puff Notes as spent.
+    doc["puff_notes_used"] = bool(existing.get("puff_notes_used"))
     # Only restore the board when the server is ahead on hint count (stale autosave
     # after a charged reveal). Equal hints_used with a emptier board is an intentional Reset.
     if server_hints > client_hints and existing.get("board") is not None:
@@ -1272,7 +1274,7 @@ def _client_activity_session(doc: dict, *, strip_solution: bool = True) -> dict:
     from bot import normalize_solution
 
     session_kind = doc.get("session_kind") or "play"
-    from bot import HINT_SPONGE_COST, hint_gary_free_remaining
+    from bot import HINT_SPONGE_COST, PUFF_NOTES_HINT_GATE, hint_gary_free_remaining
     # Frozen active seconds only — client restarts its run clock on load.
     elapsed_display = max(0, int(doc.get("elapsed") or 0))
     # Difficulty always follows the stored board (load/save call ensure first for daily).
@@ -1297,6 +1299,8 @@ def _client_activity_session(doc: dict, *, strip_solution: bool = True) -> dict:
         "gary_free_left": hint_gary_free_remaining(doc),
         "hint_sponge_cost": HINT_SPONGE_COST,
         "no_hints": bool(doc.get("no_hints")),
+        "puff_notes_used": bool(doc.get("puff_notes_used")),
+        "puff_notes_hint_gate": PUFF_NOTES_HINT_GATE,
     }
     started = float(doc.get("started_at") or 0)
     if started > 0:
@@ -1883,6 +1887,7 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
                 "hints_used": 0,
                 "hints_gary_used": 0,
                 "gary_wisdom_bonus": 0,
+                "puff_notes_used": False,
             },
         )
         return {
@@ -2147,6 +2152,7 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
             doc["gary_wisdom_bonus"] = 0
             doc["hints_used"] = 0
             doc["hints_gary_used"] = 0
+            doc["puff_notes_used"] = False
         elif session_kind == "daily" or same_puzzle:
             _preserve_server_hint_progress(existing, doc)
         try:
@@ -2347,6 +2353,7 @@ async def _load_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict
                     "hints_used": int(game.get("hints_used") or 0),
                     "hints_gary_used": int(game.get("hints_gary_used") or 0),
                     "gary_wisdom_bonus": int(game.get("gary_wisdom_bonus") or 0),
+                    "puff_notes_used": bool(game.get("puff_notes_used")),
                     "no_hints": bool(game.get("no_hints")),
                     "started_at": float(game.get("started_at") or time.time()),
                     "match_id": game.get("match_id"),
@@ -2602,53 +2609,125 @@ async def _apply_activity_hint(bot: Any, *, user: dict, body: dict) -> dict:
     }
 
 
-async def _apply_activity_autonotes(bot: Any, *, user: dict, body: dict) -> dict:
-    """Spend one Mrs. Puff's Notes charge so the client can fill candidates."""
-    uid = int(user["id"])
-    guild_id = str(body.get("guild_id") or "")
+async def _apply_activity_puff_notes(bot: Any, *, user: dict, body: dict) -> dict:
     from bot import (
+        PUFF_NOTES_HINT_GATE,
         ensure_challenge_game_for_user,
+        games,
         guild_stats,
-        PUFF_NOTES_COST,
+        match_store,
+        persist_game,
         save_data,
+        sync_challenge_board,
         try_consume_puff_notes,
         user_stats,
     )
 
-    if await ensure_challenge_game_for_user(bot, uid):
-        return {
-            "ok": False,
-            "error": "challenge",
-            "message": "Auto notes are off in races.",
-            "puff_notes_charges": 0,
-        }
+    uid = int(user["id"])
+    guild_id = await _resolve_activity_guild_id(
+        body.get("guild_id") if body.get("guild_id") is not None else "0",
+        uid,
+    )
+    gate = PUFF_NOTES_HINT_GATE
+    ch_key = await ensure_challenge_game_for_user(bot, uid)
+    game: dict | None = games.get(ch_key) if ch_key else None
+    session: dict | None = None
+    persist_hint: str | None = None
+    session_kind = "play"
+    gid_key = 0
+    charge_container: dict = {}
 
-    try:
-        gid_key = int(guild_id) if str(guild_id) not in ("", "0") else 0
-    except (TypeError, ValueError):
-        gid_key = 0
+    if ch_key and game is not None:
+        session_kind = "challenge"
+        charge_container = game
+        try:
+            gid_key = int(game.get("guild_id") or 0)
+        except (TypeError, ValueError):
+            gid_key = 0
+    else:
+        pending = await _activity_challenge_pending_response(uid)
+        if pending:
+            return pending
+        session, persist_hint = await _lookup_activity_session(bot, guild_id, uid)
+        if not session:
+            return {"ok": False, "error": "no_session"}
+        if session.get("won_at"):
+            return {"ok": False, "error": "already_won"}
+        charge_container = session
+        session_kind = session.get("session_kind") or "play"
+        try:
+            gid_key = int(session.get("guild_id") or 0)
+        except (TypeError, ValueError):
+            gid_key = 0
+
+    if gid_key == 0:
+        try:
+            gid_key = int(guild_id) if str(guild_id) not in ("", "0") else 0
+        except ValueError:
+            gid_key = 0
     if not gid_key:
-        return {
-            "ok": False,
-            "error": "no_guild",
-            "message": "Join a server to use Auto notes.",
-        }
+        return {"ok": False, "error": "no_guild", "message": "Join a server to use Mrs. Puff's Notes."}
 
     stats = user_stats(guild_stats(bot.data, gid_key), uid)
-    async with _activity_win_lock(f"autonotes:{uid}"):
+
+    def _payload(**extra):
+        return {
+            "puff_notes_hint_gate": gate,
+            "hints_used": int(charge_container.get("hints_used") or 0),
+            "puff_notes_used": bool(charge_container.get("puff_notes_used")),
+            "puff_notes_charges": int(stats.get("puff_notes_charges") or 0),
+            **extra,
+        }
+
+    if charge_container.get("no_hints"):
+        return {"ok": False, "error": "no_hints", **_payload()}
+
+    async with _activity_win_lock(persist_hint or f"hint:{uid}"):
+        if persist_hint:
+            fresh = await match_store.get_activity_session(persist_hint)
+            if fresh:
+                charge_container = fresh
+        elif ch_key and game is not None:
+            charge_container = game
+
+        if charge_container.get("puff_notes_used"):
+            return {"ok": False, "error": "already_used", **_payload()}
+
+        hints_used = int(charge_container.get("hints_used") or 0)
+        if hints_used < gate:
+            return {
+                "ok": False,
+                "error": "need_hints",
+                "message": f"Mrs. Puff's Notes unlock after {gate} hints this puzzle.",
+                **_payload(),
+            }
+
         if not try_consume_puff_notes(stats):
             return {
                 "ok": False,
                 "error": "no_charges",
-                "message": (
-                    f"Buy Mrs. Puff's Notes in /shop "
-                    f"({PUFF_NOTES_COST} sponges each)."
-                ),
-                "puff_notes_charges": 0,
+                "message": "Buy 📒 Mrs. Puff's Notes in /shop first.",
+                **_payload(),
             }
+
+        charge_container["puff_notes_used"] = True
         save_data(bot.data)
-        left = int(stats.get("puff_notes_charges") or 0)
-    return {"ok": True, "puff_notes_charges": left}
+        if ch_key and game is not None:
+            game["puff_notes_used"] = True
+            try:
+                await sync_challenge_board(game)
+            except Exception as exc:  # noqa: BLE001
+                print(f"challenge puff notes persist failed: {exc}")
+                try:
+                    await persist_game(ch_key, game)
+                except Exception:
+                    pass
+        elif persist_hint:
+            await match_store.merge_activity_session(
+                persist_hint, {"puff_notes_used": True}
+            )
+
+    return {"ok": True, **_payload(puff_notes_used=True)}
 
 
 async def _delete_activity_session(bot: Any, *, user: dict, guild_id: str) -> dict:
@@ -3224,8 +3303,8 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
             if path in ("/api/activity/hint", "/activity/hint"):
                 self._activity_hint()
                 return
-            if path in ("/api/activity/autonotes", "/activity/autonotes"):
-                self._activity_autonotes()
+            if path in ("/api/activity/puff-notes", "/activity/puff-notes"):
+                self._activity_puff_notes()
                 return
             if path in ("/api/activity/session", "/activity/session"):
                 self._activity_session_save()
@@ -3309,6 +3388,7 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 from bot import (
                     SHOP_TITLES,
                     HINT_SPONGE_COST,
+                    PUFF_NOTES_HINT_GATE,
                     equipped_title_id,
                     evaluate_user_achievements,
                     find_player_cosmetics_stats,
@@ -3349,6 +3429,7 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                         "gary_wisdom_charges": int(stats.get("gary_wisdom_charges") or 0),
                         "xp_boost_charges": int(stats.get("xp_boost_charges") or 0),
                         "puff_notes_charges": int(stats.get("puff_notes_charges") or 0),
+                        "puff_notes_hint_gate": PUFF_NOTES_HINT_GATE,
                     },
                 )
             except Exception as exc:  # noqa: BLE001
@@ -3398,7 +3479,7 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 return
             self._send_json(200, result)
 
-        def _activity_autonotes(self) -> None:
+        def _activity_puff_notes(self) -> None:
             bot = bot_getter()
             user = _discord_user_from_bearer(self.headers.get("Authorization"), bot=bot)
             if not user or not user.get("id"):
@@ -3411,11 +3492,10 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
                 return
             try:
                 result = _run_coro(
-                    bot, _apply_activity_autonotes(bot, user=user, body=body)
+                    bot, _apply_activity_puff_notes(bot, user=user, body=body)
                 )
             except Exception as exc:  # noqa: BLE001
-                print(f"activity autonotes failed: {exc}")
-                self._send_json(500, {"error": "autonotes_failed", "message": str(exc)})
+                self._send_json(500, {"error": "puff_notes_failed", "message": str(exc)})
                 return
             if not result.get("ok"):
                 self._send_json(400, result)

@@ -53,10 +53,11 @@ GARY_WISDOM_HINT_BONUS = 3
 GARY_WISDOM_GAMES_PER_PURCHASE = 2
 KRABBY_SNACK_MULT = 1.25
 GOLDEN_SPATULA_MULT = 1.50
+WEEKEND_PASS_XP_MULT = 1.10
+JELLYFISH_JAM_COINS = 80
 REWARD_BOOST_GAMES_PER_PURCHASE = 3
 HINT_SPONGE_COST = 15
-PUFF_NOTES_FILLS_PER_PURCHASE = 1
-PUFF_NOTES_COST = 50
+PUFF_NOTES_HINT_GATE = 10
 
 # Ordered list of difficulty keys (matches DIFF_KEYS in sudoku-core.js)
 DIFF_KEYS_LIST: list[str] = list(DIFFICULTY_TIERS.keys())
@@ -191,7 +192,6 @@ RGB_GIVEN_CELL = "#FEF3C7"        # soft sand wash for locked clues
 RGB_SELECT = "#FDE047"            # selected cell — sponge yellow
 RGB_BOX_HL = "#A5F3FC"            # selected 3×3 wash — bubble blue
 RGB_MATCH_HL = "#BBF7D0"          # same digit as selected — soft kelp green
-RGB_NAKED_HL = "#FDE68A"          # naked single (only one legal digit)
 RGB_CONFLICT = "#FDA4AF"          # soft coral conflict wash
 RGB_LINE = "#94A3B8"              # soft sea-gray cell lines
 RGB_THICK = "#0F766E"             # deep lagoon 3×3 borders
@@ -213,7 +213,6 @@ DEFAULT_BOARD_PALETTE = {
     "select": RGB_SELECT,
     "box_hl": RGB_BOX_HL,
     "match_hl": RGB_MATCH_HL,
-    "naked_hl": RGB_NAKED_HL,
     "conflict": RGB_CONFLICT,
     "line": RGB_LINE,
     "thick": RGB_THICK,
@@ -326,14 +325,14 @@ SHOP_PINS = {
     "xp_boost": {"label": "🔮 Puff's Crystal Ball (2× XP & Sponges — 3 games)", "pin": "Crystal Ball", "emoji": "🔮", "cost": 120},
     "streak_shield": {"label": "🛡️ Krabby Shield (missed daily days)", "pin": "Shield", "emoji": "🛡️", "cost": 150},
     "gary_wisdom": {"label": "🐌 Gary's Wisdom (+3 free hints/game ×2)", "pin": "Gary", "emoji": "🐌", "cost": 60},
-    "puff_notes": {
-        "label": "📝 Mrs. Puff's Notes (1 auto-fill)",
-        "pin": "Notes",
-        "emoji": "📝",
-        "cost": PUFF_NOTES_COST,
-    },
     "krabby_snack": {"label": "🍟 Krabby Snack (+25% Sponges — 3 wins)", "pin": "Snack", "emoji": "🍟", "cost": 80},
     "golden_spatula": {"label": "🥇 Golden Spatula (+50% XP — 3 wins)", "pin": "Spatula", "emoji": "🥇", "cost": 80},
+    "daily_double": {"label": "🎫 Daily Double (2× pineapple on next daily · 1/day)", "pin": "Daily Double", "emoji": "🎫", "cost": 90},
+    "jellyfish_jam": {"label": "🪼 Jellyfish Jam (+80 sponges if you finish a race)", "pin": "Jam", "emoji": "🪼", "cost": 90},
+    "mystery_box": {"label": "📦 Mystery Box (random unowned pin)", "pin": "Mystery", "emoji": "📦", "cost": 250},
+    "weekend_pass": {"label": "🎟️ Weekend Pass (+10% XP until Sunday UTC)", "pin": "Weekend", "emoji": "🎟️", "cost": 180},
+    "karate_yell": {"label": "📢 Karate Yell (flex the next win in chat)", "pin": "Yell", "emoji": "📢", "cost": 40},
+    "puff_notes": {"label": "📒 Mrs. Puff's Notes (fill notes after 10 hints)", "pin": "Puff Notes", "emoji": "📒", "cost": 75},
     "wave": {"label": "🌊 Wave Pin", "pin": "Wave", "emoji": "🌊", "cost": 0, "theme": "ocean"},
     # Former title emojis → buyable border pins
     "pin_jelly": {"label": "🪼 Jelly Pin", "pin": "Jelly", "emoji": "🪼", "cost": 40, "theme": "ocean"},
@@ -500,9 +499,14 @@ SHOP_BOOST_KEYS = frozenset({
     "xp_boost",
     "streak_shield",
     "gary_wisdom",
-    "puff_notes",
     "krabby_snack",
     "golden_spatula",
+    "daily_double",
+    "jellyfish_jam",
+    "mystery_box",
+    "weekend_pass",
+    "karate_yell",
+    "puff_notes",
 })
 # Daily deals (UTC midnight): one paid pin + one paid title.
 SHOP_PIN_DEAL_MULT = 0.5  # pay 50% → 50% off
@@ -1920,6 +1924,19 @@ def owned_pin_ids(stats: dict) -> list[str]:
     return out
 
 
+def grant_owned_pin(stats: dict, tid: str) -> bool:
+    """Add a catalog pin. False if unknown, a boost, or already owned."""
+    if tid not in SHOP_PINS or tid in SHOP_BOOST_KEYS:
+        return False
+    owned = owned_pin_ids(stats)
+    if tid in owned:
+        return False
+    owned.append(tid)
+    stats["owned_pins"] = owned
+    stats["owned_themes"] = owned
+    return True
+
+
 def favorite_pin_ids(stats: dict) -> list[str]:
     """Favorite pins that are still owned (stable order)."""
     owned = set(owned_pin_ids(stats))
@@ -2589,59 +2606,6 @@ def toggle_pencil(board: list[list[dict]], r: int, c: int, digit: int) -> list[i
         marks.sort()
     board[r][c]["pencil_marks"] = marks
     return marks
-
-
-def cell_candidates(board: list[list[dict]], r: int, c: int) -> list[int]:
-    """Legal digits for an empty cell from the current grid (row/col/box)."""
-    if cell_value(board, r, c):
-        return []
-    used = [False] * 10
-    for i in range(9):
-        v = cell_value(board, r, i)
-        if 1 <= v <= 9:
-            used[v] = True
-        v = cell_value(board, i, c)
-        if 1 <= v <= 9:
-            used[v] = True
-    br, bc = (r // 3) * 3, (c // 3) * 3
-    for i in range(3):
-        for j in range(3):
-            v = cell_value(board, br + i, bc + j)
-            if 1 <= v <= 9:
-                used[v] = True
-    return [d for d in range(1, 10) if not used[d]]
-
-
-def naked_single_cells(board: list[list[dict]]) -> set[tuple[int, int]]:
-    """Empty cells with exactly one legal digit."""
-    out: set[tuple[int, int]] = set()
-    if not board:
-        return out
-    for r in range(9):
-        for c in range(9):
-            if cell_value(board, r, c):
-                continue
-            if len(cell_candidates(board, r, c)) == 1:
-                out.add((r, c))
-    return out
-
-
-def fill_auto_notes(board: list[list[dict]]) -> int:
-    """Write remaining candidates into every empty cell. Returns cells changed."""
-    n = 0
-    for r in range(9):
-        for c in range(9):
-            if cell_value(board, r, c):
-                continue
-            cands = cell_candidates(board, r, c)
-            prev = sorted(
-                int(m) for m in (board[r][c].get("pencil_marks") or []) if str(m).isdigit()
-            )
-            if prev == cands:
-                continue
-            board[r][c]["pencil_marks"] = cands
-            n += 1
-    return n
 
 
 def unique_box_pencil_keys(board: list[list[dict]]) -> set[tuple[int, int, int]]:
@@ -3793,7 +3757,6 @@ def render_board(
     pencil_font = board_font(max(13, cell * 15 // 48), bold=False)
     pencil_unique_font = board_font(max(15, cell * 17 // 48), bold=True)
     unique_notes = unique_box_pencil_keys(board)
-    naked_cells = naked_single_cells(board)
 
     box_cells: set[tuple[int, int]] = set()
     if highlight_box is not None:
@@ -3821,8 +3784,6 @@ def render_board(
                 fill = pal["select"]
             elif is_match:
                 fill = pal.get("match_hl") or pal["box_hl"]
-            elif (r, c) in naked_cells and (board[r][c].get("pencil_marks") or []):
-                fill = pal.get("naked_hl") or pal["box_hl"]
             elif (r, c) in box_cells:
                 fill = pal["box_hl"]
             elif given[r][c]:
@@ -3938,15 +3899,6 @@ WIN_BANNER_LINES = (
 )
 
 
-def try_consume_puff_notes(stats: dict) -> bool:
-    """Spend one Mrs. Puff's Notes charge. True if a fill was paid for."""
-    charges = int(stats.get("puff_notes_charges") or 0)
-    if charges <= 0:
-        return False
-    stats["puff_notes_charges"] = charges - 1
-    return True
-
-
 def try_consume_gary_wisdom(stats: dict) -> int:
     """Consume one Gary's Wisdom charge; return bonus hints for this game (0 if none)."""
     charges = int(stats.get("gary_wisdom_charges") or 0)
@@ -3980,6 +3932,102 @@ def attach_gary_wisdom_to_game(stats: dict, game: dict) -> None:
     bonus = try_consume_gary_wisdom(stats)
     if bonus > 0:
         game["gary_wisdom_bonus"] = bonus
+
+
+def try_consume_daily_double(stats: dict, day: str | None = None) -> bool:
+    """One Daily Double per UTC day; extra charges wait until tomorrow."""
+    day = day or utc_today()
+    if str(stats.get("daily_double_used_on") or "") == day:
+        return False
+    charges = int(stats.get("daily_double_charges") or 0)
+    if charges <= 0:
+        return False
+    stats["daily_double_charges"] = charges - 1
+    stats["daily_double_used_on"] = day
+    return True
+
+
+def try_consume_jellyfish_jam(stats: dict) -> bool:
+    charges = int(stats.get("jellyfish_jam_charges") or 0)
+    if charges <= 0:
+        return False
+    stats["jellyfish_jam_charges"] = charges - 1
+    return True
+
+
+def try_consume_karate_yell(stats: dict) -> bool:
+    charges = int(stats.get("karate_yell_charges") or 0)
+    if charges <= 0:
+        return False
+    stats["karate_yell_charges"] = charges - 1
+    return True
+
+
+def try_consume_puff_notes(stats: dict) -> bool:
+    charges = int(stats.get("puff_notes_charges") or 0)
+    if charges <= 0:
+        return False
+    stats["puff_notes_charges"] = charges - 1
+    return True
+
+
+def weekend_pass_expires_at(now: datetime | None = None) -> datetime:
+    """Next Monday 00:00 UTC — end of this Sunday."""
+    now = now or datetime.now(timezone.utc)
+    days = (7 - now.weekday()) % 7
+    if days == 0:
+        days = 7
+    return (now + timedelta(days=days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+
+def weekend_pass_active(stats: dict, now_ts: float | None = None) -> bool:
+    until = float(stats.get("weekend_pass_until") or 0)
+    return until > (time.time() if now_ts is None else now_ts)
+
+
+def format_weekend_pass_until(stats: dict) -> str:
+    until = float(stats.get("weekend_pass_until") or 0)
+    if until <= time.time():
+        return ""
+    dt = datetime.fromtimestamp(until, tz=timezone.utc)
+    return dt.strftime("%a %d %b %H:%M UTC")
+
+
+def mystery_box_pool(stats: dict) -> list[tuple[str, dict, float]]:
+    """Unowned paid pins, weighted so cheaper stickers drop more often."""
+    owned = set(owned_pin_ids(stats))
+    pool: list[tuple[str, dict, float]] = []
+    for tid, meta in SHOP_PINS.items():
+        if tid in SHOP_BOOST_KEYS:
+            continue
+        cost = int(meta.get("cost") or 0)
+        if cost <= 0 or tid in owned:
+            continue
+        pool.append((tid, meta, 1.0 / (float(cost) ** 0.5)))
+    return pool
+
+
+def pick_mystery_pins(stats: dict, count: int) -> list[tuple[str, dict]]:
+    remaining = list(mystery_box_pool(stats))
+    picked: list[tuple[str, dict]] = []
+    n = min(max(0, int(count)), len(remaining))
+    for _ in range(n):
+        total = sum(w for _, _, w in remaining)
+        if total <= 0:
+            break
+        roll = random.random() * total
+        acc = 0.0
+        idx = len(remaining) - 1
+        for i, (_tid, _meta, weight) in enumerate(remaining):
+            acc += weight
+            if roll <= acc:
+                idx = i
+                break
+        tid, meta, _weight = remaining.pop(idx)
+        picked.append((tid, meta))
+    return picked
 
 
 def hint_gary_free_remaining(container: dict) -> int:
@@ -4063,6 +4111,11 @@ def format_win_boost_lines(
     krabby_snack_remaining: int | None = None,
     golden_spatula_used: bool = False,
     golden_spatula_remaining: int | None = None,
+    daily_double_used: bool = False,
+    daily_double_remaining: int | None = None,
+    weekend_pass_used: bool = False,
+    karate_yell_used: bool = False,
+    karate_yell_remaining: int | None = None,
 ) -> str:
     """Readable multi-line footer for active win power-ups."""
     lines: list[str] = []
@@ -4075,6 +4128,14 @@ def format_win_boost_lines(
     if golden_spatula_used:
         rem = f" · **{golden_spatula_remaining}** left" if golden_spatula_remaining is not None else ""
         lines.append(f"🥇 **Golden Spatula +50%** XP{rem}")
+    if daily_double_used:
+        rem = f" · **{daily_double_remaining}** left" if daily_double_remaining is not None else ""
+        lines.append(f"🎫 **Daily Double** 2× pineapple{rem}")
+    if weekend_pass_used:
+        lines.append("🎟️ **Weekend Pass +10%** XP")
+    if karate_yell_used:
+        rem = f" · **{karate_yell_remaining}** left" if karate_yell_remaining is not None else ""
+        lines.append(f"📢 **HIYAH!** Karate Yell{rem}")
     if not lines:
         return ""
     return "\n" + "\n".join(lines)
@@ -4090,6 +4151,11 @@ def win_reward_caption(
     krabby_snack_remaining: int | None = None,
     golden_spatula_used: bool = False,
     golden_spatula_remaining: int | None = None,
+    daily_double_used: bool = False,
+    daily_double_remaining: int | None = None,
+    weekend_pass_used: bool = False,
+    karate_yell_used: bool = False,
+    karate_yell_remaining: int | None = None,
     hints_used: int = 0,
     hints_gary_used: int = 0,
 ) -> str:
@@ -4103,6 +4169,11 @@ def win_reward_caption(
         krabby_snack_remaining=krabby_snack_remaining,
         golden_spatula_used=golden_spatula_used,
         golden_spatula_remaining=golden_spatula_remaining,
+        daily_double_used=daily_double_used,
+        daily_double_remaining=daily_double_remaining,
+        weekend_pass_used=weekend_pass_used,
+        karate_yell_used=karate_yell_used,
+        karate_yell_remaining=karate_yell_remaining,
     )
     hints_line = f"\n{format_hints_used_line(hints_used, hints_gary_used)}"
     return (
@@ -4127,6 +4198,11 @@ def build_activity_win_embed(
     krabby_snack_remaining: int | None = None,
     golden_spatula_used: bool = False,
     golden_spatula_remaining: int | None = None,
+    daily_double_used: bool = False,
+    daily_double_remaining: int | None = None,
+    weekend_pass_used: bool = False,
+    karate_yell_used: bool = False,
+    karate_yell_remaining: int | None = None,
     hints_used: int = 0,
     hints_gary_used: int = 0,
 ) -> discord.Embed:
@@ -4148,12 +4224,22 @@ def build_activity_win_embed(
         krabby_snack_remaining=krabby_snack_remaining,
         golden_spatula_used=golden_spatula_used,
         golden_spatula_remaining=golden_spatula_remaining,
+        daily_double_used=daily_double_used,
+        daily_double_remaining=daily_double_remaining,
+        weekend_pass_used=weekend_pass_used,
+        karate_yell_used=karate_yell_used,
+        karate_yell_remaining=karate_yell_remaining,
     )
     hints_line = f"\n{format_hints_used_line(hints_used, hints_gary_used)}"
 
-    embed = paper_embed(f"{badge} {label} completed!")
+    title = f"{badge} {label} completed!"
+    shout = ""
+    if karate_yell_used:
+        title = f"📢 HIYAH! {label} completed!"
+        shout = f"📢 **HIYAH!** {mention} karate-chopped this board!\n"
+    embed = paper_embed(title)
     embed.description = (
-        f"{mention} completed the {label}!\n"
+        f"{shout}{mention} completed the {label}!\n"
         f"🏆 **Rank:** {format_rank_line(total_xp)}\n"
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {streak}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
@@ -4430,6 +4516,11 @@ class WinOutcome:
     krabby_snack_remaining: int = 0
     golden_spatula_used: bool = False
     golden_spatula_remaining: int = 0
+    daily_double_used: bool = False
+    daily_double_remaining: int = 0
+    weekend_pass_used: bool = False
+    karate_yell_used: bool = False
+    karate_yell_remaining: int = 0
 
 
 def win_boost_caption_kwargs(outcome: WinOutcome) -> dict:
@@ -4444,6 +4535,15 @@ def win_boost_caption_kwargs(outcome: WinOutcome) -> dict:
         "golden_spatula_used": bool(outcome.golden_spatula_used),
         "golden_spatula_remaining": (
             int(outcome.golden_spatula_remaining) if outcome.golden_spatula_used else None
+        ),
+        "daily_double_used": bool(outcome.daily_double_used),
+        "daily_double_remaining": (
+            int(outcome.daily_double_remaining) if outcome.daily_double_used else None
+        ),
+        "weekend_pass_used": bool(outcome.weekend_pass_used),
+        "karate_yell_used": bool(outcome.karate_yell_used),
+        "karate_yell_remaining": (
+            int(outcome.karate_yell_remaining) if outcome.karate_yell_used else None
         ),
     }
 
@@ -4552,6 +4652,13 @@ def finish_win(
         difficulty=game.get("difficulty"),
         challenge_winner=challenge_winner,
     )
+    daily_double_used = False
+    if is_daily and try_consume_daily_double(
+        stats, game.get("daily_date") or utc_today()
+    ):
+        coins += int(round(DAILY_BONUS * difficulty_multiplier(game.get("difficulty"))))
+        daily_double_used = True
+    daily_double_remaining = int(stats.get("daily_double_charges") or 0)
     xp = coins  # career XP mirrors sponge grant before split boosts
 
     snack_charges = int(stats.get("krabby_snack_charges") or 0)
@@ -4575,6 +4682,13 @@ def finish_win(
         xp *= 2
         stats["xp_boost_charges"] = boost_charges - 1
     xp_boost_remaining = int(stats.get("xp_boost_charges") or 0)
+
+    weekend_pass_used = weekend_pass_active(stats)
+    if weekend_pass_used:
+        xp = int(round(xp * WEEKEND_PASS_XP_MULT))
+
+    karate_yell_used = try_consume_karate_yell(stats)
+    karate_yell_remaining = int(stats.get("karate_yell_charges") or 0)
 
     stats["coins"] += coins
     stats["xp"] = int(stats.get("xp") or 0) + xp
@@ -4642,6 +4756,11 @@ def finish_win(
         krabby_snack_remaining=krabby_snack_remaining if krabby_snack_used else None,
         golden_spatula_used=golden_spatula_used,
         golden_spatula_remaining=golden_spatula_remaining if golden_spatula_used else None,
+        daily_double_used=daily_double_used,
+        daily_double_remaining=daily_double_remaining if daily_double_used else None,
+        weekend_pass_used=weekend_pass_used,
+        karate_yell_used=karate_yell_used,
+        karate_yell_remaining=karate_yell_remaining if karate_yell_used else None,
     )
 
     weekly_line = ""
@@ -4651,9 +4770,14 @@ def finish_win(
     hints_line = f"\n{format_hints_used_line(*hints_from_game(game))}"
 
     # Mentions must live in description/content — Discord does not parse <@id> in embed titles.
-    embed = paper_embed(f"{badge} {label} completed!")
+    title = f"{badge} {label} completed!"
+    shout = ""
+    if karate_yell_used:
+        title = f"📢 HIYAH! {label} completed!"
+        shout = f"📢 **HIYAH!** {user.mention} karate-chopped this board!\n"
+    embed = paper_embed(title)
     embed.description = (
-        f"{user.mention} completed the {label}!\n"
+        f"{shout}{user.mention} completed the {label}!\n"
         f"🏆 **Rank:** {format_rank_line(int(stats.get('xp') or 0))}\n"
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {stats['streak']}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
@@ -4671,6 +4795,11 @@ def finish_win(
         krabby_snack_remaining=krabby_snack_remaining,
         golden_spatula_used=golden_spatula_used,
         golden_spatula_remaining=golden_spatula_remaining,
+        daily_double_used=daily_double_used,
+        daily_double_remaining=daily_double_remaining,
+        weekend_pass_used=weekend_pass_used,
+        karate_yell_used=karate_yell_used,
+        karate_yell_remaining=karate_yell_remaining,
     )
 
 
@@ -4931,6 +5060,7 @@ async def sync_challenge_board(game: dict) -> None:
             "hints_used": int(game.get("hints_used") or 0),
             "hints_gary_used": int(game.get("hints_gary_used") or 0),
             "gary_wisdom_bonus": int(game.get("gary_wisdom_bonus") or 0),
+            "puff_notes_used": bool(game.get("puff_notes_used")),
         },
     )
     key = challenge_game_key(match_id, game["owner_id"])
@@ -5248,9 +5378,15 @@ async def settle_challenge_match(
                 winner_payouts.append(coins)
                 wstats["challenge_wins"] = int(wstats.get("challenge_wins", 0) or 0) + 1
             tag = "winner" if as_winner else "solved board"
+            extra_bits = []
+            if outcome.weekend_pass_used:
+                extra_bits.append("🎟️ +10% XP")
+            if outcome.karate_yell_used:
+                extra_bits.append("📢 HIYAH!")
+            extra = f" · {' · '.join(extra_bits)}" if extra_bits else ""
             reward_notes.append(
                 f"{tag} — {format_sponges(coins, signed=True)} · "
-                f"+{int(outcome.xp)} XP → <@{wid}>"
+                f"+{int(outcome.xp)} XP{extra} → <@{wid}>"
             )
             awarded_solve_ids.add(int(wid))
             return coins
@@ -5346,6 +5482,27 @@ async def settle_challenge_match(
                 loser_stats["games"] += 1
             # Challenge loss does not wipe the calendar daily streak.
             loser_stats["coins"] += consolation_coins
+        for _slot, player in entries:
+            if player.get("forfeit"):
+                continue
+            if not player.get("jellyfish_jam"):
+                continue
+            uid = int(player.get("user_id") or 0)
+            if not uid:
+                continue
+            finished = (
+                player.get("finished_time") is not None
+                or player.get("elapsed") is not None
+            )
+            is_winner = winner_id is not None and uid == int(winner_id)
+            if not finished and not is_winner:
+                continue
+            jam_stats = user_stats(gstats, uid)
+            jam_stats["coins"] = int(jam_stats.get("coins") or 0) + JELLYFISH_JAM_COINS
+            reward_notes.append(
+                f"🪼 Jellyfish Jam {format_sponges(JELLYFISH_JAM_COINS, signed=True)} "
+                f"→ <@{uid}>"
+            )
         save_data(bot.data)
 
         await match_store.update_match(
@@ -5979,9 +6136,10 @@ async def launch_challenge_match(
             )
             attach_gary_wisdom_to_game(pstats, games[key])
             games[key]["message_id"] = launch_message_id
-            await match_store.update_player(
-                match_id, slot, {"name": member.display_name}
-            )
+            player_patch: dict = {"name": member.display_name}
+            if try_consume_jellyfish_jam(pstats):
+                player_patch["jellyfish_jam"] = True
+            await match_store.update_player(match_id, slot, player_patch)
             await persist_game(key, games[key])
 
         save_data(bot.data)
@@ -8626,7 +8784,7 @@ class SudokuView(discord.ui.View):
     def _add_fixed_nav(self, game: dict, stage: str) -> None:
         """
         Row 3 — nav strip:
-          Back | Notes | Auto | Quit
+          Back | Notes | Quit
         """
         back = discord.ui.Button(
             label="  Back  ",
@@ -8648,30 +8806,6 @@ class SudokuView(discord.ui.View):
         )
         pencil.callback = self.on_toggle_pencil
         self.add_item(pencil)
-
-        is_race = normalize_game_mode(game.get("mode")) == "challenge"
-        notes_left = 0
-        try:
-            gid = int(game.get("guild_id") or 0)
-            oid = int(game.get("owner_id") or 0)
-            if gid and oid:
-                notes_left = int(
-                    user_stats(guild_stats(self.bot.data, gid), oid).get(
-                        "puff_notes_charges"
-                    )
-                    or 0
-                )
-        except (TypeError, ValueError):
-            notes_left = 0
-        fill_notes = discord.ui.Button(
-            label=f" Auto×{notes_left} " if notes_left else "  Auto  ",
-            style=discord.ButtonStyle.secondary,
-            row=3,
-            disabled=is_race,
-            custom_id=self._cid("nav:autonotes"),
-        )
-        fill_notes.callback = self.on_fill_notes
-        self.add_item(fill_notes)
 
         quit_btn = discord.ui.Button(
             label="  Quit  ",
@@ -8902,76 +9036,6 @@ class SudokuView(discord.ui.View):
     async def on_toggle_pencil(self, interaction: discord.Interaction) -> None:
         game = games[self.game_key]
         game["pencil_mode"] = not game.get("pencil_mode", False)
-        await self.refresh(interaction)
-
-    async def on_fill_notes(self, interaction: discord.Interaction) -> None:
-        game = games.get(self.game_key)
-        if not game:
-            await interaction.response.send_message("This game has ended.", ephemeral=True)
-            return
-        if normalize_game_mode(game.get("mode")) == "challenge":
-            try:
-                await interaction.response.send_message(
-                    "Auto notes are off in races — fill them yourself.",
-                    ephemeral=True,
-                )
-            except discord.HTTPException:
-                pass
-            return
-        try:
-            gid = int(game.get("guild_id") or 0)
-            oid = int(game.get("owner_id") or 0)
-        except (TypeError, ValueError):
-            gid, oid = 0, 0
-        if not gid or not oid:
-            try:
-                await interaction.response.send_message(
-                    "Couldn't charge Auto notes — reopen `/play`.",
-                    ephemeral=True,
-                )
-            except discord.HTTPException:
-                pass
-            return
-        stats = user_stats(guild_stats(self.bot.data, gid), oid)
-        probe = fill_auto_notes(
-            [
-                [
-                    {
-                        "value": int(cell.get("value") or 0),
-                        "pencil_marks": list(cell.get("pencil_marks") or []),
-                    }
-                    for cell in row
-                ]
-                for row in game["board"]
-            ]
-        )
-        if not probe:
-            await self.refresh(interaction)
-            try:
-                await interaction.followup.send("Notes already filled.", ephemeral=True)
-            except discord.HTTPException:
-                pass
-            return
-        if not try_consume_puff_notes(stats):
-            try:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(
-                        f"📝 Buy **Mrs. Puff's Notes** in `/shop` "
-                        f"({format_sponges(PUFF_NOTES_COST)} each).",
-                        ephemeral=True,
-                    )
-                else:
-                    await interaction.followup.send(
-                        f"📝 Buy **Mrs. Puff's Notes** in `/shop` "
-                        f"({format_sponges(PUFF_NOTES_COST)} each).",
-                        ephemeral=True,
-                    )
-            except discord.HTTPException:
-                pass
-            return
-        fill_auto_notes(game["board"])
-        game["pencil_mode"] = True
-        save_data(self.bot.data)
         await self.refresh(interaction)
 
     async def on_digit(self, interaction: discord.Interaction, digit: int) -> None:
@@ -9553,6 +9617,13 @@ def shop_item_equipped(stats: dict, item: dict) -> bool:
 
 def shop_item_status_text(stats: dict, item: dict) -> str:
     if item["kind"] == "boost":
+        iid = item.get("id")
+        if iid == "weekend_pass":
+            until = format_weekend_pass_until(stats)
+            return f"🎟️ Until {until}" if until else "🎟️ Weekend"
+        if iid == "mystery_box":
+            n = len(mystery_box_pool(stats))
+            return "🔒 All pins owned" if n <= 0 else f"📦 {n} unowned"
         return "🔮 Power-Up"
     owned = shop_item_owned(stats, item)
     if item["kind"] == "pin":
@@ -9630,23 +9701,34 @@ def shop_select_emoji(raw: Any) -> str | None:
 def shop_item_can_buy(stats: dict, item: dict) -> bool:
     if item["kind"] != "boost" and shop_item_owned(stats, item):
         return False
+    if item.get("id") == "mystery_box" and not mystery_box_pool(stats):
+        return False
+    if item.get("id") == "weekend_pass" and weekend_pass_active(stats):
+        return False
     cost = int(item["cost"])
     return cost <= 0 or int(stats.get("coins") or 0) >= cost
 
 
 def shop_item_is_stackable(item: dict | None) -> bool:
-    """Power-ups can be bought in bulk; titles and pins are unique."""
-    return bool(item) and item.get("kind") == "boost"
+    """Power-ups can be bought in bulk; titles, pins, and Weekend Pass are unique."""
+    if not item or item.get("kind") != "boost":
+        return False
+    if item.get("id") == "weekend_pass":
+        return False
+    return True
 
 
 def shop_boost_max_qty(stats: dict, item: dict) -> int:
     """Copies the player can afford in one tap (always at least 1)."""
     cost = int(item.get("cost") or 0)
+    cap = SHOP_BOOST_MAX_QTY
+    if item.get("id") == "mystery_box":
+        cap = min(cap, max(1, len(mystery_box_pool(stats))))
     if cost <= 0:
-        return SHOP_BOOST_MAX_QTY
+        return cap
     coins = int(stats.get("coins") or 0)
     affordable = coins // cost
-    return max(1, min(SHOP_BOOST_MAX_QTY, affordable))
+    return max(1, min(cap, affordable))
 
 
 def shop_filter_catalog(
@@ -9714,11 +9796,23 @@ def shop_page_embed(
     spatula_str = f"🥇 **Spatula:** {spatula_charges}" if spatula_charges > 0 else ""
     gary_charges = int(stats.get("gary_wisdom_charges") or 0)
     gary_str = f"🐌 **Gary:** {gary_charges}" if gary_charges > 0 else ""
-    notes_charges = int(stats.get("puff_notes_charges") or 0)
-    notes_str = f"📝 **Notes:** {notes_charges}" if notes_charges > 0 else ""
+    dd_charges = int(stats.get("daily_double_charges") or 0)
+    dd_str = f"🎫 **Daily Double:** {dd_charges}" if dd_charges > 0 else ""
+    jam_charges = int(stats.get("jellyfish_jam_charges") or 0)
+    jam_str = f"🪼 **Jam:** {jam_charges}" if jam_charges > 0 else ""
+    yell_charges = int(stats.get("karate_yell_charges") or 0)
+    yell_str = f"📢 **Yell:** {yell_charges}" if yell_charges > 0 else ""
+    puff_charges = int(stats.get("puff_notes_charges") or 0)
+    puff_str = f"📒 **Puff:** {puff_charges}" if puff_charges > 0 else ""
+    wp_until = format_weekend_pass_until(stats)
+    wp_str = f"🎟️ **Pass:** {wp_until}" if wp_until else ""
     shields = int(stats.get("streak_shields") or 0)
     eq_title = SHOP_TITLES[stats.get("title")]["label"] if stats.get("title") in SHOP_TITLES else "Civilian"
-    extra_boosts = " · ".join(x for x in (snack_str, spatula_str, gary_str, notes_str) if x)
+    extra_boosts = " · ".join(
+        x
+        for x in (snack_str, spatula_str, gary_str, dd_str, jam_str, yell_str, puff_str, wp_str)
+        if x
+    )
     on_board_n, owned_n = shop_pin_board_counts(stats)
 
     status_banner = (
@@ -9795,11 +9889,6 @@ def shop_page_embed(
                 f"for {GARY_WISDOM_GAMES_PER_PURCHASE} games. After that, paid hints "
                 f"at {format_sponges(HINT_SPONGE_COST)} each (unlimited while you can pay).*"
             )
-        elif selected["id"] == "puff_notes":
-            detail += (
-                "\n📝 *Fills remaining candidates on empty cells (1 tap = 1 charge). "
-                "Off in races. Re-fill after placing digits costs another charge.*"
-            )
         elif selected["id"] == "krabby_snack":
             detail += "\n🍟 *+25% pocket sponges only — career XP unchanged (3 wins).*"
         elif selected["id"] == "golden_spatula":
@@ -9875,7 +9964,7 @@ def apply_shop_purchase(
     except (TypeError, ValueError):
         qty = 1
     qty = max(1, qty)
-    if item["kind"] != "boost":
+    if item["kind"] != "boost" or item.get("id") == "weekend_pass":
         qty = 1
     else:
         qty = min(qty, SHOP_BOOST_MAX_QTY)
@@ -10000,36 +10089,6 @@ def apply_shop_purchase(
             ),
         }
 
-    if tid == "puff_notes":
-        if stats["coins"] < cost:
-            return {
-                "ok": False,
-                "bought": False,
-                "message": (
-                    f"Need **{format_sponges(cost)}** "
-                    f"(you have {format_sponges(stats['coins'])})."
-                ),
-            }
-        stats["coins"] -= cost
-        stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
-        stats["puff_notes_charges"] = (
-            int(stats.get("puff_notes_charges") or 0)
-            + PUFF_NOTES_FILLS_PER_PURCHASE * qty
-        )
-        save_data(bot.data)
-        return {
-            "ok": True,
-            "bought": True,
-            "label": item["label"],
-            "cost": cost,
-            "qty": qty,
-            "message": (
-                f"Bought {bought_name}! 📝 **Auto notes** ready — "
-                f"**{stats['puff_notes_charges']}** fill(s) left "
-                f"(off in races)."
-            ),
-        }
-
     if tid == "krabby_snack":
         if stats["coins"] < cost:
             return {
@@ -10085,6 +10144,214 @@ def apply_shop_purchase(
             "message": (
                 f"Bought {bought_name}! **+50% career XP** on your next "
                 f"{stats['golden_spatula_charges']} wins."
+            ),
+        }
+
+    if tid == "daily_double":
+        if stats["coins"] < cost:
+            return {
+                "ok": False,
+                "bought": False,
+                "message": (
+                    f"Need **{format_sponges(cost)}** "
+                    f"(you have {format_sponges(stats['coins'])})."
+                ),
+            }
+        stats["coins"] -= cost
+        stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
+        stats["daily_double_charges"] = int(stats.get("daily_double_charges") or 0) + qty
+        save_data(bot.data)
+        return {
+            "ok": True,
+            "bought": True,
+            "label": item["label"],
+            "cost": cost,
+            "qty": qty,
+            "message": (
+                f"Bought {bought_name}! Next Daily gets **2× pineapple** "
+                f"(+{format_sponges(DAILY_BONUS)} extra, 1/UTC day). "
+                f"**{stats['daily_double_charges']}** queued."
+            ),
+        }
+
+    if tid == "jellyfish_jam":
+        if stats["coins"] < cost:
+            return {
+                "ok": False,
+                "bought": False,
+                "message": (
+                    f"Need **{format_sponges(cost)}** "
+                    f"(you have {format_sponges(stats['coins'])})."
+                ),
+            }
+        stats["coins"] -= cost
+        stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
+        stats["jellyfish_jam_charges"] = (
+            int(stats.get("jellyfish_jam_charges") or 0) + qty
+        )
+        save_data(bot.data)
+        return {
+            "ok": True,
+            "bought": True,
+            "label": item["label"],
+            "cost": cost,
+            "qty": qty,
+            "message": (
+                f"Bought {bought_name}! Next race: **+{format_sponges(JELLYFISH_JAM_COINS)}** "
+                f"if you finish (even 2nd). "
+                f"**{stats['jellyfish_jam_charges']}** queued."
+            ),
+        }
+
+    if tid == "karate_yell":
+        if stats["coins"] < cost:
+            return {
+                "ok": False,
+                "bought": False,
+                "message": (
+                    f"Need **{format_sponges(cost)}** "
+                    f"(you have {format_sponges(stats['coins'])})."
+                ),
+            }
+        stats["coins"] -= cost
+        stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
+        stats["karate_yell_charges"] = int(stats.get("karate_yell_charges") or 0) + qty
+        save_data(bot.data)
+        return {
+            "ok": True,
+            "bought": True,
+            "label": item["label"],
+            "cost": cost,
+            "qty": qty,
+            "message": (
+                f"Bought {bought_name}! Next win shouts **HIYAH!** in chat. "
+                f"**{stats['karate_yell_charges']}** queued."
+            ),
+        }
+
+    if tid == "puff_notes":
+        if stats["coins"] < cost:
+            return {
+                "ok": False,
+                "bought": False,
+                "message": (
+                    f"Need **{format_sponges(cost)}** "
+                    f"(you have {format_sponges(stats['coins'])})."
+                ),
+            }
+        stats["coins"] -= cost
+        stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
+        stats["puff_notes_charges"] = int(stats.get("puff_notes_charges") or 0) + qty
+        save_data(bot.data)
+        return {
+            "ok": True,
+            "bought": True,
+            "label": item["label"],
+            "cost": cost,
+            "qty": qty,
+            "message": (
+                f"Bought {bought_name}! After **{PUFF_NOTES_HINT_GATE} hints** "
+                f"on a puzzle, tap **📒 Notes** to fill legal pencil marks. "
+                f"**{stats['puff_notes_charges']}** queued."
+            ),
+        }
+
+    if tid == "weekend_pass":
+        if weekend_pass_active(stats):
+            until = format_weekend_pass_until(stats)
+            return {
+                "ok": False,
+                "bought": False,
+                "message": (
+                    f"🎟️ Weekend Pass already running until **{until}**. "
+                    "Wait until it ends to buy another."
+                ),
+            }
+        if stats["coins"] < cost:
+            return {
+                "ok": False,
+                "bought": False,
+                "message": (
+                    f"Need **{format_sponges(cost)}** "
+                    f"(you have {format_sponges(stats['coins'])})."
+                ),
+            }
+        stats["coins"] -= cost
+        stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
+        until = weekend_pass_expires_at()
+        stats["weekend_pass_until"] = until.timestamp()
+        save_data(bot.data)
+        return {
+            "ok": True,
+            "bought": True,
+            "label": item["label"],
+            "cost": cost,
+            "qty": 1,
+            "message": (
+                f"Bought **{item['label']}**! **+10% XP** on every win until "
+                f"**{until.strftime('%a %d %b %H:%M UTC')}**."
+            ),
+        }
+
+    if tid == "mystery_box":
+        pool = mystery_box_pool(stats)
+        if not pool:
+            return {
+                "ok": False,
+                "bought": False,
+                "message": (
+                    "You already own every pin — Mystery Box has nothing left to unwrap."
+                ),
+            }
+        qty = min(qty, len(pool), SHOP_BOOST_MAX_QTY)
+        cost = unit_cost * qty
+        bought_name = f"**{qty}× {item['label']}**" if qty > 1 else f"**{item['label']}**"
+        if stats["coins"] < cost:
+            return {
+                "ok": False,
+                "bought": False,
+                "message": (
+                    f"Need **{format_sponges(cost)}** "
+                    f"(you have {format_sponges(stats['coins'])})."
+                ),
+            }
+        picked = pick_mystery_pins(stats, qty)
+        if not picked:
+            return {
+                "ok": False,
+                "bought": False,
+                "message": "Mystery Box came up empty — try again later.",
+            }
+        qty = len(picked)
+        cost = unit_cost * qty
+        bought_name = f"**{qty}× {item['label']}**" if qty > 1 else f"**{item['label']}**"
+        if stats["coins"] < cost:
+            return {
+                "ok": False,
+                "bought": False,
+                "message": (
+                    f"Need **{format_sponges(cost)}** "
+                    f"(you have {format_sponges(stats['coins'])})."
+                ),
+            }
+        stats["coins"] -= cost
+        stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
+        names: list[str] = []
+        for pid, meta in picked:
+            grant_owned_pin(stats, pid)
+            names.append(f"{meta.get('emoji', '')} **{meta.get('label', pid)}**")
+        save_data(bot.data)
+        push_cosmetics_sync(user_id, guild_id, stats)
+        got = ", ".join(names)
+        return {
+            "ok": True,
+            "bought": True,
+            "label": item["label"],
+            "cost": cost,
+            "qty": qty,
+            "message": (
+                f"Bought {bought_name}! You unwrapped: {got}. "
+                "Tick it under Pins → **My board** if you want it on the frame."
             ),
         }
 
@@ -11632,6 +11899,8 @@ async def restore_challenge_games_from_match(bot: "SudokuBot", match: dict) -> b
         games[key]["hints_gary_used"] = int(player.get("hints_gary_used") or 0)
         if int(player.get("gary_wisdom_bonus") or 0) > 0:
             games[key]["gary_wisdom_bonus"] = int(player["gary_wisdom_bonus"])
+        if player.get("puff_notes_used"):
+            games[key]["puff_notes_used"] = True
         await persist_game(key, games[key])
         restored_any = True
         print(f"Rehydrated challenge game {serialize_game_key(key)} from match {mid}")
@@ -12512,7 +12781,6 @@ async def help_cmd(interaction: discord.Interaction):
             f"(/play, /daily, and challenges). "
             f"**Gary's Wisdom** in `/shop` grants {GARY_WISDOM_HINT_BONUS} free hints/game first "
             f"(then paid hints as usual). "
-            f"**Mrs. Puff's Notes** fills candidates (**{format_sponges(PUFF_NOTES_COST)}** per tap; off in races). "
             f"Challenge **no_hints** disables Gary + paid hints for that race.\n"
             f"{tiers}"
         ),
@@ -12520,7 +12788,10 @@ async def help_cmd(interaction: discord.Interaction):
     )
     embed.add_field(
         name=f"{PINEAPPLE} More",
-        value="`/shop` · `/weekly` · `/stats` · `/achievements` · `/leaderboard` · `/resume` · `/cleargame` · `/quit`",
+        value=(
+            "`/shop` · `/weekly` · `/stats` · `/achievements` · `/leaderboard` · `/resume` · `/cleargame` · `/quit`\n"
+            "Power-ups: 🎫 Daily Double · 🪼 Jellyfish Jam · 📦 Mystery Box · 🎟️ Weekend Pass · 📢 Karate Yell · 📒 Mrs. Puff's Notes"
+        ),
         inline=False,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)

@@ -418,9 +418,6 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
     if (cosmetics && gameApi?.setPocketSponges) {
       gameApi.setPocketSponges(cosmetics.pocketSponges);
     }
-    if (cosmetics && gameApi?.setPuffNotesCharges) {
-      gameApi.setPuffNotesCharges(cosmetics.puffNotesCharges);
-    }
     applyTheme(currentTheme);
     return gameApi;
   }
@@ -431,7 +428,6 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
       cosmetics: cosmetics || { title: null, pins: [], seed: 1 },
       pocketSponges: Number(cosmetics?.pocketSponges) || 0,
       hintSpongeCost: Number(cosmetics?.hintSpongeCost) || 15,
-      puffNotesCharges: Number(cosmetics?.puffNotesCharges) || 0,
       autoStart: gameOptions.autoStart !== false,
       spectatorMode: Boolean(gameOptions.spectatorMode),
       sessionKind: gameOptions.sessionKind || null,
@@ -466,30 +462,6 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
         // Persist immediately so Discord "Exit" cannot race the async flush.
         saveSessionNow({ keepalive: false, force: true });
       },
-      onAutoNotes: async () => {
-        if (!window.__DISCORD_ACCESS_TOKEN__) {
-          return { ok: false, error: "offline", message: "Buy Mrs. Puff's Notes in /shop" };
-        }
-        try {
-          const gid = await resolveGuildId(8000);
-          cachedGuildId = gid;
-          const res = await apiFetch("/api/activity/autonotes", {
-            method: "POST",
-            body: JSON.stringify({ guild_id: gid }),
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res?.ok) {
-            return { ok: false, ...(typeof data === "object" ? data : {}) };
-          }
-          if (gameApi?.setPuffNotesCharges && data.puff_notes_charges != null) {
-            gameApi.setPuffNotesCharges(data.puff_notes_charges);
-          }
-          return data;
-        } catch (err) {
-          console.warn("[Thcoku] autonotes request failed", err);
-          return { ok: false, error: "autonotes_failed", message: "Couldn't charge Auto notes" };
-        }
-      },
       onHint: async ({ row, col, board }) => {
         if (!window.__DISCORD_ACCESS_TOKEN__) {
           return { ok: false, error: "offline" };
@@ -517,6 +489,27 @@ function startGameOnce(cosmetics = null, gameOptions = {}) {
         } catch (err) {
           console.warn("[Thcoku] hint request failed", err);
           return { ok: false, error: "hint_failed" };
+        }
+      },
+      onPuffNotes: async () => {
+        if (!window.__DISCORD_ACCESS_TOKEN__) {
+          return { ok: false, error: "offline" };
+        }
+        try {
+          const gid = await resolveGuildId(8000);
+          cachedGuildId = gid;
+          const res = await apiFetch("/api/activity/puff-notes", {
+            method: "POST",
+            body: JSON.stringify({ guild_id: gid }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res?.ok) {
+            return { ok: false, ...(typeof data === "object" ? data : {}) };
+          }
+          return data;
+        } catch (err) {
+          console.warn("[Thcoku] puff notes request failed", err);
+          return { ok: false, error: "puff_notes_failed" };
         }
       },
     });
@@ -547,6 +540,7 @@ async function loadCosmetics() {
       pocketSponges: Number(data.coins) || 0,
       hintSpongeCost: Number(data.hint_sponge_cost) || 15,
       puffNotesCharges: Number(data.puff_notes_charges) || 0,
+      puffNotesHintGate: Number(data.puff_notes_hint_gate) || 10,
     };
   } catch (err) {
     console.warn("[Thcoku] profile load failed", err);
@@ -1714,6 +1708,23 @@ function formatWinBoostNote(data) {
         ? ` (${data.golden_spatula_remaining} left)`
         : "";
     parts.push(`🥇 +50% XP${left}`);
+  }
+  if (data.daily_double_used) {
+    const left =
+      data.daily_double_remaining != null
+        ? ` (${data.daily_double_remaining} left)`
+        : "";
+    parts.push(`🎫 Daily Double${left}`);
+  }
+  if (data.weekend_pass_used) {
+    parts.push("🎟️ +10% XP");
+  }
+  if (data.karate_yell_used) {
+    const left =
+      data.karate_yell_remaining != null
+        ? ` (${data.karate_yell_remaining} left)`
+        : "";
+    parts.push(`📢 HIYAH!${left}`);
   }
   return parts.length ? ` · ${parts.join(" · ")}` : "";
 }

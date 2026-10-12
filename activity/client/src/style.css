@@ -281,16 +281,13 @@ body {
   margin: 0 auto;
 }
 
-.ctrl-actions-edit {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.ctrl-actions-edit.has-puff {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.ctrl-actions-edit.is-challenge {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.ctrl-actions-edit.is-challenge #ctrl-autonotes {
-  display: none !important;
+.ctrl-actions-edit.has-puff button {
+  font-size: 0.95rem;
+  padding: 0 4px;
 }
 
 /* /play /daily /challenge: Diff hidden — Quit · Hint · Reset */
