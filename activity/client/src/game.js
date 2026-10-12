@@ -2051,6 +2051,7 @@ export function startThcokuGame(canvas, options = {}) {
           if (marks.length) {
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
+            const noteSlot = CELL / 3;
             for (const d of marks) {
               const solo = uniqueNotes.has(`${r},${c},${d}`);
               ctx.fillStyle = solo ? RGB.text : RGB.pencil;
@@ -2059,7 +2060,11 @@ export function startThcokuGame(canvas, options = {}) {
                 : "500 13px Fredoka, Segoe UI, sans-serif";
               const mr = Math.floor((d - 1) / 3);
               const mc = (d - 1) % 3;
-              ctx.fillText(String(d), x + 14 + mc * 22, y + 14 + mr * 22);
+              ctx.fillText(
+                String(d),
+                x + (mc + 0.5) * noteSlot,
+                y + (mr + 0.5) * noteSlot + 1,
+              );
             }
           }
         }

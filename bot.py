@@ -329,7 +329,7 @@ SHOP_PINS = {
     "golden_spatula": {"label": "🥇 Golden Spatula (+50% XP — 3 wins)", "pin": "Spatula", "emoji": "🥇", "cost": 80},
     "daily_double": {"label": "🎫 Daily Double (2× pineapple on next daily · 1/day)", "pin": "Daily Double", "emoji": "🎫", "cost": 90},
     "jellyfish_jam": {"label": "🪼 Jellyfish Jam (+80 sponges if you finish a race)", "pin": "Jam", "emoji": "🪼", "cost": 90},
-    "mystery_box": {"label": "📦 Mystery Box (random unowned pin)", "pin": "Mystery", "emoji": "📦", "cost": 250},
+    "mystery_box": {"label": "📦 Mystery Box (random pin — new or duplicate)", "pin": "Mystery", "emoji": "📦", "cost": 250},
     "weekend_pass": {"label": "🎟️ Weekend Pass (+10% XP until Sunday UTC)", "pin": "Weekend", "emoji": "🎟️", "cost": 180},
     "karate_yell": {"label": "📢 Karate Yell (flex the next win in chat)", "pin": "Yell", "emoji": "📢", "cost": 40},
     "puff_notes": {"label": "📒 Mrs. Puff's Notes (fill notes after 10 hints)", "pin": "Puff Notes", "emoji": "📒", "cost": 75},
@@ -4076,6 +4076,12 @@ MYSTERY_RARITY_FLAVOR: dict[str, tuple[str, ...]] = {
         "I'm ready! I'm legendary! I'M READY!",
     ),
 }
+MYSTERY_DUPE_FLAVOR = (
+    "Already on the dome. Barnacles.",
+    "A duplicate. Krabs isn't refunding.",
+    "You already had this one. That's luck.",
+    "Same sticker twice. The box shrugged.",
+)
 MYSTERY_RATTLE_LINES = (
     "📦 *The box rattles…*",
     "📦 *Mrs. Puff shakes it like a jelly…*",
@@ -4178,18 +4184,22 @@ def bump_mystery_pity(stats: dict, rarity_key: str) -> None:
         stats["mystery_common_streak"] = 0
 
 
-def mystery_box_pool(stats: dict) -> list[tuple[str, dict]]:
-    """Unowned paid pins that a Mystery Box can still drop."""
-    owned = set(owned_pin_ids(stats))
+def mystery_box_catalog() -> list[tuple[str, dict]]:
+    """Every paid pin a Mystery Box can roll (owned or not)."""
     pool: list[tuple[str, dict]] = []
     for tid, meta in SHOP_PINS.items():
         if tid in SHOP_BOOST_KEYS:
             continue
-        cost = int(meta.get("cost") or 0)
-        if cost <= 0 or tid in owned:
+        if int(meta.get("cost") or 0) <= 0:
             continue
         pool.append((tid, meta))
     return pool
+
+
+def mystery_box_pool(stats: dict) -> list[tuple[str, dict]]:
+    """Paid pins this player does not own yet (collection leftover)."""
+    owned = set(owned_pin_ids(stats))
+    return [(tid, meta) for tid, meta in mystery_box_catalog() if tid not in owned]
 
 
 def _weighted_choice(items: list, weight_of) -> int:
@@ -4234,21 +4244,21 @@ def _mystery_bucket_for_roll(
 
 
 def pick_mystery_pins(stats: dict, count: int) -> list[tuple[str, dict, dict]]:
-    """Pick unowned pins. Rarity first (legendaries ~1%), then inverse-cost inside the band."""
-    remaining = list(mystery_box_pool(stats))
+    """Independent rolls over all paid pins. Rarity first, then inverse-cost in the band."""
+    catalog = list(mystery_box_catalog())
     picked: list[tuple[str, dict, dict]] = []
-    n = min(max(0, int(count)), len(remaining))
+    n = max(0, int(count))
+    if not catalog or n <= 0:
+        return picked
     streak = mystery_common_streak(stats)
     pity_floor = _mystery_min_rank()
+    buckets: dict[str, list[tuple[str, dict, dict]]] = {
+        key: [] for key, *_ in MYSTERY_RARITY_TIERS
+    }
+    for tid, meta in catalog:
+        rarity = mystery_rarity_for_cost(int(meta.get("cost") or 0))
+        buckets[rarity["key"]].append((tid, meta, rarity))
     for _ in range(n):
-        if not remaining:
-            break
-        buckets: dict[str, list[tuple[str, dict, dict]]] = {
-            key: [] for key, *_ in MYSTERY_RARITY_TIERS
-        }
-        for tid, meta in remaining:
-            rarity = mystery_rarity_for_cost(int(meta.get("cost") or 0))
-            buckets[rarity["key"]].append((tid, meta, rarity))
         if not any(buckets.values()):
             break
         rolled_key = MYSTERY_RARITY_TIERS[
@@ -4265,13 +4275,23 @@ def pick_mystery_pins(stats: dict, count: int) -> list[tuple[str, dict, dict]]:
         tid, meta, rarity = chosen[pick_i]
         rarity = dict(rarity)
         rarity["pity"] = bool(min_rank > 0 and int(rarity.get("rank") or 0) >= min_rank)
-        remaining = [(t, m) for t, m in remaining if t != tid]
         picked.append((tid, meta, rarity))
         if rarity.get("key") == "common":
             streak += 1
         else:
             streak = 0
     return picked
+
+
+def _mystery_pin_name(drop: dict) -> str:
+    """One emoji + pin name (labels already include the emoji)."""
+    emoji = str(drop.get("emoji") or "").strip()
+    label = str(drop.get("label") or "Pin").strip()
+    if emoji and label.startswith(emoji):
+        label = label[len(emoji) :].strip()
+    if emoji:
+        return f"{emoji} **{label or 'Pin'}**"
+    return f"**{label or 'Pin'}**"
 
 
 def _mystery_progress_line(drop: dict) -> str:
@@ -4336,16 +4356,26 @@ def build_mystery_reveal_embed(
     if any(d.get("pity") for d in drops):
         lines.append("✨ Pity broke the common streak!")
     for drop in drops:
-        lines.append(
-            f"{drop.get('rarity_emoji', '📦')} **{drop.get('rarity_label', 'Pin')}** — "
-            f"{drop.get('emoji', '')} **{drop.get('label', 'Pin')}**"
-        )
+        pin_name = _mystery_pin_name(drop)
+        if drop.get("duplicate"):
+            lines.append(
+                f"{drop.get('rarity_emoji', '📦')} **{drop.get('rarity_label', 'Pin')}** — "
+                f"{pin_name} · **Duplicate** (already owned)"
+            )
+        else:
+            lines.append(
+                f"{drop.get('rarity_emoji', '📦')} **{drop.get('rarity_label', 'Pin')}** — "
+                f"**NEW** {pin_name}"
+            )
     flavor = str(best.get("flavor") or "").strip()
     if flavor:
         lines.append(f"\n*{flavor}*")
-    lines.append(
-        "\nTick it under Pins → **My board**, or browse Pins → **Mystery Box** for your album."
-    )
+    if any(not d.get("duplicate") for d in drops):
+        lines.append(
+            "\nTick new pins under Pins → **My board**, or browse Pins → **Mystery Box**."
+        )
+    elif drops:
+        lines.append("\nThat's luck — duplicates don't add a second sticker.")
     embed = discord.Embed(title=headline, description="\n".join(lines), color=color)
     embed.set_footer(text=f"{SPONGE} Bikini Bottom Sudoku  ·  I'm ready!")
     return embed
@@ -4434,6 +4464,8 @@ def record_mystery_drops(stats: dict, drops: list[dict]) -> None:
     have = {str(entry.get("id") or "") for entry in hist}
     now = int(time.time())
     for drop in drops:
+        if drop.get("duplicate"):
+            continue
         pid = str(drop.get("id") or "")
         if not pid or pid in have:
             continue
@@ -4469,6 +4501,20 @@ def format_mystery_history_lines(stats: dict, *, limit: int = 12) -> str:
     return "\n".join(lines)
 
 
+def mystery_collection_progress(stats: dict) -> tuple[int, int]:
+    """Owned paid pins vs every pin the box can roll."""
+    catalog = mystery_box_catalog()
+    total = len(catalog)
+    owned = set(owned_pin_ids(stats))
+    have = sum(1 for tid, _meta in catalog if tid in owned)
+    return have, total
+
+
+def mystery_collection_line(stats: dict) -> str:
+    have, total = mystery_collection_progress(stats)
+    return f"**{have} / {total}**"
+
+
 def mystery_catalog_item() -> dict:
     meta = SHOP_PINS.get("mystery_box") or {}
     cost = int(meta.get("cost") or 250)
@@ -4488,19 +4534,19 @@ def mystery_catalog_item() -> dict:
 def mystery_desk_embed(stats: dict) -> discord.Embed:
     item = mystery_catalog_item()
     unit = int(item["cost"])
-    pool = len(mystery_box_pool(stats))
+    have, total = mystery_collection_progress(stats)
     opened = len(mystery_unwrapped_ids(stats))
     pocket = format_sponges(stats.get("coins", 0))
     album = format_mystery_history_lines(stats, limit=10)
     embed = paper_embed("📦 Mystery Box")
     embed.description = (
-        f"Crack a random **unowned pin** — rarity first, then the pin, "
-        f"**in this channel**.\n"
-        f"Or browse the album anytime with `/mystery`.\n\n"
+        f"Crack a **random pin** — new or duplicate, that's luck. "
+        f"Rarity first, then the pin, **in this channel**.\n\n"
         f"💰 Pocket: **{pocket}** · **{format_sponges(unit)}** each\n"
+        f"📚 Collection **{have} / {total}**"
+        f"{f' · {opened} from boxes' if opened else ''}\n"
         f"{mystery_pity_line(stats)}\n"
-        f"{mystery_odds_line()}\n"
-        f"Pool: **{pool}** unowned · Opened: **{opened}**\n\n"
+        f"{mystery_odds_line()}\n\n"
         f"**Album**\n{album}"
     )
     return embed
@@ -10098,13 +10144,9 @@ def shop_item_status_text(stats: dict, item: dict) -> str:
             until = format_weekend_pass_until(stats)
             return f"🎟️ Until {until}" if until else "🎟️ Weekend"
         if iid == "mystery_box":
-            n = len(mystery_box_pool(stats))
-            opened = len(mystery_unwrapped_ids(stats))
-            opened_bit = f" · {opened} opened" if opened else ""
+            have, total = mystery_collection_progress(stats)
             pity_bit = f" · {mystery_pity_short(stats)}"
-            if n <= 0:
-                return f"🔒 All pins owned{opened_bit}"
-            return f"📦 {n} unowned{opened_bit}{pity_bit}"
+            return f"📦 {have}/{total}{pity_bit}"
         return "🔮 Power-Up"
     owned = shop_item_owned(stats, item)
     if item["kind"] == "pin":
@@ -10193,7 +10235,7 @@ def shop_option_label(item: dict) -> str:
 def shop_item_can_buy(stats: dict, item: dict) -> bool:
     if item["kind"] != "boost" and shop_item_owned(stats, item):
         return False
-    if item.get("id") == "mystery_box" and not mystery_box_pool(stats):
+    if item.get("id") == "mystery_box" and not mystery_box_catalog():
         return False
     if item.get("id") == "weekend_pass" and weekend_pass_active(stats):
         return False
@@ -10214,8 +10256,6 @@ def shop_boost_max_qty(stats: dict, item: dict) -> int:
     """Copies the player can afford in one tap (always at least 1)."""
     cost = int(item.get("cost") or 0)
     cap = SHOP_BOOST_MAX_QTY
-    if item.get("id") == "mystery_box":
-        cap = min(cap, max(1, len(mystery_box_pool(stats))))
     if cost <= 0:
         return cap
     coins = int(stats.get("coins") or 0)
@@ -10358,9 +10398,13 @@ def shop_page_embed(
         else:
             lines.append("_No items match this filter._")
 
+    count_bit = f"{filtered_total} items"
+    if filt == "mystery":
+        have, total = mystery_collection_progress(stats)
+        count_bit = f"collection **{have} / {total}** · {filtered_total} from boxes"
     embed.description = (
         f"{status_banner}{deal_line}\n"
-        f"─── *Page **{page + 1}/{max(1, pages)}** ({filtered_total} items) · Filter: **{filter_label}*** ───\n\n"
+        f"─── *Page **{page + 1}/{max(1, pages)}** ({count_bit}) · Filter: **{filter_label}*** ───\n\n"
         + "\n".join(lines)
     )
 
@@ -10403,10 +10447,12 @@ def shop_page_embed(
                 if opened
                 else "\nNo boxes opened yet — Pins → **Mystery Box** fills as you unwrap."
             )
+            have, total = mystery_collection_progress(stats)
             detail += (
-                "\n📦 *Opens **in chat** — rarity first, then the pin. "
+                "\n📦 *Opens **in chat** — random pin, **new or duplicate**. "
                 "Buy more than one and crack them one at a time.* "
                 "Dedicated desk: `/mystery`.\n"
+                f"📚 Collection **{have} / {total}**\n"
                 f"{mystery_pity_line(stats)}\n"
                 f"{mystery_odds_line()}"
                 f"{album_title}"
@@ -10813,16 +10859,13 @@ def apply_shop_purchase(
         }
 
     if tid == "mystery_box":
-        pool = mystery_box_pool(stats)
-        if not pool:
+        if not mystery_box_catalog():
             return {
                 "ok": False,
                 "bought": False,
-                "message": (
-                    "You already own every pin — Mystery Box has nothing left to unwrap."
-                ),
+                "message": "Mystery Box has an empty catalog — try again later.",
             }
-        qty = min(qty, len(pool), SHOP_BOOST_MAX_QTY)
+        qty = min(qty, SHOP_BOOST_MAX_QTY)
         cost = unit_cost * qty
         bought_name = f"**{qty}× {item['label']}**" if qty > 1 else f"**{item['label']}**"
         if stats["coins"] < cost:
@@ -10859,8 +10902,11 @@ def apply_shop_purchase(
         drops: list[dict] = []
         total = len(picked)
         for i, (pid, meta, rarity) in enumerate(picked, start=1):
-            grant_owned_pin(stats, pid)
-            flavor_pool = MYSTERY_RARITY_FLAVOR.get(rarity["key"]) or ("Nice pin.",)
+            is_new = grant_owned_pin(stats, pid)
+            if is_new:
+                flavor_pool = MYSTERY_RARITY_FLAVOR.get(rarity["key"]) or ("Nice pin.",)
+            else:
+                flavor_pool = MYSTERY_DUPE_FLAVOR
             drop = {
                 "id": pid,
                 "label": meta.get("label") or pid,
@@ -10873,13 +10919,15 @@ def apply_shop_purchase(
                 "color": rarity["color"],
                 "flavor": random.choice(flavor_pool),
                 "pity": bool(rarity.get("pity")),
+                "duplicate": not is_new,
                 "index": i,
                 "total": total,
             }
             drops.append(drop)
+            tag = "NEW" if is_new else "Duplicate"
             names.append(
                 f"{drop['rarity_emoji']} {drop['rarity_label']} · "
-                f"{drop['emoji']} **{drop['label']}**"
+                f"{tag} {_mystery_pin_name(drop)}"
             )
             bump_mystery_pity(stats, str(rarity.get("key") or "common"))
         stats["last_mystery_unwrapped"] = names
@@ -10897,7 +10945,7 @@ def apply_shop_purchase(
             "drops": drops,
             "message": (
                 f"📦 **You unwrapped:**\n{got}\n"
-                "Pins → **My board** to stick it on the frame."
+                "New pins → **My board**. Duplicates stay luck."
             ),
         }
 
@@ -11330,14 +11378,13 @@ class MysteryDeskView(discord.ui.View):
         stats = self._stats()
         item = mystery_catalog_item()
         unit = int(item["cost"])
-        pool = len(mystery_box_pool(stats))
         coins = int(stats.get("coins") or 0)
         cap = shop_boost_max_qty(stats, item)
         for n, style in (
             (1, discord.ButtonStyle.primary),
             (3, discord.ButtonStyle.secondary),
         ):
-            can = pool >= n and coins >= unit * n and n <= cap
+            can = coins >= unit * n and n <= cap
             total = unit * n
             label = f"Open ×{n}" if n == 1 else f"Open ×{n} — {total}"
             btn = discord.ui.Button(
@@ -14751,7 +14798,7 @@ bot.tree.add_command(admin_group)
 
 @bot.tree.command(
     name="mystery",
-    description="Open a Mystery Box in chat — album, pity, random unowned pin",
+    description="Open a Mystery Box in chat — random pin, new or duplicate",
 )
 @app_commands.describe(
     qty="Crack this many now (1–5). Skip to open the desk first."
