@@ -14905,7 +14905,8 @@ def luck_die_embed(
     if cashed:
         lines.append(
             f"💰 Cashed out **{format_sponges(cashed)}** · pocket now "
-            f"**{format_sponges(pocket)}**."
+            f"**{format_sponges(pocket)}**.\n"
+            "Table closed — `/luck` to play again."
         )
     elif pot > 0:
         lines.append(
@@ -15045,6 +15046,8 @@ class LuckDieView(discord.ui.View):
 
     def _rebuild(self) -> None:
         self.clear_items()
+        if self.cashed:
+            return
         stats = self._stats()
         pot = luck_pot_of(stats)
         coins = int(stats.get("coins") or 0)
@@ -15150,6 +15153,7 @@ class LuckDieView(discord.ui.View):
             self.outcome = None
             self.cashed = int(result.get("cashed") or 0)
             await self._edit(interaction)
+            self.stop()
 
     async def on_timeout(self) -> None:
         for child in self.children:
