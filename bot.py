@@ -161,9 +161,10 @@ CHALLENGE_LOSER_SHARE = 3  # consolation = winner sponges // this
 CHALLENGE_FORFEIT_WIN_COINS = 40
 CHALLENGE_COOLDOWN_SEC = 60
 # Activity launch throttling — stacked /play under Discord 429s deepens global blocks.
-LAUNCH_ACTIVITY_COOLDOWN_SEC = 5
-LAUNCH_ACTIVITY_RATE_LIMIT_FLOOR_SEC = 3.0
-LAUNCH_ACTIVITY_RATE_LIMIT_CAP_SEC = 60.0
+# 5s was too short: retries during a soft limit still stacked into Cloudflare bans.
+LAUNCH_ACTIVITY_COOLDOWN_SEC = 20
+LAUNCH_ACTIVITY_RATE_LIMIT_FLOOR_SEC = 5.0
+LAUNCH_ACTIVITY_RATE_LIMIT_CAP_SEC = 90.0
 # Login backoff for normal bucket 429s vs Cloudflare global API blocks.
 LOGIN_RATE_LIMIT_FLOOR_SEC = 60.0
 LOGIN_RATE_LIMIT_CAP_SEC = 300.0
@@ -6759,6 +6760,17 @@ def is_discord_http_allowed() -> bool:
         return True
 
 
+def is_discord_background_http_allowed() -> bool:
+    """False during global silence *or* a short post-429 cooloff.
+
+    Slash/Activity ACK paths may still run; background presence / watch posts /
+    idle prune must wait so we do not deepen a soft limit into a Cloudflare ban.
+    """
+    if not is_discord_http_allowed():
+        return False
+    return discord_launch_backoff_remaining() <= 0
+
+
 def engage_discord_silence_if_blocked(
     exc: BaseException,
     *,
@@ -7757,8 +7769,8 @@ async def notify_activity_play_started(
     if not channel_id:
         print(f"activity watch notify skipped for {session_id}: no watch channel configured")
         return
-    if not is_discord_http_allowed():
-        print(f"activity watch notify skipped for {session_id}: discord api gated")
+    if not is_discord_background_http_allowed():
+        print(f"activity watch notify skipped for {session_id}: discord api gated/cooloff")
         return
     if session_id in _activity_notify_inflight:
         print(f"activity watch notify skipped for {session_id}: already in flight")
@@ -7774,11 +7786,9 @@ async def notify_activity_play_started(
             )
             return
         # Already announced this open-session — never post a second "is playing".
+        # Trust Mongo flags; do NOT fetch_message here (that REST call was burning
+        # the global rate limit into Cloudflare bans on every Activity save).
         if not force and session and session.get("watch_once_notified"):
-            if await activity_watch_is_live(bot_ref, session):
-                print(f"activity watch notify skipped for {session_id}: already live")
-                return
-            # Flag set but message id missing / deleted — still skip to avoid orphans.
             print(
                 f"activity watch notify skipped for {session_id}: "
                 "already notified this session"
@@ -7788,8 +7798,9 @@ async def notify_activity_play_started(
         if not force and session and session.get("watch_notified") and (time.time() - posted_at < 120):
             print(f"activity watch notify skipped for {session_id}: announcement posted recently")
             return
-        if not force and await activity_watch_is_live(bot_ref, session):
-            print(f"activity watch notify skipped for {session_id}: announcement already live")
+        # Local ids are enough — fetch_message is reserved for delete/reconcile paths.
+        if not force and session and session.get("watch_notified") and session.get("watch_message_id"):
+            print(f"activity watch notify skipped for {session_id}: announcement already tracked")
             return
 
         # Claim the once-flag before Discord I/O so concurrent saves cannot double-post.
@@ -12610,7 +12621,7 @@ _status_i = 0
 @tasks.loop(minutes=5)
 async def rotate_status():
     global _status_i
-    if not is_discord_http_allowed():
+    if not is_discord_background_http_allowed():
         return
     try:
         await bot.change_presence(activity=STATUS_ROTATION[_status_i % len(STATUS_ROTATION)])
@@ -12712,7 +12723,7 @@ async def prune_idle_activity_watch_announcements():
     Keeps the Activity session/board so the player can still resume with `/play`.
     For admin wipe of idle sessions (no resume), use `/z-admin clearstale`.
     """
-    if not is_discord_http_allowed():
+    if not is_discord_background_http_allowed():
         return
     try:
         stale = await match_store.list_idle_activity_watch_sessions(

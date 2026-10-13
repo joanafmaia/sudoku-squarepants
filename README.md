@@ -87,6 +87,16 @@ One **Docker** Web Service builds the Activity and runs the bot.
      (sem isto, no telemóvel aparece “não disponível para este SO”)
 7. Suspend **Netlify** when Render is stable (one token / one host).
 
+### Avoiding Discord Cloudflare bans
+
+Discord bans the **Render outbound IP** (not just one slash command). Prevention beats recovery:
+
+1. **One process, one token** — only the Render Docker service. Suspend Netlify / local `bot.py` / second Render copies that share `DISCORD_TOKEN`.
+2. **Never Manual Deploy spam** while `/health` shows `login=rate_limited` or logs say `GLOBAL API block` — each restart retries login and extends the ban.
+3. **Don’t mash `/play` / `/shop`** after a failure. Wait for `Logged in as…` / `ready=True` (often 30–60 min; repeats escalate to ~1h).
+4. **UptimeRobot only on `/health`** every 5 min — never hit Discord OAuth or slash endpoints from monitors.
+5. The bot already: silences all Discord HTTP on Cloudflare 429s, skips watch `fetch_message` thrash, cools `/play` launches (~20s), and pauses background presence/prune during cooloffs.
+
 If you already created a **Python** service, change it to **Docker** (or recreate from Blueprint) so the Activity build runs.
 
 ### APIs (same host)
