@@ -1806,7 +1806,16 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
         # pagehide/freeze right after open and would end 2-player races instantly.
         # Forfeit only via challenge_forfeit (Quit / explicit leave) above.
         try:
-            from bot import end_activity_watch
+            from bot import end_activity_watch, is_discord_http_allowed
+
+            if not is_discord_http_allowed():
+                print(f"activity end_watch skipped (api gated) user={uid}")
+                return {
+                    "ok": True,
+                    "watch_ended": False,
+                    "challenge_forfeit": False,
+                    "deferred": "discord_api_gated",
+                }
 
             session, resolved_id = await _lookup_activity_session(bot, guild_id, uid)
             if not session or not session.get("watch_message_id"):
@@ -1818,10 +1827,12 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
                     watch = await match_store.find_activity_watch_session(uid)
                 if watch:
                     resolved_id = str(watch.get("_id") or resolved_id)
+            # Default force=False so remount races respect ACTIVITY_WATCH_END_GRACE.
+            # Explicit Quit/close still passes force=true.
             await end_activity_watch(
                 bot,
                 resolved_id,
-                force=bool(body.get("force", True)),
+                force=bool(body.get("force", False)),
             )
         except Exception as exc:  # noqa: BLE001
             print(f"activity end_watch failed: {exc}")
@@ -2285,10 +2296,13 @@ async def _save_activity_session(bot: Any, *, user: dict, body: dict) -> dict:
     # Once this open session announced, never post again until end_watch clears the flag.
     # (Do NOT re-allow notify when message_id is missing — that orphans Discord messages.)
     already_notified_once = bool(current and current.get("watch_once_notified"))
+    from bot import is_discord_http_allowed
+
     will_notify = (
         not watch_live
         and not already_notified_once
         and activity_session_spectatable(notify_doc)
+        and is_discord_http_allowed()
     )
     print(
         f"activity session save user={uid} guild={guild_id} filled={filled} "

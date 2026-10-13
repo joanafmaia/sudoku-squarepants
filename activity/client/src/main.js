@@ -906,6 +906,9 @@ function startAutosave() {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       gameApi?.pauseTimer?.();
+      // Save only — never end the channel "is playing" post on hide.
+      // Remount/background fires these while the player is still in-session;
+      // end→re-post thrash burns Discord rate limits into Cloudflare 429s.
       flushSessionOnExit({ endWatch: false });
     } else {
       gameApi?.resumeTimer?.();
@@ -913,18 +916,19 @@ function startAutosave() {
       refreshCosmeticsIfPlaying();
     }
   });
-  window.addEventListener("pagehide", (event) => {
+  window.addEventListener("pagehide", () => {
     gameApi?.pauseTimer?.();
-    flushSessionOnExit({ endWatch: !event.persisted });
+    flushSessionOnExit({ endWatch: false });
   });
   window.addEventListener("beforeunload", () => {
     gameApi?.pauseTimer?.();
-    flushSessionOnExit({ endWatch: true });
+    flushSessionOnExit({ endWatch: false });
   });
   // Discord Embedded App may freeze the frame without a full unload.
+  // Still save only — Quit / closeDiscordActivity / onWin end the watch.
   document.addEventListener("freeze", () => {
     gameApi?.pauseTimer?.();
-    flushSessionOnExit({ endWatch: true });
+    flushSessionOnExit({ endWatch: false });
   });
   document.addEventListener("resume", () => {
     gameApi?.resumeTimer?.();

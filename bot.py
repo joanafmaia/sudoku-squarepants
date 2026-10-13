@@ -6736,6 +6736,43 @@ def _is_global_api_block(exc: BaseException) -> bool:
     return _http_status(exc) == 429 and getattr(exc, "code", None) == 0
 
 
+def is_discord_http_allowed() -> bool:
+    """False while the persisted Cloudflare/global API silence gate is active."""
+    try:
+        from activity_http import is_discord_api_gated
+
+        return not is_discord_api_gated()
+    except Exception:
+        return True
+
+
+def engage_discord_silence_if_blocked(
+    exc: BaseException,
+    *,
+    detail: str = "runtime_global_block",
+) -> float:
+    """Persist the silence gate on Cloudflare global blocks. Returns seconds left."""
+    if not _is_global_api_block(exc):
+        if _is_rate_limit_error(exc):
+            note_discord_launch_rate_limit(exc)
+        return 0.0
+    try:
+        from activity_http import note_discord_api_block
+    except Exception:
+        return 0.0
+    wait = _retry_after_seconds(
+        exc,
+        floor=GLOBAL_API_BLOCK_FLOOR_SEC,
+        cap=GLOBAL_API_BLOCK_CAP_SEC,
+    )
+    remaining = note_discord_api_block(wait_s=wait, detail=detail)
+    print(
+        f"Discord GLOBAL API block engaged ({detail}); "
+        f"silence≈{remaining:.0f}s: {_short_discord_error(exc)}"
+    )
+    return remaining
+
+
 def _short_discord_error(exc: BaseException, *, limit: int = 240) -> str:
     """Avoid dumping full Cloudflare HTML pages into Render logs."""
     text = str(exc)
@@ -7641,6 +7678,9 @@ async def activity_watch_is_live(
     raw_msg = session.get("watch_message_id")
     if not raw_msg:
         return False
+    # During a Cloudflare silence window, trust local ids — do not fetch.
+    if not is_discord_http_allowed():
+        return True
     channel_id = session.get("watch_channel_id") or ACTIVITY_WATCH_CHANNEL_ID
     channel = await resolve_channel(bot_ref, int(channel_id))
     if channel is None:
@@ -7648,7 +7688,8 @@ async def activity_watch_is_live(
     try:
         await channel.fetch_message(int(raw_msg))
         return True
-    except discord.HTTPException:
+    except discord.HTTPException as exc:
+        engage_discord_silence_if_blocked(exc, detail="activity_watch_is_live")
         return False
 
 
@@ -7675,6 +7716,9 @@ async def notify_activity_play_started(
     channel_id = int(watch_channel_id or ACTIVITY_WATCH_CHANNEL_ID or 0)
     if not channel_id:
         print(f"activity watch notify skipped for {session_id}: no watch channel configured")
+        return
+    if not is_discord_http_allowed():
+        print(f"activity watch notify skipped for {session_id}: discord api gated")
         return
     if session_id in _activity_notify_inflight:
         print(f"activity watch notify skipped for {session_id}: already in flight")
@@ -7807,7 +7851,11 @@ async def notify_activity_play_started(
             return
         print(f"activity watch posted for {session_id} in {channel_id}")
     except discord.HTTPException as exc:
-        print(f"notify_activity_play_started failed for {session_id}: {exc}")
+        engage_discord_silence_if_blocked(exc, detail="activity_watch_notify")
+        print(
+            f"notify_activity_play_started failed for {session_id}: "
+            f"{_short_discord_error(exc)}"
+        )
         try:
             await match_store.merge_activity_session(
                 session_id,
@@ -7820,6 +7868,7 @@ async def notify_activity_play_started(
         except Exception:
             pass
     except Exception as exc:  # noqa: BLE001
+        engage_discord_silence_if_blocked(exc, detail="activity_watch_notify")
         print(f"notify_activity_play_started error for {session_id}: {exc}")
         try:
             await match_store.merge_activity_session(
@@ -7847,6 +7896,9 @@ async def delete_activity_watch_message(
     if not raw_msg:
         return True
     sid = session_id or session.get("_id")
+    if not is_discord_http_allowed():
+        print(f"delete_activity_watch_message skipped for {sid}: discord api gated")
+        return False
     try:
         msg_id = int(raw_msg)
     except (TypeError, ValueError):
@@ -7894,9 +7946,15 @@ async def delete_activity_watch_message(
                         },
                     )
                 return True
+            if engage_discord_silence_if_blocked(exc, detail="activity_watch_delete"):
+                print(
+                    f"delete_activity_watch_message blocked channel={channel_id} "
+                    f"msg={msg_id}: {_short_discord_error(exc)}"
+                )
+                break
             print(
                 f"delete_activity_watch_message failed channel={channel_id} "
-                f"msg={msg_id}: {exc}"
+                f"msg={msg_id}: {_short_discord_error(exc)}"
             )
     if last_exc is not None:
         print(f"delete_activity_watch_message: all channels failed for msg {msg_id}")
@@ -7953,14 +8011,26 @@ async def end_activity_watch(
     Returns True when there is no live announcement left (safe to drop the
     session doc). Returns False when the Discord message is still up.
     """
+    if not is_discord_http_allowed():
+        print(f"activity watch end skipped (api gated) for {session_id}")
+        return False
     session, session_id = await _resolve_watch_session_for_end(session_id)
     if not session or not session.get("watch_message_id"):
         print(f"activity watch end skipped (no message) for {session_id}")
         return True
-    if not force:
-        posted_at = float(session.get("watch_posted_at") or 0)
-        if posted_at and (time.time() - posted_at) < ACTIVITY_WATCH_END_GRACE_SEC:
+    posted_at = float(session.get("watch_posted_at") or 0)
+    # Even force=True from Activity remount races must respect a short grace,
+    # otherwise delete→save→re-post thrash deepens Cloudflare blocks.
+    if posted_at and (time.time() - posted_at) < ACTIVITY_WATCH_END_GRACE_SEC:
+        if not force:
             print(f"activity watch end ignored (grace) for {session_id}")
+            return False
+        # force within grace: only allow if the board is idle / already ended.
+        last_move = float(session.get("last_move_at") or 0)
+        if last_move and (time.time() - last_move) < ACTIVITY_WATCH_END_GRACE_SEC:
+            print(
+                f"activity watch end deferred (grace+active) for {session_id}"
+            )
             return False
     deleted = await delete_activity_watch_message(bot_ref, session, session_id=session_id)
     if deleted:
@@ -12318,9 +12388,32 @@ def run_bot_with_rate_limit_backoff(token: str) -> None:
     asyncio.run(_runner())
 
 
+class SudokuCommandTree(app_commands.CommandTree):
+    """Suppress slash/component Discord HTTP while the Cloudflare silence gate is up."""
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if is_discord_http_allowed():
+            return True
+        name = "-"
+        try:
+            if interaction.type is discord.InteractionType.application_command:
+                name = (interaction.data or {}).get("name") or "-"
+            else:
+                name = (interaction.data or {}).get("custom_id") or "component"
+        except Exception:
+            pass
+        print(f"interaction suppressed (discord api gated): {name}")
+        return False
+
+
 class SudokuBot(commands.Bot):
     def __init__(self):
-        super().__init__(command_prefix="!", intents=intents, help_command=None)
+        super().__init__(
+            command_prefix="!",
+            intents=intents,
+            help_command=None,
+            tree_cls=SudokuCommandTree,
+        )
         self.data = load_data()
 
     async def setup_hook(self) -> None:
@@ -12429,6 +12522,13 @@ async def on_app_command_error(
     """Never leave a slash command hanging on an uncaught exception."""
     root = error.original if isinstance(error, app_commands.CommandInvokeError) else error
     print(f"app command error: {_short_discord_error(root)}")
+    # Cloudflare/global 429s: engage silence and do NOT send another HTTP reply —
+    # that almost always fails and deepens the block.
+    if engage_discord_silence_if_blocked(root, detail="app_command"):
+        return
+    if _is_rate_limit_error(root) or not is_discord_http_allowed():
+        # Includes silence-gate CheckFailure — never send another HTTP reply.
+        return
     if isinstance(error, app_commands.MissingPermissions):
         msg = "You need **Administrator** permission for that command."
     else:
@@ -12438,8 +12538,8 @@ async def on_app_command_error(
             await interaction.followup.send(msg, ephemeral=True)
         else:
             await interaction.response.send_message(msg, ephemeral=True)
-    except discord.HTTPException:
-        pass
+    except discord.HTTPException as send_exc:
+        engage_discord_silence_if_blocked(send_exc, detail="app_command_error_reply")
 
 
 STATUS_ROTATION = [
@@ -12455,10 +12555,13 @@ _status_i = 0
 @tasks.loop(minutes=5)
 async def rotate_status():
     global _status_i
+    if not is_discord_http_allowed():
+        return
     try:
         await bot.change_presence(activity=STATUS_ROTATION[_status_i % len(STATUS_ROTATION)])
     except discord.HTTPException as exc:
-        print(f"rotate_status presence update skipped: {exc}")
+        engage_discord_silence_if_blocked(exc, detail="rotate_status")
+        print(f"rotate_status presence update skipped: {_short_discord_error(exc)}")
     _status_i += 1
 
 
@@ -12554,6 +12657,8 @@ async def prune_idle_activity_watch_announcements():
     Keeps the Activity session/board so the player can still resume with `/play`.
     For admin wipe of idle sessions (no resume), use `/z-admin clearstale`.
     """
+    if not is_discord_http_allowed():
+        return
     try:
         stale = await match_store.list_idle_activity_watch_sessions(
             WATCH_IDLE_HIDE_SEC
@@ -12565,11 +12670,17 @@ async def prune_idle_activity_watch_announcements():
         sid = str(session.get("_id") or "")
         if not sid:
             continue
+        if not is_discord_http_allowed():
+            print("prune_idle_activity_watch stopped early: discord api gated")
+            return
         try:
             await end_activity_watch(bot, sid, force=True)
             print(f"pruned idle activity watch announcement for {sid}")
         except Exception as exc:  # noqa: BLE001
+            engage_discord_silence_if_blocked(exc, detail="prune_idle_watch")
             print(f"prune_idle_activity_watch end failed for {sid}: {exc}")
+            if not is_discord_http_allowed():
+                return
 
 
 @prune_idle_activity_watch_announcements.before_loop
