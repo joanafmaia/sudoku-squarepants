@@ -12308,7 +12308,11 @@ def run_bot_with_rate_limit_backoff(token: str) -> None:
                     await _prepare_bot_for_relogin(bot)
                     set_discord_gateway_status("connecting", detail="bot.start")
                     await bot.start(token)
-                    clear_discord_api_gate()
+                    # Keep any runtime Cloudflare silence across disconnects so the
+                    # next boot still waits (load_discord_api_gate). Only clear when
+                    # the timer has already elapsed.
+                    if discord_api_gate_remaining() <= 0:
+                        clear_discord_api_gate()
                     set_discord_gateway_status("starting", detail="disconnected")
                     return
                 except discord.LoginFailure:
@@ -12424,6 +12428,12 @@ class SudokuBot(commands.Bot):
 
         print("Slash tree: testboard uses autocomplete (no static pin choices).")
         self._log_slash_payload_limits()
+        if not is_discord_http_allowed():
+            print(
+                "Skipping slash command sync — Discord API silence gate is active. "
+                "Will use previously synced commands."
+            )
+            return
         # Prefer guild sync. Global sync must preserve the Activities Entry Point
         # command (type 4) or Discord returns 50240.
         if DISCORD_GUILD_ID:
@@ -13388,18 +13398,20 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
 
 @bot.event
 async def on_ready():
-    from activity_http import set_discord_gateway_status
+    from activity_http import discord_api_gate_remaining, set_discord_gateway_status
 
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print(f"Activity watch channel id: {ACTIVITY_WATCH_CHANNEL_ID or 'unset'}")
     set_discord_gateway_status("ready", detail=f"user={bot.user}")
-    try:
-        from activity_http import clear_discord_api_gate
-
-        # Never block the gateway event loop on sync Mongo/file I/O.
-        await asyncio.to_thread(clear_discord_api_gate)
-    except Exception as gate_exc:  # noqa: BLE001
-        print(f"clear discord api gate on ready failed: {gate_exc}")
+    # Do NOT clear the Cloudflare silence gate here. Gateway reconnect / on_ready
+    # can fire while REST is still blocked; wiping the gate makes slash commands
+    # hammer Discord again and deepens the ban. The gate expires by timer only.
+    gated_left = discord_api_gate_remaining()
+    if gated_left > 0:
+        print(
+            f"Discord API silence gate still active ({gated_left:.0f}s left) — "
+            "slash/watch HTTP suppressed until it expires. Do not redeploy."
+        )
     if not os.getenv("MONGODB_URI", "").strip():
         print(
             "WARNING: MONGODB_URI unset — in-memory store only; "
@@ -13411,12 +13423,18 @@ async def on_ready():
         check_daily_announcement.start()
     if not prune_idle_activity_watch_announcements.is_running():
         prune_idle_activity_watch_announcements.start()
-    await bot.change_presence(activity=STATUS_ROTATION[0])
+    if is_discord_http_allowed():
+        try:
+            await bot.change_presence(activity=STATUS_ROTATION[0])
+        except discord.HTTPException as exc:
+            engage_discord_silence_if_blocked(exc, detail="on_ready_presence")
+            print(f"on_ready presence skipped: {_short_discord_error(exc)}")
     await restore_persisted_sessions(bot)
     await restore_challenge_watch_views(bot)
     await restore_activity_play_watch_views(bot)
     bot.add_view(ChallengeLaunchActivityView())
-    await announce_season_payout(bot)
+    if is_discord_http_allowed():
+        await announce_season_payout(bot)
     print("on_ready complete — slash commands should respond now")
 
 
