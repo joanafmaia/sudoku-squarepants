@@ -69,9 +69,11 @@ One **Docker** Web Service builds the Activity and runs the bot.
 5. **UptimeRobot:** HTTP monitor every **5 min** on that `/health` URL
    - If Discord Cloudflare-blocks the Render IP, `/health` stays **200** while the bot waits
      (login=`rate_limited`). Do **not** Manual Deploy spam — that deepens the ban.
-   - The same silence gate also engages **while already logged in** (slash 429s / watch
-     post-delete thrash). Slash commands are suppressed until the gate clears; Activity
-     board saves keep working (Mongo only). Wait for logs: `Discord GLOBAL API block engaged`.
+   - The same silence gate also engages **while already logged in** (`launch_activity`
+     Cloudflare 429s, slash 429s, watch post-delete thrash). Do **not** keep mashing
+     `/play` / `/shop` during a block — that deepens it. Slash commands are suppressed
+     until the gate clears; Activity board saves keep working (Mongo only). Wait for
+     logs: `Discord GLOBAL API block engaged`.
    - Wait until logs show `Logged in as …` / `/health` shows `ready=True` again (often 15–60 min).
 6. Discord Developer Portal:
    - **OAuth2 → Redirects:** `https://127.0.0.1`

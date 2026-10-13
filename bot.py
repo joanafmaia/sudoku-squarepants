@@ -6852,19 +6852,31 @@ def mark_launch_activity_cooldown(user_id: int) -> None:
 
 async def _reply_launch_notice(interaction: discord.Interaction, message: str) -> None:
     """Best-effort interaction ack. Never retries on 429 — that worsens global limits."""
+    if not is_discord_http_allowed():
+        print("launch_activity notice skipped — Discord API silence gate active")
+        return
     try:
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=True)
         else:
             await interaction.response.send_message(message, ephemeral=True)
     except discord.HTTPException as send_exc:
-        if _is_rate_limit_error(send_exc):
-            note_discord_launch_rate_limit(send_exc)
+        # Cloudflare global blocks must engage the long silence gate immediately —
+        # a short launch backoff + retry replies deepen the ban.
+        engage_discord_silence_if_blocked(
+            send_exc, detail="launch_activity_notice"
+        )
         print(f"launch_activity notice reply failed: {_short_discord_error(send_exc)}")
 
 
 async def _prepare_launch_activity(interaction: discord.Interaction) -> bool:
     """Gate Activity launches. Returns False after replying when blocked."""
+    # While Cloudflare silence is up, never send another Discord HTTP reply —
+    # SudokuCommandTree already suppresses interactions; belt-and-suspenders here.
+    if not is_discord_http_allowed():
+        print("launch_activity skipped — Discord API silence gate active")
+        return False
+
     backoff = discord_launch_backoff_remaining()
     if backoff > 0:
         wait = max(1, int(backoff + 0.999))
@@ -6906,11 +6918,20 @@ async def _execute_launch_activity(
     except Exception as exc:  # noqa: BLE001 — always acknowledge when safe
         print(f"{log_label} failed: {type(exc).__name__}: {_short_discord_error(exc)}")
         if _is_rate_limit_error(exc):
-            wait = note_discord_launch_rate_limit(exc)
-            print(
-                f"{log_label} rate-limited; skipping fallback reply "
-                f"(backoff≈{wait:.1f}s)"
-            )
+            # Global Cloudflare blocks used to only set a 60s launch backoff, so
+            # the next /play still tried notice replies and deepened the ban.
+            silence = engage_discord_silence_if_blocked(exc, detail=log_label)
+            if silence > 0:
+                print(
+                    f"{log_label} global API block; skipping fallback reply "
+                    f"(silence≈{silence:.0f}s)"
+                )
+            else:
+                wait = discord_launch_backoff_remaining()
+                print(
+                    f"{log_label} rate-limited; skipping fallback reply "
+                    f"(backoff≈{wait:.1f}s)"
+                )
             # Extra reply during a 429 almost always fails and deepens the block.
             return False
 
@@ -6922,8 +6943,9 @@ async def _execute_launch_activity(
             else:
                 await interaction.response.send_message(message, ephemeral=True)
         except discord.HTTPException as send_exc:
-            if _is_rate_limit_error(send_exc):
-                note_discord_launch_rate_limit(send_exc)
+            engage_discord_silence_if_blocked(
+                send_exc, detail=f"{log_label}_fallback"
+            )
             print(f"{log_label} fallback reply failed: {_short_discord_error(send_exc)}")
         return False
 
