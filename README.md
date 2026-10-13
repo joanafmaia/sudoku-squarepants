@@ -74,7 +74,8 @@ One **Docker** Web Service builds the Activity and runs the bot.
      `/play` / `/shop` during a block — that deepens it. Slash commands are suppressed
      until the gate clears; Activity board saves keep working (Mongo only). Wait for
      logs: `Discord GLOBAL API block engaged`.
-   - Wait until logs show `Logged in as …` / `/health` shows `ready=True` again (often 15–60 min).
+   - Wait until logs show `Logged in as …` / `/health` shows `ready=True` again (often 30–60 min;
+     repeat blocks escalate toward 1h). Cloudflare HTML 429s start at ~45 min.
 6. Discord Developer Portal:
    - **OAuth2 → Redirects:** `https://127.0.0.1`
    - **Activities → URL Mappings** (sem `https://`):

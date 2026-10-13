@@ -38,10 +38,22 @@ _discord_gateway_status_lock = threading.Lock()
 DISCORD_API_BLOCK_FILE = Path(
     os.getenv("DISCORD_BLOCK_STATE_PATH", "/tmp/discord_api_block.json")
 )
-GLOBAL_API_BLOCK_FLOOR_SEC = float(os.getenv("DISCORD_GLOBAL_BLOCK_FLOOR_S", "900") or 900)
+# 30 min floor — 15 min was clearing while Discord still blocked the Render IP.
+GLOBAL_API_BLOCK_FLOOR_SEC = float(os.getenv("DISCORD_GLOBAL_BLOCK_FLOOR_S", "1800") or 1800)
+# Cloudflare HTML challenge pages mean a harder ban than a JSON global-limit body.
+GLOBAL_API_BLOCK_HTML_FLOOR_SEC = float(
+    os.getenv("DISCORD_GLOBAL_BLOCK_HTML_FLOOR_S", "2700") or 2700
+)
 GLOBAL_API_BLOCK_CAP_SEC = float(os.getenv("DISCORD_GLOBAL_BLOCK_CAP_S", "3600") or 3600)
+# If Discord re-blocks soon after a silence window, double the next wait.
+REBLOCK_ESCALATE_WINDOW_SEC = float(
+    os.getenv("DISCORD_REBLOCK_ESCALATE_WINDOW_S", "7200") or 7200
+)
 _discord_api_gate_until = 0.0
 _discord_api_gate_detail = ""
+_discord_api_gate_last_wait_s = 0.0
+_discord_api_gate_strike = 0
+_discord_api_gate_cleared_at = 0.0
 _discord_api_gate_lock = threading.Lock()
 
 
@@ -72,35 +84,74 @@ def is_discord_api_gated() -> bool:
     return discord_api_gate_remaining() > 0
 
 
-def _write_discord_api_gate_file(until: float, detail: str) -> None:
+def _discord_api_gate_snapshot() -> dict[str, Any]:
+    with _discord_api_gate_lock:
+        return {
+            "until": _discord_api_gate_until,
+            "detail": _discord_api_gate_detail,
+            "last_wait_s": _discord_api_gate_last_wait_s,
+            "strike": _discord_api_gate_strike,
+            "cleared_at": _discord_api_gate_cleared_at,
+            "updated_at": time.time(),
+        }
+
+
+def _apply_discord_api_gate_state(data: dict[str, Any], *, require_active: bool) -> bool:
+    """Merge persisted gate fields into memory. Returns True if anything applied."""
+    global _discord_api_gate_until, _discord_api_gate_detail
+    global _discord_api_gate_last_wait_s, _discord_api_gate_strike, _discord_api_gate_cleared_at
+    try:
+        until = float(data.get("until") or 0)
+        detail = str(data.get("detail") or "")
+        last_wait = float(data.get("last_wait_s") or 0)
+        strike = int(data.get("strike") or 0)
+        cleared_at = float(data.get("cleared_at") or 0)
+    except (TypeError, ValueError):
+        return False
+    now = time.time()
+    if require_active and until <= now and last_wait <= 0 and strike <= 0:
+        return False
+    with _discord_api_gate_lock:
+        if until > _discord_api_gate_until:
+            _discord_api_gate_until = until
+            if detail:
+                _discord_api_gate_detail = detail
+        if last_wait > _discord_api_gate_last_wait_s:
+            _discord_api_gate_last_wait_s = last_wait
+        if strike > _discord_api_gate_strike:
+            _discord_api_gate_strike = strike
+        if cleared_at > _discord_api_gate_cleared_at:
+            _discord_api_gate_cleared_at = cleared_at
+    return True
+
+
+def _write_discord_api_gate_file(state: dict[str, Any] | None = None) -> None:
+    payload = state or _discord_api_gate_snapshot()
     try:
         DISCORD_API_BLOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-        DISCORD_API_BLOCK_FILE.write_text(
-            json.dumps({"until": until, "detail": detail, "updated_at": time.time()}),
-            encoding="utf-8",
-        )
+        DISCORD_API_BLOCK_FILE.write_text(json.dumps(payload), encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         print(f"discord api gate file write failed: {exc}")
 
 
-def _read_discord_api_gate_file() -> tuple[float, str] | None:
+def _read_discord_api_gate_file() -> dict[str, Any] | None:
     try:
         if not DISCORD_API_BLOCK_FILE.is_file():
             return None
         data = json.loads(DISCORD_API_BLOCK_FILE.read_text(encoding="utf-8"))
-        until = float(data.get("until") or 0)
-        detail = str(data.get("detail") or "")
-        if until > time.time():
-            return until, detail
+        if not isinstance(data, dict):
+            return None
+        return data
     except Exception as exc:  # noqa: BLE001
         print(f"discord api gate file read failed: {exc}")
     return None
 
 
-def _write_discord_api_gate_mongo(until: float, detail: str) -> None:
+def _write_discord_api_gate_mongo(state: dict[str, Any] | None = None) -> None:
     uri = (os.getenv("MONGODB_URI") or "").strip()
     if not uri:
         return
+    payload = dict(state or _discord_api_gate_snapshot())
     try:
         from pymongo import MongoClient
 
@@ -109,13 +160,7 @@ def _write_discord_api_gate_mongo(until: float, detail: str) -> None:
         try:
             client[db_name]["runtime_state"].update_one(
                 {"_id": "discord_api_gate"},
-                {
-                    "$set": {
-                        "until": until,
-                        "detail": detail,
-                        "updated_at": time.time(),
-                    }
-                },
+                {"$set": payload},
                 upsert=True,
             )
         finally:
@@ -124,7 +169,7 @@ def _write_discord_api_gate_mongo(until: float, detail: str) -> None:
         print(f"discord api gate mongo write failed: {exc}")
 
 
-def _read_discord_api_gate_mongo() -> tuple[float, str] | None:
+def _read_discord_api_gate_mongo() -> dict[str, Any] | None:
     uri = (os.getenv("MONGODB_URI") or "").strip()
     if not uri:
         return None
@@ -139,49 +184,53 @@ def _read_discord_api_gate_mongo() -> tuple[float, str] | None:
             client.close()
         if not doc:
             return None
-        until = float(doc.get("until") or 0)
-        detail = str(doc.get("detail") or "")
-        if until > time.time():
-            return until, detail
+        doc.pop("_id", None)
+        return doc
     except Exception as exc:  # noqa: BLE001
         print(f"discord api gate mongo read failed: {exc}")
     return None
 
 
-def _clear_discord_api_gate_stores() -> None:
-    try:
-        if DISCORD_API_BLOCK_FILE.is_file():
-            DISCORD_API_BLOCK_FILE.unlink()
-    except Exception:
-        pass
-    uri = (os.getenv("MONGODB_URI") or "").strip()
-    if not uri:
-        return
-    try:
-        from pymongo import MongoClient
-
-        db_name = (os.getenv("MONGODB_DB") or "sudoku").strip() or "sudoku"
-        client = MongoClient(uri, serverSelectionTimeoutMS=4000)
+def _clear_discord_api_gate_stores(*, wipe_history: bool = False) -> None:
+    """Clear active silence. Keep strike/last_wait unless wipe_history."""
+    if wipe_history:
         try:
-            client[db_name]["runtime_state"].delete_one({"_id": "discord_api_gate"})
-        finally:
-            client.close()
-    except Exception as exc:  # noqa: BLE001
-        print(f"discord api gate mongo clear failed: {exc}")
+            if DISCORD_API_BLOCK_FILE.is_file():
+                DISCORD_API_BLOCK_FILE.unlink()
+        except Exception:
+            pass
+        uri = (os.getenv("MONGODB_URI") or "").strip()
+        if not uri:
+            return
+        try:
+            from pymongo import MongoClient
+
+            db_name = (os.getenv("MONGODB_DB") or "sudoku").strip() or "sudoku"
+            client = MongoClient(uri, serverSelectionTimeoutMS=4000)
+            try:
+                client[db_name]["runtime_state"].delete_one({"_id": "discord_api_gate"})
+            finally:
+                client.close()
+        except Exception as exc:  # noqa: BLE001
+            print(f"discord api gate mongo clear failed: {exc}")
+        return
+    # Persist cleared gate + escalation memory so a re-block doubles the wait.
+    state = _discord_api_gate_snapshot()
+    state["until"] = 0.0
+    _write_discord_api_gate_file(state)
+    _write_discord_api_gate_mongo(state)
 
 
 def load_discord_api_gate() -> float:
     """Load persisted gate (Mongo first, then file). Returns seconds remaining."""
-    global _discord_api_gate_until, _discord_api_gate_detail
     loaded = _read_discord_api_gate_mongo() or _read_discord_api_gate_file()
     if not loaded:
         return 0.0
-    until, detail = loaded
-    with _discord_api_gate_lock:
-        if until > _discord_api_gate_until:
-            _discord_api_gate_until = until
-            _discord_api_gate_detail = detail
+    _apply_discord_api_gate_state(loaded, require_active=False)
     remaining = discord_api_gate_remaining()
+    detail = ""
+    with _discord_api_gate_lock:
+        detail = _discord_api_gate_detail
     if remaining > 0:
         print(
             f"Loaded Discord API gate ({detail or 'persisted'}); "
@@ -200,33 +249,74 @@ def note_discord_api_block(
     wait_s: float,
     detail: str = "global_api_block",
 ) -> float:
-    """Engage the Discord API silence window and persist it."""
+    """Engage the Discord API silence window and persist it.
+
+    Re-blocks within REBLOCK_ESCALATE_WINDOW_SEC of a prior silence window
+    double the wait (capped). Cloudflare often clears our timer while the
+    Render IP is still banned — escalating avoids hammering `/shop` again.
+    """
     global _discord_api_gate_until, _discord_api_gate_detail
+    global _discord_api_gate_last_wait_s, _discord_api_gate_strike, _discord_api_gate_cleared_at
     wait_s = max(1.0, float(wait_s))
-    until = time.time() + wait_s
+    now = time.time()
     with _discord_api_gate_lock:
+        prev_wait = _discord_api_gate_last_wait_s
+        prev_strike = _discord_api_gate_strike
+        cleared_at = _discord_api_gate_cleared_at
+        gate_until = _discord_api_gate_until
+        still_gated = gate_until > now
+        recently_cleared = (
+            cleared_at > 0 and (now - cleared_at) < REBLOCK_ESCALATE_WINDOW_SEC
+        )
+        # Gate expired naturally (no clear()) — still count as a recent block.
+        naturally_expired_recently = (
+            prev_wait > 0
+            and gate_until > 0
+            and gate_until <= now
+            and (now - gate_until) < REBLOCK_ESCALATE_WINDOW_SEC
+        )
+        should_escalate = (
+            prev_wait > 0
+            and (still_gated or recently_cleared or naturally_expired_recently)
+        )
+        if should_escalate:
+            strike = max(1, prev_strike) + 1
+            wait_s = max(wait_s, prev_wait * 2.0)
+        else:
+            strike = 1
+        wait_s = min(GLOBAL_API_BLOCK_CAP_SEC, wait_s)
+        until = now + wait_s
         if until > _discord_api_gate_until:
             _discord_api_gate_until = until
             _discord_api_gate_detail = detail
-        remaining = max(0.0, _discord_api_gate_until - time.time())
-        persist_until = _discord_api_gate_until
+        _discord_api_gate_last_wait_s = max(prev_wait, wait_s)
+        _discord_api_gate_strike = strike
+        remaining = max(0.0, _discord_api_gate_until - now)
         persist_detail = _discord_api_gate_detail
-    _write_discord_api_gate_file(persist_until, persist_detail)
-    _write_discord_api_gate_mongo(persist_until, persist_detail)
+    state = _discord_api_gate_snapshot()
+    _write_discord_api_gate_file(state)
+    _write_discord_api_gate_mongo(state)
     set_discord_gateway_status(
         "rate_limited",
         retry_after_s=remaining,
         detail=persist_detail,
     )
+    if strike > 1:
+        print(
+            f"Discord API silence escalated (strike={strike}, "
+            f"wait≈{wait_s:.0f}s, detail={persist_detail})"
+        )
     return remaining
 
 
 def clear_discord_api_gate() -> None:
-    global _discord_api_gate_until, _discord_api_gate_detail
+    """End the active silence window but keep strike memory for re-block escalation."""
+    global _discord_api_gate_until, _discord_api_gate_detail, _discord_api_gate_cleared_at
     with _discord_api_gate_lock:
         _discord_api_gate_until = 0.0
         _discord_api_gate_detail = ""
-    _clear_discord_api_gate_stores()
+        _discord_api_gate_cleared_at = time.time()
+    _clear_discord_api_gate_stores(wipe_history=False)
 
 
 def discord_api_gate_response() -> tuple[int, dict]:

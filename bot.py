@@ -167,7 +167,10 @@ LAUNCH_ACTIVITY_RATE_LIMIT_CAP_SEC = 60.0
 # Login backoff for normal bucket 429s vs Cloudflare global API blocks.
 LOGIN_RATE_LIMIT_FLOOR_SEC = 60.0
 LOGIN_RATE_LIMIT_CAP_SEC = 300.0
-GLOBAL_API_BLOCK_FLOOR_SEC = 900.0  # 15 minutes
+# 30 min floor — 15 min windows were clearing while Discord still blocked us.
+GLOBAL_API_BLOCK_FLOOR_SEC = 1800.0
+# Cloudflare HTML challenge pages (vs JSON global-limit bodies) → harder ban.
+GLOBAL_API_BLOCK_HTML_FLOOR_SEC = 2700.0
 GLOBAL_API_BLOCK_CAP_SEC = 3600.0  # 1 hour
 INVITE_TIMEOUT_SEC = 5 * 60
 DAILY_EPOCH = datetime(2024, 1, 1, tzinfo=timezone.utc).date()
@@ -6736,6 +6739,16 @@ def _is_global_api_block(exc: BaseException) -> bool:
     return _http_status(exc) == 429 and getattr(exc, "code", None) == 0
 
 
+def _is_cloudflare_html_block(exc: BaseException) -> bool:
+    """True when Discord returns a Cloudflare HTML interstitial instead of JSON."""
+    text = str(exc).lower()
+    if "cf-error" in text or "<html" in text or "cloudflare" in text:
+        return True
+    # Production logs often omit the body via _short_discord_error; length is a tell.
+    raw = str(exc)
+    return _http_status(exc) == 429 and getattr(exc, "code", None) == 0 and len(raw) > 500
+
+
 def is_discord_http_allowed() -> bool:
     """False while the persisted Cloudflare/global API silence gate is active."""
     try:
@@ -6760,9 +6773,14 @@ def engage_discord_silence_if_blocked(
         from activity_http import note_discord_api_block
     except Exception:
         return 0.0
+    floor = (
+        GLOBAL_API_BLOCK_HTML_FLOOR_SEC
+        if _is_cloudflare_html_block(exc)
+        else GLOBAL_API_BLOCK_FLOOR_SEC
+    )
     wait = _retry_after_seconds(
         exc,
-        floor=GLOBAL_API_BLOCK_FLOOR_SEC,
+        floor=floor,
         cap=GLOBAL_API_BLOCK_CAP_SEC,
     )
     remaining = note_discord_api_block(wait_s=wait, detail=detail)
@@ -12277,7 +12295,7 @@ def run_bot_with_rate_limit_backoff(token: str) -> None:
     Strategy:
     1. Load any persisted gate (Mongo/file) and wait with **zero** Discord calls
     2. Attempt login only when the gate is clear
-    3. On global block, engage a long silence window (15–60 min) and persist it
+    3. On global block, engage a long silence window (30–60 min, escalating) and persist it
     4. Keep /health up the whole time so Render does not restart-spam login
     """
     from activity_http import (
@@ -12367,11 +12385,16 @@ def run_bot_with_rate_limit_backoff(token: str) -> None:
                         continue
 
                     if global_block:
+                        floor = (
+                            GLOBAL_API_BLOCK_HTML_FLOOR_SEC
+                            if _is_cloudflare_html_block(exc)
+                            else GLOBAL_API_BLOCK_FLOOR_SEC
+                        )
                         wait = max(
                             global_delay,
                             _retry_after_seconds(
                                 exc,
-                                floor=GLOBAL_API_BLOCK_FLOOR_SEC,
+                                floor=floor,
                                 cap=GLOBAL_API_BLOCK_CAP_SEC,
                             ),
                         )
