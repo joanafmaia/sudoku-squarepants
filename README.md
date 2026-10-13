@@ -69,10 +69,13 @@ One **Docker** Web Service builds the Activity and runs the bot.
 5. **UptimeRobot:** HTTP monitor every **5 min** on that `/health` URL
    - If Discord Cloudflare-blocks the Render IP, `/health` stays **200** while the bot waits
      (login=`rate_limited`). Do **not** Manual Deploy spam — that deepens the ban.
-   - The same silence gate also engages **while already logged in** (slash 429s / watch
-     post-delete thrash). Slash commands are suppressed until the gate clears; Activity
-     board saves keep working (Mongo only). Wait for logs: `Discord GLOBAL API block engaged`.
-   - Wait until logs show `Logged in as …` / `/health` shows `ready=True` again (often 15–60 min).
+   - The same silence gate also engages **while already logged in** (`launch_activity`
+     Cloudflare 429s, slash 429s, watch post-delete thrash). Do **not** keep mashing
+     `/play` / `/shop` during a block — that deepens it. Slash commands are suppressed
+     until the gate clears; Activity board saves keep working (Mongo only). Wait for
+     logs: `Discord GLOBAL API block engaged`.
+   - Wait until logs show `Logged in as …` / `/health` shows `ready=True` again (often 30–60 min;
+     repeat blocks escalate toward 1h). Cloudflare HTML 429s start at ~45 min.
 6. Discord Developer Portal:
    - **OAuth2 → Redirects:** `https://127.0.0.1`
    - **Activities → URL Mappings** (sem `https://`):
@@ -83,6 +86,16 @@ One **Docker** Web Service builds the Activity and runs the bot.
    - **Activities → Settings → Supported Platforms** → ativa **Desktop**, **iOS** e **Android**
      (sem isto, no telemóvel aparece “não disponível para este SO”)
 7. Suspend **Netlify** when Render is stable (one token / one host).
+
+### Avoiding Discord Cloudflare bans
+
+Discord bans the **Render outbound IP** (not just one slash command). Prevention beats recovery:
+
+1. **One process, one token** — only the Render Docker service. Suspend Netlify / local `bot.py` / second Render copies that share `DISCORD_TOKEN`.
+2. **Never Manual Deploy spam** while `/health` shows `login=rate_limited` or logs say `GLOBAL API block` — each restart retries login and extends the ban.
+3. **Don’t mash `/play` / `/shop`** after a failure. Wait for `Logged in as…` / `ready=True` (often 30–60 min; repeats escalate to ~1h).
+4. **UptimeRobot only on `/health`** every 5 min — never hit Discord OAuth or slash endpoints from monitors.
+5. The bot already: silences all Discord HTTP on Cloudflare 429s, skips watch `fetch_message` thrash, cools `/play` launches (~20s), and pauses background presence/prune during cooloffs.
 
 If you already created a **Python** service, change it to **Docker** (or recreate from Blueprint) so the Activity build runs.
 
