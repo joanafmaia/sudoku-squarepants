@@ -214,11 +214,12 @@ let activeTheme = "light";
 
 const WIDTH = 720;
 const HEIGHT = 780;
-// Extra side/bottom margin so every catalog pin can sit outside the pineapple frame.
-const BOARD_ORIGIN = { x: 90, y: 108 };
-const CELL = 60;
+// Grid sits centered; wide side cream holds pins so the lagoon doesn't look like empty border.
+const CELL = 64;
 const BOARD_SIZE = CELL * 9;
-const FRAME_PAD = 16;
+const BOARD_ORIGIN = { x: Math.round((WIDTH - BOARD_SIZE) / 2), y: 108 };
+const FRAME_PAD_Y = 16;
+const FRAME_PAD_X = BOARD_ORIGIN.x - 16;
 // Default badge size; drawBorderPins shrinks this so every on-board pin fits.
 const PIN_RADIUS = 16;
 const PIN_RADIUS_MIN = 7;
@@ -707,13 +708,38 @@ export function startThcokuGame(canvas, options = {}) {
     return unique;
   }
 
+  function creamPinColumns(radius) {
+    const ox = BOARD_ORIGIN.x;
+    const d = radius * 2;
+    const colGap = d + 4;
+    const pack = (a, b) => {
+      const room = b - a;
+      if (room < d - 1) return [];
+      const nCols = room >= colGap + d - 1 ? 2 : 1;
+      const block = d + (nCols - 1) * colGap;
+      const first = (a + b) / 2 - block / 2 + radius;
+      const xs = [];
+      for (let i = 0; i < nCols; i++) xs.push(first + i * colGap);
+      return xs.filter((x) => x - radius >= 4 && x + radius <= WIDTH - 4);
+    };
+    return [
+      ...pack(ox - FRAME_PAD_X + 5, ox - 3),
+      ...pack(ox + BOARD_SIZE + 3, ox + BOARD_SIZE + FRAME_PAD_X - 5),
+    ];
+  }
+
+  function creamBottomY(radius) {
+    const gridBottom = BOARD_ORIGIN.y + BOARD_SIZE;
+    const frameBottom = gridBottom + FRAME_PAD_Y + 4;
+    const low = HEIGHT - radius - 6;
+    if (low < frameBottom + radius) return null;
+    return (frameBottom + radius + low) / 2;
+  }
+
   function collectBorderPinSlots(radius) {
     const ox = BOARD_ORIGIN.x;
     const oy = BOARD_ORIGIN.y;
     const step = Math.max(10, radius * 2 - 2);
-    const frameLeft = ox - FRAME_PAD - 4;
-    const frameRight = ox + BOARD_SIZE + FRAME_PAD + 4;
-    const frameBottom = oy + BOARD_SIZE + FRAME_PAD + 4;
     const headerBottom = 82;
     const slots = [];
     const add = (x, y) => {
@@ -721,14 +747,12 @@ export function startThcokuGame(canvas, options = {}) {
       if (y < headerBottom + radius || y > HEIGHT - radius - 2) return;
       slots.push({ x, y });
     };
-    for (let x = radius + 2; x + radius <= frameLeft - 1; x += step) {
+    for (const x of creamPinColumns(radius)) {
       for (let y = oy; y <= oy + BOARD_SIZE; y += step) add(x, y);
     }
-    for (let x = WIDTH - radius - 2; x - radius >= frameRight + 1; x -= step) {
-      for (let y = oy; y <= oy + BOARD_SIZE; y += step) add(x, y);
-    }
-    for (let y = HEIGHT - radius - 6; y - radius >= frameBottom + 1; y -= step) {
-      for (let x = ox; x <= ox + BOARD_SIZE; x += step) add(x, y);
+    const bottomY = creamBottomY(radius);
+    if (bottomY != null) {
+      for (let x = ox; x <= ox + BOARD_SIZE; x += step) add(x, bottomY);
     }
     return slots;
   }
@@ -736,21 +760,10 @@ export function startThcokuGame(canvas, options = {}) {
   function packPinsToFit(need, radius) {
     const ox = BOARD_ORIGIN.x;
     const oy = BOARD_ORIGIN.y;
-    const frameLeft = ox - FRAME_PAD - 4;
-    const frameRight = ox + BOARD_SIZE + FRAME_PAD + 4;
-    const frameBottom = oy + BOARD_SIZE + FRAME_PAD + 4;
-    const gap = radius * 2 + 4;
-    const leftXs = [];
-    for (let x = radius + 2; x + radius <= frameLeft - 1; x += gap) leftXs.push(x);
-    const rightXs = [];
-    for (let x = WIDTH - radius - 2; x - radius >= frameRight + 1; x -= gap) {
-      rightXs.push(x);
-    }
-    const colXs = [...leftXs, ...rightXs];
-    const bottomY = Math.min(HEIGHT - radius - 6, frameBottom + radius + 6);
-    const useBottom = bottomY - radius >= frameBottom + 1;
-    const groups = colXs.length + (useBottom ? 1 : 0);
-    if (!groups) return [];
+    const colXs = creamPinColumns(radius);
+    const bottomY = creamBottomY(radius);
+    const groups = colXs.length + (bottomY != null ? 1 : 0);
+    if (!groups || need <= 0) return [];
     const counts = [];
     const base = Math.floor(need / groups);
     let rem = need % groups;
@@ -772,7 +785,7 @@ export function startThcokuGame(canvas, options = {}) {
     colXs.forEach((x, i) => {
       slots.push(...along(counts[i], x, oy, x, oy + BOARD_SIZE));
     });
-    if (useBottom) {
+    if (bottomY != null) {
       slots.push(
         ...along(counts[counts.length - 1], ox, bottomY, ox + BOARD_SIZE, bottomY)
       );
@@ -784,13 +797,13 @@ export function startThcokuGame(canvas, options = {}) {
     const unique = uniquePinList(cosmetics.pins);
     if (!unique.length) return;
     let radius = PIN_RADIUS;
-    let slots = collectBorderPinSlots(radius);
+    let slots = packPinsToFit(unique.length, radius);
     while (slots.length < unique.length && radius > PIN_RADIUS_MIN) {
       radius -= 1;
-      slots = collectBorderPinSlots(radius);
+      slots = packPinsToFit(unique.length, radius);
     }
     if (slots.length < unique.length) {
-      slots = packPinsToFit(unique.length, radius);
+      slots = collectBorderPinSlots(radius);
     }
     const rng = mulberry32(cosmetics.seed || 1);
     for (let i = slots.length - 1; i > 0; i--) {
@@ -1909,11 +1922,10 @@ export function startThcokuGame(canvas, options = {}) {
   }
 
   function drawPineappleFrame(ox, oy) {
-    const pad = FRAME_PAD;
-    const x = ox - pad;
-    const y = oy - pad;
-    const w = BOARD_SIZE + pad * 2;
-    const h = BOARD_SIZE + pad * 2;
+    const x = ox - FRAME_PAD_X;
+    const y = oy - FRAME_PAD_Y;
+    const w = BOARD_SIZE + FRAME_PAD_X * 2;
+    const h = BOARD_SIZE + FRAME_PAD_Y * 2;
 
     // Short crown — stays in the gap under the header (header is redrawn on top)
     const cx = x + w / 2;

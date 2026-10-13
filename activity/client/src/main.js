@@ -1719,13 +1719,6 @@ function formatWinBoostNote(data) {
   if (data.weekend_pass_used) {
     parts.push("🎟️ +10% XP");
   }
-  if (data.karate_yell_used) {
-    const left =
-      data.karate_yell_remaining != null
-        ? ` (${data.karate_yell_remaining} left)`
-        : "";
-    parts.push(`📢 HIYAH!${left}`);
-  }
   return parts.length ? ` · ${parts.join(" · ")}` : "";
 }
 

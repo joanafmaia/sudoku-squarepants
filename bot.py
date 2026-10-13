@@ -362,7 +362,6 @@ SHOP_PINS = {
     "jellyfish_jam": {"label": "🪼 Jellyfish Jam (+80 sponges if you finish a race)", "pin": "Jam", "emoji": "🪼", "cost": 90},
     "mystery_box": {"label": "📦 Mystery Box (random pin — new or duplicate)", "pin": "Mystery", "emoji": "📦", "cost": 250},
     "weekend_pass": {"label": "🎟️ Weekend Pass (+10% XP until Sunday UTC)", "pin": "Weekend", "emoji": "🎟️", "cost": 180},
-    "karate_yell": {"label": "📢 Karate Yell (flex the next win in chat)", "pin": "Yell", "emoji": "📢", "cost": 40},
     "puff_notes": {"label": "📒 Mrs. Puff's Notes (fill notes after 10 hints)", "pin": "Puff Notes", "emoji": "📒", "cost": 75},
     "wave": {"label": "🌊 Wave Pin", "pin": "Wave", "emoji": "🌊", "cost": 0, "theme": "ocean"},
     # Former title emojis → buyable border pins
@@ -536,7 +535,6 @@ SHOP_BOOST_KEYS = frozenset({
     "jellyfish_jam",
     "mystery_box",
     "weekend_pass",
-    "karate_yell",
     "puff_notes",
 })
 # Daily deals (UTC midnight): one paid pin + one paid title.
@@ -4038,14 +4036,6 @@ def try_consume_jellyfish_jam(stats: dict) -> bool:
     return True
 
 
-def try_consume_karate_yell(stats: dict) -> bool:
-    charges = int(stats.get("karate_yell_charges") or 0)
-    if charges <= 0:
-        return False
-    stats["karate_yell_charges"] = charges - 1
-    return True
-
-
 def try_consume_puff_notes(stats: dict) -> bool:
     charges = int(stats.get("puff_notes_charges") or 0)
     if charges <= 0:
@@ -4674,8 +4664,6 @@ def format_win_boost_lines(
     daily_double_used: bool = False,
     daily_double_remaining: int | None = None,
     weekend_pass_used: bool = False,
-    karate_yell_used: bool = False,
-    karate_yell_remaining: int | None = None,
 ) -> str:
     """Readable multi-line footer for active win power-ups."""
     lines: list[str] = []
@@ -4693,9 +4681,6 @@ def format_win_boost_lines(
         lines.append(f"🎫 **Daily Double** 2× pineapple{rem}")
     if weekend_pass_used:
         lines.append("🎟️ **Weekend Pass +10%** XP")
-    if karate_yell_used:
-        rem = f" · **{karate_yell_remaining}** left" if karate_yell_remaining is not None else ""
-        lines.append(f"📢 **HIYAH!** Karate Yell{rem}")
     if not lines:
         return ""
     return "\n" + "\n".join(lines)
@@ -4714,8 +4699,6 @@ def win_reward_caption(
     daily_double_used: bool = False,
     daily_double_remaining: int | None = None,
     weekend_pass_used: bool = False,
-    karate_yell_used: bool = False,
-    karate_yell_remaining: int | None = None,
     hints_used: int = 0,
     hints_gary_used: int = 0,
 ) -> str:
@@ -4732,8 +4715,6 @@ def win_reward_caption(
         daily_double_used=daily_double_used,
         daily_double_remaining=daily_double_remaining,
         weekend_pass_used=weekend_pass_used,
-        karate_yell_used=karate_yell_used,
-        karate_yell_remaining=karate_yell_remaining,
     )
     hints_line = f"\n{format_hints_used_line(hints_used, hints_gary_used)}"
     return (
@@ -4761,8 +4742,6 @@ def build_activity_win_embed(
     daily_double_used: bool = False,
     daily_double_remaining: int | None = None,
     weekend_pass_used: bool = False,
-    karate_yell_used: bool = False,
-    karate_yell_remaining: int | None = None,
     hints_used: int = 0,
     hints_gary_used: int = 0,
 ) -> discord.Embed:
@@ -4787,19 +4766,13 @@ def build_activity_win_embed(
         daily_double_used=daily_double_used,
         daily_double_remaining=daily_double_remaining,
         weekend_pass_used=weekend_pass_used,
-        karate_yell_used=karate_yell_used,
-        karate_yell_remaining=karate_yell_remaining,
     )
     hints_line = f"\n{format_hints_used_line(hints_used, hints_gary_used)}"
 
     title = f"{badge} {label} completed!"
-    shout = ""
-    if karate_yell_used:
-        title = f"📢 HIYAH! {label} completed!"
-        shout = f"📢 **HIYAH!** {mention} karate-chopped this board!\n"
     embed = paper_embed(title)
     embed.description = (
-        f"{shout}{mention} completed the {label}!\n"
+        f"{mention} completed the {label}!\n"
         f"🏆 **Rank:** {format_rank_line(total_xp)}\n"
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {streak}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
@@ -5079,8 +5052,6 @@ class WinOutcome:
     daily_double_used: bool = False
     daily_double_remaining: int = 0
     weekend_pass_used: bool = False
-    karate_yell_used: bool = False
-    karate_yell_remaining: int = 0
 
 
 def win_boost_caption_kwargs(outcome: WinOutcome) -> dict:
@@ -5101,10 +5072,6 @@ def win_boost_caption_kwargs(outcome: WinOutcome) -> dict:
             int(outcome.daily_double_remaining) if outcome.daily_double_used else None
         ),
         "weekend_pass_used": bool(outcome.weekend_pass_used),
-        "karate_yell_used": bool(outcome.karate_yell_used),
-        "karate_yell_remaining": (
-            int(outcome.karate_yell_remaining) if outcome.karate_yell_used else None
-        ),
     }
 
 
@@ -5247,9 +5214,6 @@ def finish_win(
     if weekend_pass_used:
         xp = int(round(xp * WEEKEND_PASS_XP_MULT))
 
-    karate_yell_used = try_consume_karate_yell(stats)
-    karate_yell_remaining = int(stats.get("karate_yell_charges") or 0)
-
     stats["coins"] += coins
     stats["xp"] = int(stats.get("xp") or 0) + xp
     note_monthly_xp(
@@ -5319,8 +5283,6 @@ def finish_win(
         daily_double_used=daily_double_used,
         daily_double_remaining=daily_double_remaining if daily_double_used else None,
         weekend_pass_used=weekend_pass_used,
-        karate_yell_used=karate_yell_used,
-        karate_yell_remaining=karate_yell_remaining if karate_yell_used else None,
     )
 
     weekly_line = ""
@@ -5331,13 +5293,9 @@ def finish_win(
 
     # Mentions must live in description/content — Discord does not parse <@id> in embed titles.
     title = f"{badge} {label} completed!"
-    shout = ""
-    if karate_yell_used:
-        title = f"📢 HIYAH! {label} completed!"
-        shout = f"📢 **HIYAH!** {user.mention} karate-chopped this board!\n"
     embed = paper_embed(title)
     embed.description = (
-        f"{shout}{user.mention} completed the {label}!\n"
+        f"{user.mention} completed the {label}!\n"
         f"🏆 **Rank:** {format_rank_line(int(stats.get('xp') or 0))}\n"
         f"🎯 **{tier}** · ⏱️ **{format_time(elapsed)}** · {STAR} **Streak: {stats['streak']}**\n"
         f"🎁 **{format_xp(xp, signed=True)}** · **{format_sponges(coins, signed=True)}**"
@@ -5358,8 +5316,6 @@ def finish_win(
         daily_double_used=daily_double_used,
         daily_double_remaining=daily_double_remaining,
         weekend_pass_used=weekend_pass_used,
-        karate_yell_used=karate_yell_used,
-        karate_yell_remaining=karate_yell_remaining,
     )
 
 
@@ -5941,8 +5897,6 @@ async def settle_challenge_match(
             extra_bits = []
             if outcome.weekend_pass_used:
                 extra_bits.append("🎟️ +10% XP")
-            if outcome.karate_yell_used:
-                extra_bits.append("📢 HIYAH!")
             extra = f" · {' · '.join(extra_bits)}" if extra_bits else ""
             reward_notes.append(
                 f"{tag} — {format_sponges(coins, signed=True)} · "
@@ -10373,8 +10327,6 @@ def shop_page_embed(
     dd_str = f"🎫 **Daily Double:** {dd_charges}" if dd_charges > 0 else ""
     jam_charges = int(stats.get("jellyfish_jam_charges") or 0)
     jam_str = f"🪼 **Jam:** {jam_charges}" if jam_charges > 0 else ""
-    yell_charges = int(stats.get("karate_yell_charges") or 0)
-    yell_str = f"📢 **Yell:** {yell_charges}" if yell_charges > 0 else ""
     puff_charges = int(stats.get("puff_notes_charges") or 0)
     puff_str = f"📒 **Puff:** {puff_charges}" if puff_charges > 0 else ""
     wp_until = format_weekend_pass_until(stats)
@@ -10383,7 +10335,7 @@ def shop_page_embed(
     eq_title = SHOP_TITLES[stats.get("title")]["label"] if stats.get("title") in SHOP_TITLES else "Civilian"
     extra_boosts = " · ".join(
         x
-        for x in (snack_str, spatula_str, gary_str, dd_str, jam_str, yell_str, puff_str, wp_str)
+        for x in (snack_str, spatula_str, gary_str, dd_str, jam_str, puff_str, wp_str)
         if x
     )
     on_board_n, owned_n = shop_pin_board_counts(stats)
@@ -10803,32 +10755,6 @@ def apply_shop_purchase(
                 f"Bought {bought_name}! Next race: **+{format_sponges(JELLYFISH_JAM_COINS)}** "
                 f"if you finish (even 2nd). "
                 f"**{stats['jellyfish_jam_charges']}** queued."
-            ),
-        }
-
-    if tid == "karate_yell":
-        if stats["coins"] < cost:
-            return {
-                "ok": False,
-                "bought": False,
-                "message": (
-                    f"Need **{format_sponges(cost)}** "
-                    f"(you have {format_sponges(stats['coins'])})."
-                ),
-            }
-        stats["coins"] -= cost
-        stats["sponges_spent"] = int(stats.get("sponges_spent") or 0) + cost
-        stats["karate_yell_charges"] = int(stats.get("karate_yell_charges") or 0) + qty
-        save_data(bot.data)
-        return {
-            "ok": True,
-            "bought": True,
-            "label": item["label"],
-            "cost": cost,
-            "qty": qty,
-            "message": (
-                f"Bought {bought_name}! Next win shouts **HIYAH!** in chat. "
-                f"**{stats['karate_yell_charges']}** queued."
             ),
         }
 
@@ -13843,7 +13769,7 @@ async def help_cmd(interaction: discord.Interaction):
         name=f"{PINEAPPLE} More",
         value=(
             "`/shop` · `/mystery` · `/luck` · `/weekly` · `/stats` · `/achievements` · `/leaderboard` · `/resume` · `/cleargame` · `/quit`\n"
-            "Power-ups: 🎫 Daily Double · 🪼 Jellyfish Jam · 📦 Mystery Box · 🎟️ Weekend Pass · 📢 Karate Yell · 📒 Mrs. Puff's Notes"
+            "Power-ups: 🎫 Daily Double · 🪼 Jellyfish Jam · 📦 Mystery Box · 🎟️ Weekend Pass · 📒 Mrs. Puff's Notes"
         ),
         inline=False,
     )
