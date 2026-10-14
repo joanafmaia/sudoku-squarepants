@@ -70,9 +70,11 @@ One **Docker** Web Service builds the Activity and runs the bot.
    - If Discord Cloudflare-blocks the Render IP, `/health` stays **200** while the bot waits
      (login=`rate_limited`). Do **not** Manual Deploy spam — that deepens the ban.
    - The same silence gate also engages **while already logged in** (slash 429s / watch
-     post-delete thrash). Slash commands are suppressed until the gate clears; Activity
+     post-delete thrash). Slash commands stay suppressed through a hangover + REST probe
+     so `/shop` is not the first request while Cloudflare still blocks the IP. Activity
      board saves keep working (Mongo only). Wait for logs: `Discord GLOBAL API block engaged`.
-   - Wait until logs show `Logged in as …` / `/health` shows `ready=True` again (often 15–60 min).
+   - `Logged in as …` / `/health` `ready=True` only means the gateway is up. Wait for
+     `Discord REST probe ok` before using slash commands (often 1–3 hours on a shared IP).
 6. Discord Developer Portal:
    - **OAuth2 → Redirects:** `https://127.0.0.1`
    - **Activities → URL Mappings** (sem `https://`):

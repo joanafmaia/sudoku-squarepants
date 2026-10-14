@@ -39,9 +39,25 @@ DISCORD_API_BLOCK_FILE = Path(
     os.getenv("DISCORD_BLOCK_STATE_PATH", "/tmp/discord_api_block.json")
 )
 GLOBAL_API_BLOCK_FLOOR_SEC = float(os.getenv("DISCORD_GLOBAL_BLOCK_FLOOR_S", "900") or 900)
-GLOBAL_API_BLOCK_CAP_SEC = float(os.getenv("DISCORD_GLOBAL_BLOCK_CAP_S", "3600") or 3600)
+GLOBAL_API_BLOCK_CAP_SEC = float(os.getenv("DISCORD_GLOBAL_BLOCK_CAP_S", "10800") or 10800)
+# Slash/watch stay down after the silence timer so a user /shop is not the first
+# REST call while Cloudflare is still blocking the Render IP.
+GLOBAL_API_BLOCK_HANGOVER_SEC = float(
+    os.getenv("DISCORD_GLOBAL_BLOCK_HANGOVER_S", "2700") or 2700
+)
+GLOBAL_API_BLOCK_STREAK_WINDOW_SEC = float(
+    os.getenv("DISCORD_GLOBAL_BLOCK_STREAK_WINDOW_S", "10800") or 10800
+)
+# After a recent Cloudflare block, skip slash-sync burst on the next boot.
+GLOBAL_API_RECENT_BLOCK_BOOT_SEC = float(
+    os.getenv("DISCORD_GLOBAL_BLOCK_RECENT_BOOT_S", "7200") or 7200
+)
 _discord_api_gate_until = 0.0
+_discord_api_http_until = 0.0
 _discord_api_gate_detail = ""
+_discord_api_gate_streak = 0
+_discord_api_last_block_at = 0.0
+_discord_api_needs_probe = False
 _discord_api_gate_lock = threading.Lock()
 
 
@@ -64,40 +80,114 @@ def get_discord_gateway_status() -> dict[str, Any]:
 
 
 def discord_api_gate_remaining() -> float:
+    """Hard silence: no Discord login while this is > 0."""
     with _discord_api_gate_lock:
         return max(0.0, _discord_api_gate_until - time.time())
+
+
+def discord_api_http_remaining() -> float:
+    """Slash/watch/presence silence, including hangover after the login timer."""
+    now = time.time()
+    with _discord_api_gate_lock:
+        return max(
+            0.0,
+            max(_discord_api_gate_until, _discord_api_http_until) - now,
+        )
+
+
+def discord_api_needs_probe() -> bool:
+    with _discord_api_gate_lock:
+        return bool(_discord_api_needs_probe)
 
 
 def is_discord_api_gated() -> bool:
     return discord_api_gate_remaining() > 0
 
 
-def _write_discord_api_gate_file(until: float, detail: str) -> None:
+def _gate_snapshot() -> dict[str, Any]:
+    return {
+        "until": _discord_api_gate_until,
+        "http_until": _discord_api_http_until,
+        "detail": _discord_api_gate_detail,
+        "streak": _discord_api_gate_streak,
+        "last_block_at": _discord_api_last_block_at,
+        "needs_probe": _discord_api_needs_probe,
+        "updated_at": time.time(),
+    }
+
+
+def _snapshot_is_relevant(data: dict[str, Any], *, now: float) -> bool:
+    until = float(data.get("until") or 0)
+    http_until = float(data.get("http_until") or 0)
+    last_block_at = float(data.get("last_block_at") or 0)
+    if until > now or http_until > now or bool(data.get("needs_probe")):
+        return True
+    if last_block_at and (now - last_block_at) < GLOBAL_API_RECENT_BLOCK_BOOT_SEC:
+        return True
+    return False
+
+
+def _apply_gate_snapshot(data: dict[str, Any]) -> None:
+    global _discord_api_gate_until, _discord_api_http_until
+    global _discord_api_gate_detail, _discord_api_gate_streak
+    global _discord_api_last_block_at, _discord_api_needs_probe
+    now = time.time()
+    until = float(data.get("until") or 0)
+    http_until = float(data.get("http_until") or 0)
+    last_block_at = float(data.get("last_block_at") or 0)
+    needs_probe = bool(data.get("needs_probe"))
+    # Boot shortly after a Cloudflare block: keep slash down until a REST probe
+    # succeeds so deploy + /shop is not the first request.
+    if (
+        not needs_probe
+        and last_block_at
+        and (now - last_block_at) < GLOBAL_API_RECENT_BLOCK_BOOT_SEC
+        and until <= now
+        and http_until <= now
+    ):
+        needs_probe = True
+    with _discord_api_gate_lock:
+        if until > _discord_api_gate_until:
+            _discord_api_gate_until = until
+        if http_until > _discord_api_http_until:
+            _discord_api_http_until = http_until
+        _discord_api_gate_detail = str(data.get("detail") or _discord_api_gate_detail)
+        _discord_api_gate_streak = max(
+            _discord_api_gate_streak, int(data.get("streak") or 0)
+        )
+        if last_block_at > _discord_api_last_block_at:
+            _discord_api_last_block_at = last_block_at
+        if needs_probe:
+            _discord_api_needs_probe = True
+
+
+def _write_discord_api_gate_file(snapshot: dict[str, Any]) -> None:
     try:
         DISCORD_API_BLOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
         DISCORD_API_BLOCK_FILE.write_text(
-            json.dumps({"until": until, "detail": detail, "updated_at": time.time()}),
+            json.dumps(snapshot),
             encoding="utf-8",
         )
     except Exception as exc:  # noqa: BLE001
         print(f"discord api gate file write failed: {exc}")
 
 
-def _read_discord_api_gate_file() -> tuple[float, str] | None:
+def _read_discord_api_gate_file() -> dict[str, Any] | None:
     try:
         if not DISCORD_API_BLOCK_FILE.is_file():
             return None
         data = json.loads(DISCORD_API_BLOCK_FILE.read_text(encoding="utf-8"))
-        until = float(data.get("until") or 0)
-        detail = str(data.get("detail") or "")
-        if until > time.time():
-            return until, detail
+        if not isinstance(data, dict):
+            return None
+        if not _snapshot_is_relevant(data, now=time.time()):
+            return None
+        return data
     except Exception as exc:  # noqa: BLE001
         print(f"discord api gate file read failed: {exc}")
     return None
 
 
-def _write_discord_api_gate_mongo(until: float, detail: str) -> None:
+def _write_discord_api_gate_mongo(snapshot: dict[str, Any]) -> None:
     uri = (os.getenv("MONGODB_URI") or "").strip()
     if not uri:
         return
@@ -107,15 +197,11 @@ def _write_discord_api_gate_mongo(until: float, detail: str) -> None:
         db_name = (os.getenv("MONGODB_DB") or "sudoku").strip() or "sudoku"
         client = MongoClient(uri, serverSelectionTimeoutMS=4000)
         try:
+            payload = dict(snapshot)
+            payload["updated_at"] = time.time()
             client[db_name]["runtime_state"].update_one(
                 {"_id": "discord_api_gate"},
-                {
-                    "$set": {
-                        "until": until,
-                        "detail": detail,
-                        "updated_at": time.time(),
-                    }
-                },
+                {"$set": payload},
                 upsert=True,
             )
         finally:
@@ -124,7 +210,7 @@ def _write_discord_api_gate_mongo(until: float, detail: str) -> None:
         print(f"discord api gate mongo write failed: {exc}")
 
 
-def _read_discord_api_gate_mongo() -> tuple[float, str] | None:
+def _read_discord_api_gate_mongo() -> dict[str, Any] | None:
     uri = (os.getenv("MONGODB_URI") or "").strip()
     if not uri:
         return None
@@ -137,15 +223,21 @@ def _read_discord_api_gate_mongo() -> tuple[float, str] | None:
             doc = client[db_name]["runtime_state"].find_one({"_id": "discord_api_gate"})
         finally:
             client.close()
-        if not doc:
+        if not doc or not isinstance(doc, dict):
             return None
-        until = float(doc.get("until") or 0)
-        detail = str(doc.get("detail") or "")
-        if until > time.time():
-            return until, detail
+        if not _snapshot_is_relevant(doc, now=time.time()):
+            return None
+        return doc
     except Exception as exc:  # noqa: BLE001
         print(f"discord api gate mongo read failed: {exc}")
     return None
+
+
+def _persist_discord_api_gate() -> None:
+    with _discord_api_gate_lock:
+        snapshot = _gate_snapshot()
+    _write_discord_api_gate_file(snapshot)
+    _write_discord_api_gate_mongo(snapshot)
 
 
 def _clear_discord_api_gate_stores() -> None:
@@ -171,26 +263,31 @@ def _clear_discord_api_gate_stores() -> None:
 
 
 def load_discord_api_gate() -> float:
-    """Load persisted gate (Mongo first, then file). Returns seconds remaining."""
-    global _discord_api_gate_until, _discord_api_gate_detail
+    """Load persisted gate (Mongo first, then file). Returns silence seconds left."""
     loaded = _read_discord_api_gate_mongo() or _read_discord_api_gate_file()
     if not loaded:
         return 0.0
-    until, detail = loaded
-    with _discord_api_gate_lock:
-        if until > _discord_api_gate_until:
-            _discord_api_gate_until = until
-            _discord_api_gate_detail = detail
+    _apply_gate_snapshot(loaded)
     remaining = discord_api_gate_remaining()
+    http_left = discord_api_http_remaining()
+    needs_probe = discord_api_needs_probe()
+    detail = str(loaded.get("detail") or "persisted")
     if remaining > 0:
         print(
-            f"Loaded Discord API gate ({detail or 'persisted'}); "
-            f"waiting {remaining:.0f}s before any Discord login/API calls"
+            f"Loaded Discord API gate ({detail}); "
+            f"waiting {remaining:.0f}s before any Discord login/API calls "
+            f"(slash hangover≈{http_left:.0f}s probe={int(needs_probe)})"
         )
         set_discord_gateway_status(
             "rate_limited",
             retry_after_s=remaining,
             detail=detail or "persisted_gate",
+        )
+    elif http_left > 0 or needs_probe:
+        print(
+            f"Loaded Discord REST hangover ({detail}); "
+            f"slash/watch suppressed http≈{http_left:.0f}s probe={int(needs_probe)}. "
+            "Login allowed; do not /shop until REST probe ok."
         )
     return remaining
 
@@ -199,20 +296,50 @@ def note_discord_api_block(
     *,
     wait_s: float,
     detail: str = "global_api_block",
+    recover_with_probe: bool = True,
 ) -> float:
-    """Engage the Discord API silence window and persist it."""
-    global _discord_api_gate_until, _discord_api_gate_detail
+    """Engage the Discord API silence window and persist it.
+
+    ``recover_with_probe`` (Cloudflare / global 429): keep slash down through a
+    hangover and until a background REST probe succeeds. Login bucket 429s pass
+    ``recover_with_probe=False`` so a 60s login backoff is not a 45-minute shop ban.
+    """
+    global _discord_api_gate_until, _discord_api_http_until
+    global _discord_api_gate_detail, _discord_api_gate_streak
+    global _discord_api_last_block_at, _discord_api_needs_probe
+    now = time.time()
     wait_s = max(1.0, float(wait_s))
-    until = time.time() + wait_s
     with _discord_api_gate_lock:
+        if recover_with_probe:
+            if (
+                _discord_api_last_block_at
+                and (now - _discord_api_last_block_at)
+                < GLOBAL_API_BLOCK_STREAK_WINDOW_SEC
+            ):
+                streak = max(1, _discord_api_gate_streak) + 1
+            else:
+                streak = 1
+            wait_s = min(
+                GLOBAL_API_BLOCK_CAP_SEC,
+                max(wait_s, GLOBAL_API_BLOCK_FLOOR_SEC) * (2 ** (streak - 1)),
+            )
+        else:
+            streak = _discord_api_gate_streak
+        until = now + wait_s
         if until > _discord_api_gate_until:
             _discord_api_gate_until = until
             _discord_api_gate_detail = detail
-        remaining = max(0.0, _discord_api_gate_until - time.time())
-        persist_until = _discord_api_gate_until
+        if recover_with_probe:
+            _discord_api_http_until = max(
+                _discord_api_http_until,
+                _discord_api_gate_until + GLOBAL_API_BLOCK_HANGOVER_SEC,
+            )
+            _discord_api_gate_streak = streak
+            _discord_api_last_block_at = now
+            _discord_api_needs_probe = True
+        remaining = max(0.0, _discord_api_gate_until - now)
         persist_detail = _discord_api_gate_detail
-    _write_discord_api_gate_file(persist_until, persist_detail)
-    _write_discord_api_gate_mongo(persist_until, persist_detail)
+    _persist_discord_api_gate()
     set_discord_gateway_status(
         "rate_limited",
         retry_after_s=remaining,
@@ -221,11 +348,41 @@ def note_discord_api_block(
     return remaining
 
 
-def clear_discord_api_gate() -> None:
-    global _discord_api_gate_until, _discord_api_gate_detail
+def mark_discord_rest_healthy() -> None:
+    """Clear slash hangover after a successful REST probe. Keep streak memory."""
+    global _discord_api_gate_until, _discord_api_http_until
+    global _discord_api_gate_detail, _discord_api_needs_probe
     with _discord_api_gate_lock:
         _discord_api_gate_until = 0.0
+        _discord_api_http_until = 0.0
         _discord_api_gate_detail = ""
+        _discord_api_needs_probe = False
+        snapshot = _gate_snapshot()
+    _write_discord_api_gate_file(snapshot)
+    _write_discord_api_gate_mongo(snapshot)
+    set_discord_gateway_status("ready", detail="rest_probe_ok")
+
+
+def clear_discord_api_gate() -> None:
+    """Drop live silence only when REST is healthy. Keep last_block memory for a bit."""
+    global _discord_api_gate_until, _discord_api_http_until
+    global _discord_api_gate_detail, _discord_api_needs_probe
+    now = time.time()
+    with _discord_api_gate_lock:
+        if _discord_api_needs_probe or max(
+            0.0, max(_discord_api_gate_until, _discord_api_http_until) - now
+        ) > 0:
+            return
+        _discord_api_gate_until = 0.0
+        _discord_api_http_until = 0.0
+        _discord_api_gate_detail = ""
+        _discord_api_needs_probe = False
+        last_block_at = _discord_api_last_block_at
+        snapshot = _gate_snapshot()
+    if last_block_at and (now - last_block_at) < GLOBAL_API_RECENT_BLOCK_BOOT_SEC:
+        _write_discord_api_gate_file(snapshot)
+        _write_discord_api_gate_mongo(snapshot)
+        return
     _clear_discord_api_gate_stores()
 
 
@@ -3217,6 +3374,10 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
             gw = get_discord_gateway_status()
             login_state = str(gw.get("login_state") or "starting")
             retry_after_s = float(gw.get("retry_after_s") or 0.0)
+            http_s = discord_api_http_remaining()
+            probe = int(discord_api_needs_probe())
+            if http_s > retry_after_s:
+                retry_after_s = http_s
             # While Discord login is rate-limited we are intentionally alive and
             # backing off. Returning 503 here makes Render restart the service,
             # which immediately retries static_login and prolongs the block.
@@ -3226,7 +3387,8 @@ def start_unified_http_server(bot_getter: BotGetter) -> None:
             label = "ok" if status == 200 else "not_ready"
             body = (
                 f"{label} ready={ready} user={user} "
-                f"login={login_state} retry_after_s={retry_after_s:.0f}"
+                f"login={login_state} retry_after_s={retry_after_s:.0f} "
+                f"http_s={http_s:.0f} probe={probe}"
             ).encode()
             self._send(status, body, "text/plain; charset=utf-8", extra={})
 

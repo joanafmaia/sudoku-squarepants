@@ -58,43 +58,6 @@ JELLYFISH_JAM_COINS = 80
 REWARD_BOOST_GAMES_PER_PURCHASE = 3
 HINT_SPONGE_COST = 15
 PUFF_NOTES_HINT_GATE = 10
-# Lucky die: fair 50/50 — 4–6 doubles the pot, 1–3 busts. Cash out or ride.
-LUCK_DIE_MIN = 50
-LUCK_DIE_MAX = 50_000
-LUCK_POT_CAP = 1_000_000
-LUCK_STAKE_PRESETS = (100, 500, 1_000, 5_000)
-LUCK_WIN_MIN_FACE = 4
-LUCK_FACE_PIPS = ("⚀", "⚁", "⚂", "⚃", "⚄", "⚅")
-LUCK_ODDS_LINE = "**50/50** — **4–6** doubles · **1–3** busts."
-LUCK_SHAKE_SEC = 1.7
-LUCK_TUMBLE_SEC = 1.2
-LUCK_TUMBLE_BEATS = 2
-LUCK_LAND_SEC = 1.4
-LUCK_SHAKE_LINES = (
-    "*blows on the die…*",
-    "*the die rattles in a sweaty sponge fist…*",
-    "*Patrick blows on it. Too hard.*",
-    "*Krabs is watching the pile…*",
-    "*please be a six—*",
-    "*skips it across the Krusty Krab floor…*",
-)
-LUCK_WIN_FLAVOR = {
-    4: ("by a whisker. Still counts.", "four. The cheap seats are screaming."),
-    5: ("FIVE! The grill's on fire.", "five. Somebody order a Krabby Patty."),
-    6: ("NATURAL SIX! Krabs is sweating.", "six. Neptune himself winked."),
-}
-LUCK_BUST_FLAVOR = {
-    1: ("one. Total wipe.", "one. Plankton sends his thanks."),
-    2: ("two. Empty table.", "two. The pile walked off."),
-    3: ("three. So close.", "three. The table gasped."),
-}
-LUCK_STAKE_LABELS = {
-    100: "Toss 100",
-    500: "Toss 500",
-    1_000: "Toss 1k",
-    5_000: "YOLO 5k",
-}
-
 # Ordered list of difficulty keys (matches DIFF_KEYS in sudoku-core.js)
 DIFF_KEYS_LIST: list[str] = list(DIFFICULTY_TIERS.keys())
 
@@ -168,7 +131,7 @@ LAUNCH_ACTIVITY_RATE_LIMIT_CAP_SEC = 60.0
 LOGIN_RATE_LIMIT_FLOOR_SEC = 60.0
 LOGIN_RATE_LIMIT_CAP_SEC = 300.0
 GLOBAL_API_BLOCK_FLOOR_SEC = 900.0  # 15 minutes
-GLOBAL_API_BLOCK_CAP_SEC = 3600.0  # 1 hour
+GLOBAL_API_BLOCK_CAP_SEC = 10800.0  # 3 hours (repeat Cloudflare blocks last longer)
 INVITE_TIMEOUT_SEC = 5 * 60
 DAILY_EPOCH = datetime(2024, 1, 1, tzinfo=timezone.utc).date()
 # Optional: set to your server ID for instant slash-command updates (global sync can lag).
@@ -826,8 +789,7 @@ def build_stats_embed(
     embed.description = (
         f"**{format_rank_compact(stats.get('xp', 0))}**\n"
         f"Streak {STAR} **{streak}** (best {best_streak})\n"
-        f"{format_sponges(stats.get('coins', 0))} · spent **{spent}**"
-        f"{luck_stats_line(stats)}\n"
+        f"{format_sponges(stats.get('coins', 0))} · spent **{spent}**\n"
         f"**{wins}** solved · races **{chall}**W–**{losses}**L{race_rate} · "
         f"best **{best}** · longest **{longest}**\n"
         f"PBs (VE–X) · {format_best_times_by_difficulty(stats)}\n"
@@ -1044,7 +1006,6 @@ _challenge_live_tasks: dict[str, asyncio.Task] = {}
 _activity_notify_inflight: set[str] = set()
 _daily_finish_locks: dict[str, asyncio.Lock] = {}
 _challenge_match_locks: dict[str, asyncio.Lock] = {}
-_luck_user_locks: dict[str, asyncio.Lock] = {}
 _leaderboard_mirror_generation = 0
 _leaderboard_mirror_lock = asyncio.Lock()
 WATCH_ACTIVE_SEC = 45
@@ -1713,12 +1674,17 @@ def user_stats(gstats: dict, user_id: int) -> dict:
     s.setdefault("hints", 0)
     s.setdefault("daily_wins", 0)
     s.setdefault("challenge_wins", 0)
-    s.setdefault("luck_pot", 0)
-    s.setdefault("luck_streak", 0)
-    s.setdefault("luck_run", [])
-    s.setdefault("luck_faces", [])
-    s.setdefault("luck_best_walk", 0)
-    s.setdefault("luck_best_streak", 0)
+    # Lucky Die retired — refund any pot still on the table.
+    try:
+        leftover = max(0, int(s.get("luck_pot") or 0))
+    except (TypeError, ValueError):
+        leftover = 0
+    if leftover:
+        s["coins"] = int(s.get("coins") or 0) + leftover
+        s["luck_pot"] = 0
+        s["luck_streak"] = 0
+        s["luck_run"] = []
+        s["luck_faces"] = []
     return s
 
 
@@ -6737,11 +6703,15 @@ def _is_global_api_block(exc: BaseException) -> bool:
 
 
 def is_discord_http_allowed() -> bool:
-    """False while the persisted Cloudflare/global API silence gate is active."""
+    """False until the Cloudflare timer, hangover, and REST probe have all cleared."""
     try:
-        from activity_http import is_discord_api_gated
+        from activity_http import discord_api_http_remaining, discord_api_needs_probe
 
-        return not is_discord_api_gated()
+        if discord_api_http_remaining() > 0:
+            return False
+        if discord_api_needs_probe():
+            return False
+        return True
     except Exception:
         return True
 
@@ -6757,7 +6727,7 @@ def engage_discord_silence_if_blocked(
             note_discord_launch_rate_limit(exc)
         return 0.0
     try:
-        from activity_http import note_discord_api_block
+        from activity_http import discord_api_http_remaining, note_discord_api_block
     except Exception:
         return 0.0
     wait = _retry_after_seconds(
@@ -6766,9 +6736,13 @@ def engage_discord_silence_if_blocked(
         cap=GLOBAL_API_BLOCK_CAP_SEC,
     )
     remaining = note_discord_api_block(wait_s=wait, detail=detail)
+    try:
+        slash_left = discord_api_http_remaining()
+    except Exception:
+        slash_left = remaining
     print(
         f"Discord GLOBAL API block engaged ({detail}); "
-        f"silence≈{remaining:.0f}s: {_short_discord_error(exc)}"
+        f"silence≈{remaining:.0f}s slash≈{slash_left:.0f}s: {_short_discord_error(exc)}"
     )
     return remaining
 
@@ -12255,7 +12229,8 @@ def run_bot_with_rate_limit_backoff(token: str) -> None:
     Strategy:
     1. Load any persisted gate (Mongo/file) and wait with **zero** Discord calls
     2. Attempt login only when the gate is clear
-    3. On global block, engage a long silence window (15–60 min) and persist it
+    3. On global block, engage a long silence window, then a slash hangover + REST
+       probe so a user /shop is not the first request while Cloudflare still blocks
     4. Keep /health up the whole time so Render does not restart-spam login
     """
     from activity_http import (
@@ -12308,9 +12283,8 @@ def run_bot_with_rate_limit_backoff(token: str) -> None:
                     await _prepare_bot_for_relogin(bot)
                     set_discord_gateway_status("connecting", detail="bot.start")
                     await bot.start(token)
-                    # Keep any runtime Cloudflare silence across disconnects so the
-                    # next boot still waits (load_discord_api_gate). Only clear when
-                    # the timer has already elapsed.
+                    # Keep Cloudflare hangover/probe across disconnects. Only wipe
+                    # stores when REST is healthy (clear_discord_api_gate no-ops if not).
                     if discord_api_gate_remaining() <= 0:
                         clear_discord_api_gate()
                     set_discord_gateway_status("starting", detail="disconnected")
@@ -12377,7 +12351,11 @@ def run_bot_with_rate_limit_backoff(token: str) -> None:
                         ),
                     )
                     wait = min(LOGIN_RATE_LIMIT_CAP_SEC, wait)
-                    note_discord_api_block(wait_s=wait, detail="login_429")
+                    note_discord_api_block(
+                        wait_s=wait,
+                        detail="login_429",
+                        recover_with_probe=False,
+                    )
                     print(
                         f"Discord login rate-limited (429). "
                         f"Keeping /health up; retrying in {wait:.0f}s... "
@@ -12406,7 +12384,7 @@ class SudokuCommandTree(app_commands.CommandTree):
                 name = (interaction.data or {}).get("custom_id") or "component"
         except Exception:
             pass
-        print(f"interaction suppressed (discord api gated): {name}")
+        print(f"interaction suppressed (discord api hangover/probe): {name}")
         return False
 
 
@@ -12419,6 +12397,7 @@ class SudokuBot(commands.Bot):
             tree_cls=SudokuCommandTree,
         )
         self.data = load_data()
+        self._ready_http_complete = False
 
     async def setup_hook(self) -> None:
         await match_store.connect()
@@ -12430,7 +12409,7 @@ class SudokuBot(commands.Bot):
         self._log_slash_payload_limits()
         if not is_discord_http_allowed():
             print(
-                "Skipping slash command sync — Discord API silence gate is active. "
+                "Skipping slash command sync — Discord REST hangover/probe is active. "
                 "Will use previously synced commands."
             )
             return
@@ -12531,6 +12510,8 @@ async def on_app_command_error(
 ) -> None:
     """Never leave a slash command hanging on an uncaught exception."""
     root = error.original if isinstance(error, app_commands.CommandInvokeError) else error
+    if isinstance(error, app_commands.CheckFailure) and not is_discord_http_allowed():
+        return
     print(f"app command error: {_short_discord_error(root)}")
     # Cloudflare/global 429s: engage silence and do NOT send another HTTP reply —
     # that almost always fails and deepens the block.
@@ -12743,6 +12724,13 @@ async def check_daily_announcement():
         )
         return
 
+    if not is_discord_http_allowed():
+        print(
+            f"[DailyAnnouncement] Midnight window deferred for {today_str} — "
+            "Discord REST hangover/probe still active."
+        )
+        return
+
     _remember(today_str)
     print(f"[DailyAnnouncement] Midnight window — broadcasting {today_str}...")
     sent = await broadcast_daily_announcement()
@@ -12755,7 +12743,6 @@ async def _wait_daily_announce_ready():
 
 
 PATCH_NOTES_COMMANDS = (
-    "luck",
     "mystery",
     "shop",
     "weekly",
@@ -12806,16 +12793,6 @@ def build_patch_notes_embed(*, mentions: dict[str, str] | None = None) -> discor
     embed.description = (
         f"{WAVE} **Ahoy, Bikini Bottom!**\n"
         "The Krusty Krab just dropped a fat update. Tap a command to try it — I'm ready!"
-    )
-    embed.add_field(
-        name="🎲 Lucky Die",
-        value=(
-            f"{cmd('luck')} — stake sponges, the die **rattles in public**, then lands.\n"
-            "**50/50** — **4–6** doubles the pile · **1–3** it's gone.\n"
-            "Win? **Pocket** it or **Double to X**. Cash out closes the table.\n"
-            f"Heaters show the ladder (`500 → 1,000 → 2,000`). Best walk lives on {cmd('stats')}."
-        ),
-        inline=False,
     )
     embed.add_field(
         name="📦 Mystery Box",
@@ -13396,9 +13373,67 @@ async def restore_persisted_sessions(bot: "SudokuBot") -> None:
     )
 
 
+async def _run_ready_discord_http(*, reason: str) -> None:
+    """Presence, panel restore, and season payout — only once REST is healthy."""
+    if getattr(bot, "_ready_http_complete", False):
+        return
+    if not is_discord_http_allowed():
+        return
+    try:
+        await bot.change_presence(activity=STATUS_ROTATION[0])
+    except discord.HTTPException as exc:
+        engage_discord_silence_if_blocked(exc, detail=f"{reason}_presence")
+        print(f"{reason} presence skipped: {_short_discord_error(exc)}")
+        return
+    await restore_persisted_sessions(bot)
+    if is_discord_http_allowed():
+        await announce_season_payout(bot)
+    bot._ready_http_complete = True
+    print(f"Discord ready HTTP complete ({reason}) — slash commands should respond now")
+
+
+@tasks.loop(seconds=120)
+async def probe_discord_rest():
+    """After Cloudflare silence + hangover, probe REST so /shop is not the first hit."""
+    from activity_http import (
+        discord_api_gate_remaining,
+        discord_api_http_remaining,
+        discord_api_needs_probe,
+        mark_discord_rest_healthy,
+    )
+
+    if discord_api_gate_remaining() > 0 or discord_api_http_remaining() > 0:
+        return
+    if not discord_api_needs_probe():
+        return
+    if not bot.is_ready() or bot.user is None:
+        return
+    try:
+        await bot.fetch_user(bot.user.id)
+    except discord.HTTPException as exc:
+        engage_discord_silence_if_blocked(exc, detail="rest_probe")
+        print(f"Discord REST probe failed: {_short_discord_error(exc)}")
+        return
+    except Exception as exc:  # noqa: BLE001
+        print(f"Discord REST probe error: {exc}")
+        return
+    mark_discord_rest_healthy()
+    print("Discord REST probe ok — slash/watch HTTP allowed again")
+    await _run_ready_discord_http(reason="rest_probe")
+
+
+@probe_discord_rest.before_loop
+async def _probe_discord_rest_wait() -> None:
+    await bot.wait_until_ready()
+
+
 @bot.event
 async def on_ready():
-    from activity_http import discord_api_gate_remaining, set_discord_gateway_status
+    from activity_http import (
+        discord_api_gate_remaining,
+        discord_api_http_remaining,
+        set_discord_gateway_status,
+    )
 
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print(f"Activity watch channel id: {ACTIVITY_WATCH_CHANNEL_ID or 'unset'}")
@@ -13407,10 +13442,12 @@ async def on_ready():
     # can fire while REST is still blocked; wiping the gate makes slash commands
     # hammer Discord again and deepens the ban. The gate expires by timer only.
     gated_left = discord_api_gate_remaining()
-    if gated_left > 0:
+    http_left = discord_api_http_remaining()
+    if gated_left > 0 or http_left > 0 or not is_discord_http_allowed():
         print(
-            f"Discord API silence gate still active ({gated_left:.0f}s left) — "
-            "slash/watch HTTP suppressed until it expires. Do not redeploy."
+            f"Discord REST still silenced (login_gate≈{gated_left:.0f}s "
+            f"slash≈{http_left:.0f}s) — wait for 'Discord REST probe ok'. "
+            "Do not /shop or redeploy."
         )
     if not os.getenv("MONGODB_URI", "").strip():
         print(
@@ -13423,19 +13460,17 @@ async def on_ready():
         check_daily_announcement.start()
     if not prune_idle_activity_watch_announcements.is_running():
         prune_idle_activity_watch_announcements.start()
-    if is_discord_http_allowed():
-        try:
-            await bot.change_presence(activity=STATUS_ROTATION[0])
-        except discord.HTTPException as exc:
-            engage_discord_silence_if_blocked(exc, detail="on_ready_presence")
-            print(f"on_ready presence skipped: {_short_discord_error(exc)}")
-    await restore_persisted_sessions(bot)
+    if not probe_discord_rest.is_running():
+        probe_discord_rest.start()
+    # Watch views are Mongo + add_view only (no Discord REST).
     await restore_challenge_watch_views(bot)
     await restore_activity_play_watch_views(bot)
     bot.add_view(ChallengeLaunchActivityView())
-    if is_discord_http_allowed():
-        await announce_season_payout(bot)
-    print("on_ready complete — slash commands should respond now")
+    await _run_ready_discord_http(reason="on_ready")
+    if not getattr(bot, "_ready_http_complete", False):
+        print("on_ready complete — slash suppressed until REST probe ok")
+    else:
+        print("on_ready complete")
 
 
 @bot.listen("on_interaction")
@@ -13903,7 +13938,7 @@ async def help_cmd(interaction: discord.Interaction):
     embed.add_field(
         name=f"{PINEAPPLE} More",
         value=(
-            "`/shop` · `/mystery` · `/luck` · `/weekly` · `/stats` · `/achievements` · `/leaderboard` · `/resume` · `/cleargame` · `/quit`\n"
+            "`/shop` · `/mystery` · `/weekly` · `/stats` · `/achievements` · `/leaderboard` · `/resume` · `/cleargame` · `/quit`\n"
             "Power-ups: 🎫 Daily Double · 🪼 Jellyfish Jam · 📦 Mystery Box · 🎟️ Weekend Pass · 📒 Mrs. Puff's Notes"
         ),
         inline=False,
@@ -15078,696 +15113,6 @@ async def mystery_cmd(
         await msg.edit(embed=mystery_desk_embed(view._stats()), view=view)
     except discord.HTTPException:
         pass
-
-
-def _luck_user_lock(guild_id: int, user_id: int) -> asyncio.Lock:
-    key = f"{guild_id}:{user_id}"
-    lock = _luck_user_locks.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _luck_user_locks[key] = lock
-    return lock
-
-
-def luck_pot_of(stats: dict) -> int:
-    return max(0, int(stats.get("luck_pot") or 0))
-
-
-def luck_streak_of(stats: dict) -> int:
-    return max(0, int(stats.get("luck_streak") or 0))
-
-
-def luck_run_of(stats: dict) -> list[int]:
-    raw = stats.get("luck_run") or []
-    out: list[int] = []
-    if not isinstance(raw, list):
-        return out
-    for n in raw:
-        try:
-            v = int(n)
-        except (TypeError, ValueError):
-            continue
-        if v > 0:
-            out.append(v)
-    return out
-
-
-def luck_faces_of(stats: dict) -> list[int]:
-    return parse_luck_faces(stats.get("luck_faces"))
-
-
-def parse_luck_faces(raw: object) -> list[int]:
-    out: list[int] = []
-    if not isinstance(raw, list):
-        return out
-    for n in raw:
-        try:
-            v = int(n)
-        except (TypeError, ValueError):
-            continue
-        if 1 <= v <= 6:
-            out.append(v)
-    return out
-
-
-def luck_face_glyph(face: int) -> str:
-    if 1 <= int(face) <= 6:
-        return LUCK_FACE_PIPS[int(face) - 1]
-    return "🎲"
-
-
-def luck_chip_amount(n: int) -> str:
-    n = int(n)
-    if n >= 1_000 and n % 1_000 == 0:
-        return f"{n // 1_000}k"
-    return f"{n:,}"
-
-
-def format_luck_ladder(
-    run: list[int] | None,
-    faces: list[int] | None = None,
-    *,
-    bust: bool = False,
-) -> str:
-    vals = [int(n) for n in (run or []) if int(n) > 0]
-    pips = parse_luck_faces(faces)
-    if not vals:
-        return ""
-    parts: list[str] = [f"{vals[0]:,}"]
-    for i, pot in enumerate(vals[1:]):
-        glyph = luck_face_glyph(pips[i]) if i < len(pips) else ""
-        parts.append(f"{glyph} {pot:,}" if glyph else f"{pot:,}")
-    if bust:
-        bust_i = len(vals) - 1
-        glyph = luck_face_glyph(pips[bust_i]) if bust_i < len(pips) else ""
-        parts.append(f"{glyph}💀" if glyph else "💀")
-    if len(parts) < 2:
-        return ""
-    return " → ".join(parts) + f" {SPONGE}"
-
-
-def luck_stake_of(run: list[int] | None, fallback: int = 0) -> int:
-    for n in run or []:
-        try:
-            v = int(n)
-        except (TypeError, ValueError):
-            continue
-        if v > 0:
-            return v
-    return max(0, int(fallback or 0))
-
-
-def format_luck_recap(
-    run: list[int] | None,
-    *,
-    won: int | None = None,
-    lost: int | None = None,
-    faces: list[int] | None = None,
-) -> str:
-    """Closing line: Bet 100 · 3 rolls → won 1,000 (+900)."""
-    n = len(parse_luck_faces(faces))
-    roll_bit = f" · **{n}** roll{'s' if n != 1 else ''}" if n else ""
-    if won:
-        stake = luck_stake_of(run, fallback=int(won))
-        profit = int(won) - stake
-        line = (
-            f"Bet **{format_sponges(stake)}**{roll_bit} → "
-            f"won **{format_sponges(int(won))}**"
-        )
-        if profit:
-            line += f" ({format_sponges(profit, signed=True)})"
-        return line
-    if lost:
-        stake = luck_stake_of(run, fallback=int(lost))
-        return (
-            f"Bet **{format_sponges(stake)}**{roll_bit} → "
-            f"lost **{format_sponges(int(lost))}**"
-        )
-    return ""
-
-
-def luck_face_flavor(face: int, *, win: bool) -> str:
-    table = LUCK_WIN_FLAVOR if win else LUCK_BUST_FLAVOR
-    options = table.get(int(face)) or ()
-    if options:
-        return random.choice(options)
-    return "doubled!" if win else "bust."
-
-
-def luck_stats_line(stats: dict) -> str:
-    walk = max(0, int(stats.get("luck_best_walk") or 0))
-    run = max(0, int(stats.get("luck_best_streak") or 0))
-    if walk <= 0 and run <= 0:
-        return ""
-    bits: list[str] = []
-    if walk:
-        bits.append(f"walk {format_sponges(walk)}")
-    if run:
-        bits.append(f"run {run}")
-    return f"\n🎲 luck best {' · '.join(bits)}"
-
-
-def luck_die_embed(
-    stats: dict,
-    *,
-    mention: str | None = None,
-    face: int | None = None,
-    outcome: str | None = None,
-    cashed: int | None = None,
-    phase: str | None = None,
-    shake: str | None = None,
-    tumble: str | None = None,
-    flavor: str | None = None,
-    streak: int = 0,
-    run: list[int] | None = None,
-    faces: list[int] | None = None,
-    lost: int = 0,
-) -> discord.Embed:
-    pot = luck_pot_of(stats)
-    pocket = int(stats.get("coins") or 0)
-    who = mention or "You"
-    run = list(run if run is not None else luck_run_of(stats))
-    faces = list(faces if faces is not None else luck_faces_of(stats))
-    streak = max(0, int(streak or 0))
-    trail = format_luck_ladder(run, faces)
-    trail_line = f"\n📈 {trail}" if trail else ""
-    if phase == "shake":
-        return paper_embed(
-            "🎲 Lucky Die",
-            description=(
-                f"{who} {shake or random.choice(LUCK_SHAKE_LINES)}\n"
-                f"On the table: **{format_sponges(pot)}**\n"
-                f"{LUCK_ODDS_LINE}{trail_line}"
-            ),
-        )
-    if phase == "tumble":
-        dice = tumble or "  ".join(random.choice(LUCK_FACE_PIPS) for _ in range(3))
-        return paper_embed(
-            "🎲 Lucky Die",
-            description=(
-                f"{who} the die is tumbling…\n"
-                f"# {dice}\n"
-                f"On the table: **{format_sponges(pot)}**\n"
-                f"{LUCK_ODDS_LINE}{trail_line}"
-            ),
-        )
-    if phase == "land":
-        glyph = tumble or random.choice(LUCK_FACE_PIPS)
-        return paper_embed(
-            "🎲 Lucky Die",
-            description=(
-                f"{who} it's coming down…\n"
-                f"# {glyph}\n"
-                f"On the table: **{format_sponges(pot)}**\n"
-                f"{LUCK_ODDS_LINE}{trail_line}"
-            ),
-        )
-    lines: list[str] = []
-    title = "🎲 Lucky Die"
-    color = COLOR_PAPER
-    if face is not None:
-        glyph = luck_face_glyph(face)
-        punch = flavor or luck_face_flavor(int(face), win=outcome == "win")
-        if outcome == "win":
-            color = COLOR_OCEAN
-            title = "🔥 Lucky Die" if streak >= 2 else "🎲 Lucky Die"
-            if streak >= 3:
-                title = f"🔥 Lucky Die · {streak} in a row"
-            lines.append(f"# {glyph}")
-            lines.append(f"**{face}** — {punch}")
-            lines.append(f"**DOUBLED** to **{format_sponges(pot)}**!")
-            ladder = format_luck_ladder(run, faces)
-            if ladder:
-                lines.append(f"📈 {ladder}")
-            nxt = pot * 2
-            if nxt > LUCK_POT_CAP:
-                lines.append(
-                    f"Pot cap **{format_sponges(LUCK_POT_CAP)}** — pocket it or it stops here."
-                )
-            else:
-                lines.append(
-                    f"{who} can **pocket {format_sponges(pot)}** or ride for "
-                    f"**{format_sponges(nxt)}**.\n"
-                    f"{LUCK_ODDS_LINE}"
-                )
-        elif outcome == "bust":
-            color = COLOR_DANGER
-            title = "💀 Lucky Die"
-            lines.append(f"# {glyph}")
-            lines.append(f"**{face}** — {punch}")
-            lost_n = max(0, int(lost or 0))
-            recap = format_luck_recap(run, lost=lost_n or None, faces=faces)
-            if recap:
-                lines.append(recap)
-            elif lost_n:
-                lines.append(f"**{format_sponges(lost_n)}** vanished. Barnacles.")
-            if streak >= 2:
-                lines.append(f"Went **{streak}** deep. The table gasped.")
-            ladder = format_luck_ladder(run, faces, bust=True)
-            if ladder:
-                lines.append(f"📈 {ladder}")
-            lines.append(
-                f"Toss again? {LUCK_ODDS_LINE}\n"
-                f"💰 Pocket: **{format_sponges(pocket)}**"
-            )
-        else:
-            lines.append(f"{glyph} Rolled **{face}**.")
-    if cashed:
-        title = "💰 Lucky Die"
-        color = COLOR_OCEAN
-        walk = int(cashed)
-        recap = format_luck_recap(run, won=walk, faces=faces)
-        if recap:
-            lines.append(f"💰 {recap}")
-        else:
-            lines.append(f"💰 Walked with **{format_sponges(walk)}**.")
-        ladder = format_luck_ladder(run, faces)
-        if ladder:
-            lines.append(f"📈 {ladder}")
-        lines.append(f"Pocket now **{format_sponges(pocket)}**.")
-        if streak >= 3:
-            lines.append("Smart sponge. The table's still clapping.")
-        elif streak >= 1:
-            lines.append("Took the money and ran.")
-        lines.append("Table closed — `/luck` to play again.")
-    elif pot > 0 and outcome != "win":
-        lines.append(f"{who} has **{format_sponges(pot)}** on the table.")
-        if streak:
-            lines.append(f"🔥 **{streak}** in a row.")
-        ladder = format_luck_ladder(run, faces)
-        if ladder:
-            lines.append(f"📈 {ladder}")
-        lines.append(LUCK_ODDS_LINE)
-        nxt = pot * 2
-        if nxt > LUCK_POT_CAP:
-            lines.append(f"Pot cap **{format_sponges(LUCK_POT_CAP)}** — cash out to keep it.")
-        else:
-            lines.append(f"Pocket it, or ride for **{format_sponges(nxt)}**.")
-    elif not cashed and outcome != "bust" and face is None:
-        lines.append(
-            "Double or nothing at the Krusty Krab.\n"
-            f"{LUCK_ODDS_LINE}\n"
-            "Win? Pocket it — or shove it back in.\n\n"
-            f"Stake **{format_sponges(LUCK_DIE_MIN)}–{format_sponges(LUCK_DIE_MAX)}** "
-            f"(or `/luck amount:5000`).\n"
-            f"💰 Pocket: **{format_sponges(pocket)}**"
-        )
-    embed = paper_embed(title, description="\n".join(lines))
-    embed.color = color
-    return embed
-
-
-def apply_luck_stake(bot: "SudokuBot", guild_id: int, user_id: int, amount: int) -> dict:
-    gstats = guild_stats(bot.data, guild_id)
-    stats = user_stats(gstats, user_id)
-    if luck_pot_of(stats) > 0:
-        return {
-            "ok": False,
-            "message": "You already have a pot — cash out or ride it.",
-        }
-    try:
-        amount = int(amount)
-    except (TypeError, ValueError):
-        amount = 0
-    if amount < LUCK_DIE_MIN:
-        return {
-            "ok": False,
-            "message": f"Minimum stake is **{format_sponges(LUCK_DIE_MIN)}**.",
-        }
-    if amount > LUCK_DIE_MAX:
-        return {
-            "ok": False,
-            "message": f"Max starting bet is **{format_sponges(LUCK_DIE_MAX)}**.",
-        }
-    coins = int(stats.get("coins") or 0)
-    if coins < amount:
-        return {
-            "ok": False,
-            "message": (
-                f"Need **{format_sponges(amount)}** "
-                f"(you have {format_sponges(coins)})."
-            ),
-        }
-    stats["coins"] = coins - amount
-    stats["luck_pot"] = amount
-    stats["luck_streak"] = 0
-    stats["luck_run"] = [amount]
-    stats["luck_faces"] = []
-    save_data(bot.data)
-    return {"ok": True, "pot": amount, "coins": stats["coins"]}
-
-
-def apply_luck_roll(bot: "SudokuBot", guild_id: int, user_id: int) -> dict:
-    gstats = guild_stats(bot.data, guild_id)
-    stats = user_stats(gstats, user_id)
-    pot = luck_pot_of(stats)
-    if pot <= 0:
-        return {"ok": False, "message": "No pot on the table — stake first."}
-    face = random.randint(1, 6)
-    run = luck_run_of(stats)
-    if not run:
-        run = [pot]
-    faces = [*luck_faces_of(stats), face]
-    if face >= LUCK_WIN_MIN_FACE:
-        doubled = min(pot * 2, LUCK_POT_CAP)
-        streak = luck_streak_of(stats) + 1
-        run = [*run, doubled]
-        stats["luck_pot"] = doubled
-        stats["luck_streak"] = streak
-        stats["luck_run"] = run
-        stats["luck_faces"] = faces
-        if streak > int(stats.get("luck_best_streak") or 0):
-            stats["luck_best_streak"] = streak
-        save_data(bot.data)
-        return {
-            "ok": True,
-            "win": True,
-            "bust": False,
-            "face": face,
-            "pot": doubled,
-            "streak": streak,
-            "run": run,
-            "faces": faces,
-        }
-    streak = luck_streak_of(stats)
-    stats["luck_pot"] = 0
-    stats["luck_streak"] = 0
-    stats["luck_run"] = []
-    stats["luck_faces"] = []
-    save_data(bot.data)
-    return {
-        "ok": True,
-        "win": False,
-        "bust": True,
-        "face": face,
-        "pot": 0,
-        "lost": pot,
-        "streak": streak,
-        "run": run,
-        "faces": faces,
-    }
-
-
-def apply_luck_cashout(bot: "SudokuBot", guild_id: int, user_id: int) -> dict:
-    gstats = guild_stats(bot.data, guild_id)
-    stats = user_stats(gstats, user_id)
-    pot = luck_pot_of(stats)
-    if pot <= 0:
-        return {"ok": False, "message": "Nothing to cash out."}
-    streak = luck_streak_of(stats)
-    run = luck_run_of(stats)
-    faces = luck_faces_of(stats)
-    stats["coins"] = int(stats.get("coins") or 0) + pot
-    stats["luck_pot"] = 0
-    stats["luck_streak"] = 0
-    stats["luck_run"] = []
-    stats["luck_faces"] = []
-    if pot > int(stats.get("luck_best_walk") or 0):
-        stats["luck_best_walk"] = pot
-    save_data(bot.data)
-    return {
-        "ok": True,
-        "cashed": pot,
-        "coins": int(stats["coins"]),
-        "streak": streak,
-        "run": run,
-        "faces": faces,
-    }
-
-
-class LuckDieView(discord.ui.View):
-    """Public lucky-die table: stake, tumble, then pocket or ride."""
-
-    def __init__(
-        self,
-        bot: "SudokuBot",
-        *,
-        owner_id: int,
-        guild_id: int,
-        mention: str,
-        face: int | None = None,
-        outcome: str | None = None,
-        cashed: int | None = None,
-    ):
-        super().__init__(timeout=240)
-        self.bot = bot
-        self.owner_id = owner_id
-        self.guild_id = guild_id
-        self.mention = mention
-        self.face = face
-        self.outcome = outcome
-        self.cashed = cashed
-        self.flavor: str | None = None
-        self.shake: str | None = None
-        self.tumble: str | None = None
-        self.streak = 0
-        self.run: list[int] = []
-        self.faces: list[int] = []
-        self.lost = 0
-        stats = self._stats()
-        if luck_pot_of(stats) > 0:
-            self.streak = luck_streak_of(stats)
-            self.run = luck_run_of(stats)
-            self.faces = luck_faces_of(stats)
-        self.message: discord.Message | None = None
-        self._rebuild()
-
-    def _stats(self) -> dict:
-        return user_stats(guild_stats(self.bot.data, self.guild_id), self.owner_id)
-
-    def build_embed(self, *, phase: str | None = None) -> discord.Embed:
-        return luck_die_embed(
-            self._stats(),
-            mention=self.mention,
-            face=self.face,
-            outcome=self.outcome,
-            cashed=self.cashed,
-            phase=phase,
-            shake=self.shake,
-            tumble=self.tumble,
-            flavor=self.flavor,
-            streak=self.streak,
-            run=self.run,
-            faces=self.faces,
-            lost=self.lost,
-        )
-
-    def _rebuild(self) -> None:
-        self.clear_items()
-        if self.cashed:
-            return
-        stats = self._stats()
-        pot = luck_pot_of(stats)
-        coins = int(stats.get("coins") or 0)
-        if pot > 0:
-            cash = discord.ui.Button(
-                label=f"Pocket {luck_chip_amount(pot)}",
-                emoji="💰",
-                style=discord.ButtonStyle.success,
-            )
-            cash.callback = self.on_cashout
-            self.add_item(cash)
-            nxt = pot * 2
-            can_ride = nxt <= LUCK_POT_CAP
-            ride = discord.ui.Button(
-                label=(
-                    f"Double to {luck_chip_amount(nxt)}"
-                    if can_ride
-                    else "Cap — pocket it"
-                ),
-                emoji="🔥",
-                style=discord.ButtonStyle.danger,
-                disabled=not can_ride,
-            )
-            ride.callback = self.on_ride
-            self.add_item(ride)
-            return
-        for n in LUCK_STAKE_PRESETS:
-            btn = discord.ui.Button(
-                label=LUCK_STAKE_LABELS.get(n, f"Toss {luck_chip_amount(n)}"),
-                emoji="🎲",
-                style=(
-                    discord.ButtonStyle.danger
-                    if n == 5_000
-                    else discord.ButtonStyle.primary
-                    if n == 1_000
-                    else discord.ButtonStyle.secondary
-                ),
-                disabled=coins < n or n > LUCK_DIE_MAX,
-            )
-            btn.callback = self._bind_stake(n)
-            self.add_item(btn)
-
-    def _bind_stake(self, amount: int):
-        async def _cb(interaction: discord.Interaction) -> None:
-            await self._stake_and_roll(interaction, amount)
-
-        return _cb
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message(
-                "That's not your die — run `/luck`.",
-                ephemeral=True,
-            )
-            return False
-        return True
-
-    async def _edit(self, interaction: discord.Interaction, *, phase: str | None = None) -> None:
-        self._rebuild()
-        if phase:
-            for child in self.children:
-                child.disabled = True  # type: ignore[attr-defined]
-        embed = self.build_embed(phase=phase)
-        target = self.message or interaction.message
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.edit_message(embed=embed, view=self)
-            elif target is not None:
-                await target.edit(embed=embed, view=self)
-            else:
-                await interaction.edit_original_response(embed=embed, view=self)
-        except discord.HTTPException:
-            pass
-
-    def _apply_roll_result(self, result: dict) -> None:
-        self.face = int(result.get("face") or 0) or None
-        self.outcome = "win" if result.get("win") else "bust"
-        self.cashed = None
-        self.flavor = luck_face_flavor(self.face or 0, win=bool(result.get("win")))
-        self.streak = int(result.get("streak") or 0)
-        self.run = list(result.get("run") or [])
-        self.faces = parse_luck_faces(result.get("faces"))
-        self.lost = int(result.get("lost") or 0)
-        self.shake = None
-        self.tumble = None
-
-    async def _tumble_and_resolve(self, interaction: discord.Interaction) -> None:
-        self.face = None
-        self.outcome = None
-        self.cashed = None
-        self.flavor = None
-        self.lost = 0
-        stats = self._stats()
-        self.streak = luck_streak_of(stats)
-        self.run = luck_run_of(stats)
-        self.faces = luck_faces_of(stats)
-        self.shake = random.choice(LUCK_SHAKE_LINES)
-        await self._edit(interaction, phase="shake")
-        await asyncio.sleep(LUCK_SHAKE_SEC)
-        for _ in range(LUCK_TUMBLE_BEATS):
-            self.tumble = "  ".join(random.choice(LUCK_FACE_PIPS) for _ in range(3))
-            await self._edit(interaction, phase="tumble")
-            await asyncio.sleep(LUCK_TUMBLE_SEC)
-        self.tumble = random.choice(LUCK_FACE_PIPS)
-        await self._edit(interaction, phase="land")
-        await asyncio.sleep(LUCK_LAND_SEC)
-        result = apply_luck_roll(self.bot, self.guild_id, self.owner_id)
-        if not result.get("ok"):
-            self.shake = None
-            self.tumble = None
-            await self._edit(interaction)
-            return
-        self._apply_roll_result(result)
-        await self._edit(interaction)
-
-    async def _stake_and_roll(self, interaction: discord.Interaction, amount: int) -> None:
-        async with _luck_user_lock(self.guild_id, self.owner_id):
-            placed = apply_luck_stake(self.bot, self.guild_id, self.owner_id, amount)
-            if not placed.get("ok"):
-                await interaction.response.send_message(placed["message"], ephemeral=True)
-                return
-            await self._tumble_and_resolve(interaction)
-
-    async def on_ride(self, interaction: discord.Interaction) -> None:
-        async with _luck_user_lock(self.guild_id, self.owner_id):
-            if luck_pot_of(self._stats()) <= 0:
-                await interaction.response.send_message(
-                    "No pot left — stake again.",
-                    ephemeral=True,
-                )
-                return
-            await self._tumble_and_resolve(interaction)
-
-    async def on_cashout(self, interaction: discord.Interaction) -> None:
-        async with _luck_user_lock(self.guild_id, self.owner_id):
-            result = apply_luck_cashout(self.bot, self.guild_id, self.owner_id)
-            if not result.get("ok"):
-                await interaction.response.send_message(result["message"], ephemeral=True)
-                return
-            self.face = None
-            self.outcome = None
-            self.flavor = None
-            self.cashed = int(result.get("cashed") or 0)
-            self.streak = int(result.get("streak") or 0)
-            self.run = list(result.get("run") or [])
-            self.faces = parse_luck_faces(result.get("faces"))
-            self.lost = 0
-            await self._edit(interaction)
-            self.stop()
-
-    async def on_timeout(self) -> None:
-        for child in self.children:
-            child.disabled = True  # type: ignore[attr-defined]
-        if self.message is None:
-            return
-        try:
-            embed = self.build_embed()
-            pot = luck_pot_of(self._stats())
-            if pot > 0:
-                extra = (
-                    f"\n\n❄️ Die went cold — `/luck` to pick up "
-                    f"**{format_sponges(pot)}**."
-                )
-                embed.description = (embed.description or "") + extra
-            await self.message.edit(embed=embed, view=self)
-        except discord.HTTPException:
-            pass
-
-
-@bot.tree.command(
-    name="luck",
-    description="Lucky die — fair 50/50, rattle, then pocket or ride",
-)
-@app_commands.describe(
-    amount="Stake from pocket (50–50,000). Skip to pick a chip on the table."
-)
-async def luck_cmd(
-    interaction: discord.Interaction,
-    amount: app_commands.Range[int, 50, 50_000] | None = None,
-):
-    if interaction.guild is None:
-        await interaction.response.send_message("Server only.", ephemeral=True)
-        return
-    await interaction.response.defer()
-    gstats = guild_stats(bot.data, interaction.guild.id)
-    stats = user_stats(gstats, interaction.user.id)
-    stats["name"] = interaction.user.display_name
-    save_data(bot.data)
-    view = LuckDieView(
-        bot,
-        owner_id=interaction.user.id,
-        guild_id=interaction.guild.id,
-        mention=interaction.user.mention,
-    )
-    msg = await interaction.followup.send(
-        embed=view.build_embed(),
-        view=view,
-        wait=True,
-    )
-    view.message = msg
-    if amount is None:
-        return
-    if luck_pot_of(view._stats()) > 0:
-        try:
-            await interaction.followup.send(
-                "You already have a pot — cash out or let it ride.",
-                ephemeral=True,
-            )
-        except discord.HTTPException:
-            pass
-        return
-    await view._stake_and_roll(interaction, int(amount))
 
 
 @bot.tree.command(name="shop", description="Spend sponges at the Krusty Shop")
