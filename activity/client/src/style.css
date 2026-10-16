@@ -281,18 +281,22 @@ body {
   margin: 0 auto;
 }
 
-.ctrl-actions-edit.has-puff {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.ctrl-actions-edit.has-puff button {
-  font-size: 0.95rem;
-  padding: 0 4px;
-}
-
 /* /play /daily /challenge: Diff hidden — Quit · Hint · Reset */
 .ctrl-actions-meta.is-compact {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ctrl-actions-meta.has-puff,
+.ctrl-actions-meta.is-compact.has-puff,
+.ctrl-actions-meta.is-free-diff.has-puff {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) 48px;
+}
+
+.ctrl-actions-meta.has-puff #ctrl-puffnotes {
+  width: 48px;
+  min-width: 48px;
+  padding: 0;
+  font-size: 1.25rem;
 }
 
 .ctrl-actions-meta.is-compact #ctrl-diff,

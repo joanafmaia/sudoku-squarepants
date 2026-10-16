@@ -520,13 +520,13 @@ function ensureControls(shell) {
       <button type="button" data-action="undo" id="ctrl-undo" title="Undo move">↩ Undo</button>
       <button type="button" data-action="clear" class="ctrl-clear" title="Clear selected cell">Clear</button>
       <button type="button" data-action="pencil" id="ctrl-pencil" title="Lock notes mode · or hold a number for a note">Lock notes</button>
-      <button type="button" data-action="puffnotes" id="ctrl-puffnotes" hidden title="Mrs. Puff fills notes after 10 hints">📒 Notes</button>
     </div>
     <div class="ctrl-actions ctrl-actions-meta" id="ctrl-meta" role="group" aria-label="Game Setup Actions">
       <button type="button" data-action="quit" id="ctrl-quit" class="btn-danger">🚪 Quit</button>
       <button type="button" data-action="hint" id="ctrl-hint" title="Get a hint">💡 Hint</button>
       <button type="button" data-action="reset" id="ctrl-reset" title="Clear all your entries (keeps clues)">↺ Reset</button>
       <button type="button" data-action="diff" id="ctrl-diff">Medium</button>
+      <button type="button" data-action="puffnotes" id="ctrl-puffnotes" hidden title="Mrs. Puff fills notes after 10 hints">📒</button>
     </div>
   `;
     shell.appendChild(bar);
@@ -560,15 +560,19 @@ function ensureControls(shell) {
     pencil.textContent = "Lock notes";
   }
   bar.querySelector("#ctrl-autonotes")?.remove();
-  if (pencil && !bar.querySelector("#ctrl-puffnotes")) {
-    const puff = document.createElement("button");
+  const metaRow = bar.querySelector("#ctrl-meta");
+  let puff = bar.querySelector("#ctrl-puffnotes");
+  if (!puff) {
+    puff = document.createElement("button");
     puff.type = "button";
     puff.id = "ctrl-puffnotes";
     puff.dataset.action = "puffnotes";
     puff.hidden = true;
     puff.title = "Mrs. Puff fills notes after 10 hints";
-    puff.textContent = "📒 Notes";
-    pencil.insertAdjacentElement("afterend", puff);
+    puff.textContent = "📒";
+  }
+  if (metaRow && puff && metaRow.lastElementChild !== puff) {
+    metaRow.appendChild(puff);
   }
   bar.querySelectorAll(".ctrl-digit").forEach((btn) => {
     const n = btn.dataset.digit;
@@ -1153,32 +1157,30 @@ export function startThcokuGame(canvas, options = {}) {
 
   function syncPuffNotesButton() {
     const btn = controls.querySelector("#ctrl-puffnotes");
-    const edit = controls.querySelector(".ctrl-actions-edit");
+    const meta = controls.querySelector("#ctrl-meta");
     if (!btn) return;
     const show =
       !state.spectatorMode &&
       !state.noHints &&
       (state.puffNotesCharges > 0 || state.puffNotesUsed);
     btn.hidden = !show;
-    if (edit) edit.classList.toggle("has-puff", show);
+    if (meta) meta.classList.toggle("has-puff", show);
+    btn.textContent = "📒";
     if (!show) return;
     const need = state.puffNotesHintGate || 10;
     if (state.puffNotesUsed) {
       btn.disabled = true;
-      btn.textContent = "📒 Done";
       btn.title = "Mrs. Puff already filled notes this puzzle";
       btn.style.opacity = "0.55";
       return;
     }
     if (state.hintsUsed < need) {
       btn.disabled = true;
-      btn.textContent = `📒 ${state.hintsUsed}/${need}`;
-      btn.title = `Mrs. Puff's Notes unlock after ${need} hints this puzzle`;
+      btn.title = `Mrs. Puff's Notes unlock after ${need} hints this puzzle (${state.hintsUsed}/${need})`;
       btn.style.opacity = "0.55";
       return;
     }
     btn.disabled = Boolean(state.puffNotesInFlight);
-    btn.textContent = "📒 Notes";
     btn.title = "Fill every empty cell with legal pencil notes";
     btn.style.opacity = state.puffNotesInFlight ? "0.55" : "";
   }
