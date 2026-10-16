@@ -621,34 +621,35 @@ WEEKLY_FULL_CLAIM_ID = "full_set"
 SEASON_PRIZES = (3000, 1500, 750)
 
 # Career XP thresholds (XP mirrors sponge grants on win).
-# Curve stays friendly early, then accelerates so endgame is a long grind.
-# Rough wins at ~100 XP/avg: L2≈3 · L5≈28 · L8≈140 · L10≈400 · L12≈1000 · L15≈3200 · L20≈15500 · L25≈65000
+# Early ranks stay friendly; mid/end stretch ~1.8× so Crystal Ball / Spatula
+# / Weekend Pass don't clear the board in a week.
+# Rough wins at ~180 XP/avg (buffed Medium): L2≈2 · L5≈25 · L8≈145 · L10≈420 · L12≈1000 · L15≈3300 · L20≈16700 · L25≈69400
 LEVEL_RANKS = [
     (0, 1, "🍔 Fry Cook"),
-    (250, 2, "🍔 Senior Fry Cook"),
-    (700, 3, "🪼 Jellycatcher"),
-    (1500, 4, "🪼 Jellyfisher Master"),
-    (2800, 5, "🚗 Boatmobile Student"),
-    (5000, 6, "🚗 Boatmobile Ace"),
-    (8500, 7, "🐚 Shell City Explorer"),
-    (14000, 8, "🍦 Goofy Goober Master"),
-    (23000, 9, "🧜 Hero of Bikini Bottom"),
-    (40000, 10, "👑 King of Bikini Bottom"),
-    (65000, 11, "🪸 Reef Warden"),
-    (100000, 12, "🪣 Chum Bucket Rival"),
-    (150000, 13, "👻 Dutchman's Crew"),
-    (220000, 14, "🍍 Pineapple Immortal"),
-    (320000, 15, "👑 Neptune's Heir"),
-    (450000, 16, "🧂 Salty Spitoon Prospect"),
-    (620000, 17, "🧂 Salty Spitoon Regular"),
-    (850000, 18, "🐙 Tentacle's Rival"),
-    (1150000, 19, "🪄 Magic Conch Oracle"),
-    (1550000, 20, "🔱 Atlantis Champion"),
-    (2100000, 21, "🧊 Freeze Frame Champ"),
-    (2800000, 22, "🎸 Sweet Victory"),
-    (3700000, 23, "🫧 Bubble Bowl Legend"),
-    (4900000, 24, "🌌 Galaxy Wanderer"),
-    (6500000, 25, "🌊 Lord of the Deep"),
+    (350, 2, "🍔 Senior Fry Cook"),
+    (1000, 3, "🪼 Jellycatcher"),
+    (2200, 4, "🪼 Jellyfisher Master"),
+    (4500, 5, "🚗 Boatmobile Student"),
+    (9000, 6, "🚗 Boatmobile Ace"),
+    (16000, 7, "🐚 Shell City Explorer"),
+    (26000, 8, "🍦 Goofy Goober Master"),
+    (42000, 9, "🧜 Hero of Bikini Bottom"),
+    (75000, 10, "👑 King of Bikini Bottom"),
+    (120000, 11, "🪸 Reef Warden"),
+    (185000, 12, "🪣 Chum Bucket Rival"),
+    (280000, 13, "👻 Dutchman's Crew"),
+    (410000, 14, "🍍 Pineapple Immortal"),
+    (600000, 15, "👑 Neptune's Heir"),
+    (850000, 16, "🧂 Salty Spitoon Prospect"),
+    (1200000, 17, "🧂 Salty Spitoon Regular"),
+    (1650000, 18, "🐙 Tentacle's Rival"),
+    (2250000, 19, "🪄 Magic Conch Oracle"),
+    (3000000, 20, "🔱 Atlantis Champion"),
+    (4000000, 21, "🧊 Freeze Frame Champ"),
+    (5400000, 22, "🎸 Sweet Victory"),
+    (7200000, 23, "🫧 Bubble Bowl Legend"),
+    (9500000, 24, "🌌 Galaxy Wanderer"),
+    (12500000, 25, "🌊 Lord of the Deep"),
 ]
 
 
