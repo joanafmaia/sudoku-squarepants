@@ -4099,10 +4099,18 @@ MYSTERY_RARITY_FLAVOR: dict[str, tuple[str, ...]] = {
 }
 MYSTERY_DUPE_FLAVOR = (
     "Already on the dome. Barnacles.",
-    "A duplicate. Krabs isn't refunding.",
+    "Same sticker twice. Krabs tossed a few sponges back.",
     "You already had this one. That's luck.",
-    "Same sticker twice. The box shrugged.",
+    "The box shrugged. A little sponge crumb for the trouble.",
 )
+# Dupes stay luck (no second sticker). Crumb is always less than the 250 box.
+MYSTERY_DUPE_SPONGES = {
+    "common": 25,
+    "uncommon": 50,
+    "rare": 75,
+    "epic": 100,
+    "legendary": 150,
+}
 MYSTERY_RATTLE_LINES = (
     "📦 *The box rattles…*",
     "📦 *Mrs. Puff shakes it like a jelly…*",
@@ -4188,6 +4196,10 @@ def mystery_pity_line(stats: dict) -> str:
         f"Pity **{n}/{MYSTERY_PITY_STREAK}** "
         f"(8 commons → next ≥ Uncommon)"
     )
+
+
+def mystery_dupe_sponges(rarity_key: str) -> int:
+    return int(MYSTERY_DUPE_SPONGES.get(str(rarity_key or "common"), 25))
 
 
 def _mystery_min_rank() -> int:
@@ -4379,9 +4391,11 @@ def build_mystery_reveal_embed(
     for drop in drops:
         pin_name = _mystery_pin_name(drop)
         if drop.get("duplicate"):
+            crumb = int(drop.get("consolation") or 0)
+            extra = f" · {format_sponges(crumb, signed=True)}" if crumb else ""
             lines.append(
                 f"{drop.get('rarity_emoji', '📦')} **{drop.get('rarity_label', 'Pin')}** — "
-                f"{pin_name} · **Duplicate** (already owned)"
+                f"{pin_name} · **Duplicate** (already owned){extra}"
             )
         else:
             lines.append(
@@ -4396,7 +4410,14 @@ def build_mystery_reveal_embed(
             "\nTick new pins under Pins → **My board**, or browse Pins → **Mystery Box**."
         )
     elif drops:
-        lines.append("\nThat's luck — duplicates don't add a second sticker.")
+        crumbs = sum(int(d.get("consolation") or 0) for d in drops)
+        if crumbs:
+            lines.append(
+                f"\nThat's luck — no second sticker. Krabs tossed "
+                f"**{format_sponges(crumbs)}** back."
+            )
+        else:
+            lines.append("\nThat's luck — duplicates don't add a second sticker.")
     embed = discord.Embed(title=headline, description="\n".join(lines), color=color)
     embed.set_footer(text=f"{SPONGE} Bikini Bottom Sudoku  ·  I'm ready!")
     return embed
@@ -4562,6 +4583,7 @@ def mystery_desk_embed(stats: dict) -> discord.Embed:
     embed = paper_embed("📦 Mystery Box")
     embed.description = (
         f"Crack a **random pin** — new or duplicate, that's luck. "
+        f"Dupes don't stack; Krabs tosses a few sponges back. "
         f"Rarity first, then the pin, **in this channel**.\n\n"
         f"💰 Pocket: **{pocket}** · **{format_sponges(unit)}** each\n"
         f"📚 Collection **{have} / {total}**"
@@ -10511,6 +10533,7 @@ def shop_page_embed(
             have, total = mystery_collection_progress(stats)
             detail += (
                 "\n📦 *Opens **in chat** — random pin, **new or duplicate**. "
+                "Dupes toss sponges back (no second sticker). "
                 "Buy more than one and crack them one at a time.* "
                 "Dedicated desk: `/mystery`.\n"
                 f"📚 Collection **{have} / {total}**\n"
@@ -10938,10 +10961,14 @@ def apply_shop_purchase(
         total = len(picked)
         for i, (pid, meta, rarity) in enumerate(picked, start=1):
             is_new = grant_owned_pin(stats, pid)
+            consolation = 0
             if is_new:
                 flavor_pool = MYSTERY_RARITY_FLAVOR.get(rarity["key"]) or ("Nice pin.",)
             else:
                 flavor_pool = MYSTERY_DUPE_FLAVOR
+                consolation = mystery_dupe_sponges(rarity["key"])
+                if consolation:
+                    stats["coins"] = int(stats.get("coins") or 0) + consolation
             drop = {
                 "id": pid,
                 "label": meta.get("label") or pid,
@@ -10955,6 +10982,7 @@ def apply_shop_purchase(
                 "flavor": random.choice(flavor_pool),
                 "pity": bool(rarity.get("pity")),
                 "duplicate": not is_new,
+                "consolation": consolation,
                 "index": i,
                 "total": total,
             }
@@ -10980,7 +11008,7 @@ def apply_shop_purchase(
             "drops": drops,
             "message": (
                 f"📦 **You unwrapped:**\n{got}\n"
-                "New pins → **My board**. Duplicates stay luck."
+                "New pins → **My board**. Duplicates toss sponges back."
             ),
         }
 
@@ -12843,7 +12871,8 @@ def build_patch_notes_embed(*, mentions: dict[str, str] | None = None) -> discor
         value=(
             f"{cmd('mystery')} — the desk: **public** unwrap (rattle → rarity → pin), "
             "album of what you've pulled, collection like **30/100**.\n"
-            "Expensive pins stay scarce (legendary **1%**). Duplicates **can** drop — that's luck. "
+            "Expensive pins stay scarce (legendary **1%**). Duplicates **can** drop — that's luck; "
+            "no second sticker, a few sponges back. "
             "8 commons in a row primes pity (**Uncommon+**).\n"
             f"{cmd('shop')} — buy boxes. Filter **Mystery Box** (Ocean & Crew is gone).\n"
             f"{cmd('luck')} — double or nothing (**50/50**). Pocket or ride; no die animation."
