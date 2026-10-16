@@ -1123,9 +1123,37 @@ export function startThcokuGame(canvas, options = {}) {
     syncHintButton();
   }
 
+  function puffNotesVisible() {
+    return (
+      !state.spectatorMode &&
+      !state.noHints &&
+      (state.puffNotesCharges > 0 || state.puffNotesUsed)
+    );
+  }
+
+  function puffPadSuffix() {
+    if (!puffNotesVisible()) return "";
+    const need = state.puffNotesHintGate || 10;
+    if (state.puffNotesUsed) return " · 📒 done";
+    if (state.hintsUsed < need) return ` · 📒 ${state.hintsUsed}/${need}`;
+    return " · 📒 ready";
+  }
+
+  function syncPadHint() {
+    const padHint = controls.querySelector("#ctrl-pad-hint");
+    if (!padHint) return;
+    padHint.textContent =
+      (state.pencilMode
+        ? "Notes on — tap a number to mark"
+        : "Tap to place · hold for a note") + puffPadSuffix();
+  }
+
   function syncHintButton() {
     const hintBtn = controls.querySelector("#ctrl-hint");
-    if (!hintBtn || state.spectatorMode) return;
+    if (!hintBtn || state.spectatorMode) {
+      syncPuffNotesButton();
+      return;
+    }
     const garyFree = Math.max(0, state.garyWisdomBonus - state.hintsGaryUsed);
     const unlimited =
       state.hintsMax == null || !Number.isFinite(Number(state.hintsMax));
@@ -1134,17 +1162,15 @@ export function startThcokuGame(canvas, options = {}) {
     hintBtn.disabled = Boolean(state.hintInFlight);
     hintBtn.style.opacity = exhausted || state.hintInFlight ? "0.55" : "";
     if (exhausted) {
-      hintBtn.textContent = `💡 None left (${progress})`;
+      hintBtn.textContent = "💡 0";
       hintBtn.title = "No hints left this puzzle";
-      return;
-    }
-    if (garyFree > 0) {
-      hintBtn.textContent = `💡 Hint · free ×${garyFree}`;
+    } else if (garyFree > 0) {
+      hintBtn.textContent = `💡 ×${garyFree}`;
       hintBtn.title = `Gary's Wisdom — ${garyFree} free left, then paid hints (${state.hintSpongeCost} 🧽 each${unlimited ? "" : `, max ${state.hintsMax}`})`;
     } else {
       const cost = state.hintSpongeCost;
       const pocket = state.pocketSponges;
-      hintBtn.textContent = `💡 Hint · ${cost} 🧽`;
+      hintBtn.textContent = `💡 ${cost}🧽`;
       hintBtn.title = unlimited
         ? `Unlimited paid hints · ${cost} sponges each · ${pocket} in pocket · ${state.hintsUsed} used`
         : `${cost} sponges each · ${pocket} in pocket · ${progress}`;
@@ -1152,37 +1178,42 @@ export function startThcokuGame(canvas, options = {}) {
         hintBtn.style.opacity = "0.65";
       }
     }
+    hintBtn.setAttribute("aria-label", hintBtn.title || "Hint");
     syncPuffNotesButton();
   }
 
   function syncPuffNotesButton() {
     const btn = controls.querySelector("#ctrl-puffnotes");
     const meta = controls.querySelector("#ctrl-meta");
-    if (!btn) return;
-    const show =
-      !state.spectatorMode &&
-      !state.noHints &&
-      (state.puffNotesCharges > 0 || state.puffNotesUsed);
+    if (!btn) {
+      syncPadHint();
+      return;
+    }
+    const show = puffNotesVisible();
     btn.hidden = !show;
     if (meta) meta.classList.toggle("has-puff", show);
     btn.textContent = "📒";
-    if (!show) return;
+    if (!show) {
+      btn.removeAttribute("aria-label");
+      syncPadHint();
+      return;
+    }
     const need = state.puffNotesHintGate || 10;
     if (state.puffNotesUsed) {
       btn.disabled = true;
       btn.title = "Mrs. Puff already filled notes this puzzle";
       btn.style.opacity = "0.55";
-      return;
-    }
-    if (state.hintsUsed < need) {
+    } else if (state.hintsUsed < need) {
       btn.disabled = true;
       btn.title = `Mrs. Puff's Notes unlock after ${need} hints this puzzle (${state.hintsUsed}/${need})`;
       btn.style.opacity = "0.55";
-      return;
+    } else {
+      btn.disabled = Boolean(state.puffNotesInFlight);
+      btn.title = "Fill every empty cell with legal notes";
+      btn.style.opacity = state.puffNotesInFlight ? "0.55" : "";
     }
-    btn.disabled = Boolean(state.puffNotesInFlight);
-    btn.title = "Fill every empty cell with legal pencil notes";
-    btn.style.opacity = state.puffNotesInFlight ? "0.55" : "";
+    btn.setAttribute("aria-label", btn.title);
+    syncPadHint();
   }
 
   function syncControls() {
@@ -1192,13 +1223,7 @@ export function startThcokuGame(canvas, options = {}) {
       pencilBtn.classList.toggle("is-active", state.pencilMode);
       pencilBtn.title = state.pencilMode
         ? "Notes locked — tap a number to mark · tap again to unlock"
-        : "Hold a number for a pencil note · tap here to lock notes on";
-    }
-    const padHint = controls.querySelector("#ctrl-pad-hint");
-    if (padHint) {
-      padHint.textContent = state.pencilMode
-        ? "Notes on — tap a number to mark"
-        : "Tap to place · hold for a note";
+        : "Hold a number for a note · tap here to lock notes on";
     }
     const spec = state.spectatorMode;
     // Spectators only watch — hide the number pad and action rows entirely.
@@ -1760,7 +1785,7 @@ export function startThcokuGame(canvas, options = {}) {
       }
       saveUndoState();
       togglePencil(state.board, r, c, targetDigit);
-      state.status = "Mrs. Puff note";
+      state.status = "Note added";
       state.flashCell = [r, c];
       state.flashUntil = Date.now() + 200;
       playFx("pop");
@@ -2305,7 +2330,7 @@ export function startThcokuGame(canvas, options = {}) {
       }
     } else if (action === "pencil") {
       state.pencilMode = !state.pencilMode;
-      state.status = state.pencilMode ? "Pencil ON — Mrs. Puff mode" : "Pencil OFF";
+      state.status = state.pencilMode ? "Notes locked" : "Notes unlocked";
       syncControls();
       draw();
     }

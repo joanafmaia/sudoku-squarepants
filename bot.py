@@ -537,8 +537,7 @@ SHOP_BUNDLE_DISCOUNT = SHOP_PIN_DEAL_MULT  # backward-compatible alias
 
 SHOP_PAGE_SIZE = 11
 SHOP_BOOST_MAX_QTY = 10
-SHOP_BOOST_DEFAULT_QTY = 10
-MYSTERY_BOX_DEFAULT_QTY = 1
+SHOP_BOOST_DEFAULT_QTY = 1
 # 8 commons in a row → next box is at least Uncommon.
 MYSTERY_PITY_STREAK = 8
 MYSTERY_PITY_MIN_KEY = "uncommon"
@@ -4111,36 +4110,6 @@ MYSTERY_DUPE_SPONGES = {
     "epic": 100,
     "legendary": 150,
 }
-MYSTERY_RATTLE_LINES = (
-    "📦 *The box rattles…*",
-    "📦 *Mrs. Puff shakes it like a jelly…*",
-    "📦 *Please be the formula—*",
-    "📦 *Something's bouncing around in there…*",
-)
-MYSTERY_TEASE_LINES: dict[str, tuple[str, ...]] = {
-    "common": (
-        "🫧 A damp little rattle. Nothing fancy…?",
-        "🫧 The box smells like the fryer.",
-    ),
-    "uncommon": (
-        "🪸 A green shimmer through the cracks…",
-        "🪸 Ooh — that's not junk.",
-    ),
-    "rare": (
-        "💎 The box is humming. Blue light!",
-        "💎 Pearl would actually wait for this.",
-    ),
-    "epic": (
-        "👑 Purple sparks. Krabs is sweating.",
-        "👑 This one feels expensive.",
-    ),
-    "legendary": (
-        "🌌 THE BOX IS BLINDING— EVERYBODY LOOK!",
-        "🌌 Neptune himself is rattling this thing!",
-    ),
-}
-
-
 def mystery_rarity_for_cost(cost: int) -> dict:
     price = max(0, int(cost or 0))
     for rank, (key, label, emoji, cap, _weight, color) in enumerate(MYSTERY_RARITY_TIERS):
@@ -4333,36 +4302,6 @@ def _mystery_progress_line(drop: dict) -> str:
     if total > 1 and index > 0:
         return f"Box **{index}/{total}**"
     return ""
-
-
-def build_mystery_tease_embed(
-    drop: dict,
-    *,
-    mention: str | None = None,
-) -> discord.Embed:
-    key = str(drop.get("rarity") or "common")
-    emoji = drop.get("rarity_emoji") or "📦"
-    label = str(drop.get("rarity_label") or "Mystery")
-    color = discord.Color.from_str(str(drop.get("color") or "#FFE566"))
-    pool = MYSTERY_TEASE_LINES.get(key) or ("The box shivers.",)
-    tease = str(drop.get("tease") or random.choice(pool))
-    lines: list[str] = []
-    if mention:
-        lines.append(f"{mention} is cracking a box!")
-    progress = _mystery_progress_line(drop)
-    if progress:
-        lines.append(progress)
-    if drop.get("pity"):
-        lines.append("✨ **Pity popped** — at least Uncommon!")
-    lines.append(tease)
-    lines.append("\n*What's inside?*")
-    embed = discord.Embed(
-        title=f"{emoji} {label.upper()}…?",
-        description="\n".join(lines),
-        color=color,
-    )
-    embed.set_footer(text=f"{SPONGE} Bikini Bottom Sudoku  ·  I'm ready!")
-    return embed
 
 
 def build_mystery_reveal_embed(
@@ -4584,7 +4523,7 @@ def mystery_desk_embed(stats: dict) -> discord.Embed:
     embed.description = (
         f"Crack a **random pin** — new or duplicate, that's luck. "
         f"Dupes don't stack; Krabs tosses a few sponges back. "
-        f"Rarity first, then the pin, **in this channel**.\n\n"
+        f"The pin posts **in this channel** — no rattle.\n\n"
         f"💰 Pocket: **{pocket}** · **{format_sponges(unit)}** each\n"
         f"📚 Collection **{have} / {total}**"
         f"{f' · {opened} from boxes' if opened else ''}\n"
@@ -11262,38 +11201,34 @@ async def play_mystery_unwrap(
     *,
     mention: str,
     leftover_view: discord.ui.View | None = None,
+    message: discord.Message | None = None,
 ) -> discord.Message | None:
-    """Public rattle → rarity glow → pin, editing one channel message."""
-    rattle = f"{mention} {random.choice(MYSTERY_RATTLE_LINES)}"
+    """One public reveal. Extra boxes reuse the same message (Open next)."""
+    reveal = build_mystery_reveal_embed([drop], mention=mention)
+    if leftover_view is not None and message is not None:
+        leftover_view.message = message  # type: ignore[attr-defined]
+    if message is not None:
+        try:
+            await message.edit(content=None, embed=reveal, view=leftover_view)
+            return message
+        except discord.HTTPException:
+            pass
     msg: discord.Message | None = None
     channel = interaction.channel
     if channel is not None:
         try:
-            msg = await channel.send(rattle)
+            msg = await channel.send(embed=reveal, view=leftover_view)
         except discord.HTTPException:
             msg = None
     if msg is None:
         try:
-            msg = await interaction.followup.send(rattle, wait=True)
+            msg = await interaction.followup.send(
+                embed=reveal, view=leftover_view, wait=True
+            )
         except discord.HTTPException:
             return None
-    await asyncio.sleep(0.9)
-    tease = build_mystery_tease_embed(drop, mention=mention)
-    try:
-        await msg.edit(content=None, embed=tease)
-    except discord.HTTPException:
-        pass
-    await asyncio.sleep(1.15)
-    reveal = build_mystery_reveal_embed([drop], mention=mention)
     if leftover_view is not None:
         leftover_view.message = msg  # type: ignore[attr-defined]
-    try:
-        await msg.edit(content=None, embed=reveal, view=leftover_view)
-    except discord.HTTPException:
-        try:
-            await msg.edit(content=None, embed=reveal)
-        except discord.HTTPException:
-            pass
     return msg
 
 
@@ -11349,19 +11284,17 @@ class MysteryUnwrapView(discord.ui.View):
                 remaining=self.remaining,
                 mention=self.mention,
             )
-        for child in self.children:
-            child.disabled = True  # type: ignore[attr-defined]
-        if not interaction.response.is_done():
-            try:
-                await interaction.response.edit_message(view=self)
-            except discord.HTTPException:
-                try:
-                    await interaction.response.defer()
-                except discord.HTTPException:
-                    pass
-        await play_mystery_unwrap(
-            interaction, drop, mention=self.mention, leftover_view=leftover
-        )
+        target = self.message or interaction.message
+        if leftover is not None and target is not None:
+            leftover.message = target
+        reveal = build_mystery_reveal_embed([drop], mention=self.mention)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.edit_message(embed=reveal, view=leftover)
+            elif target is not None:
+                await target.edit(embed=reveal, view=leftover)
+        except discord.HTTPException:
+            pass
         self.stop()
 
 
@@ -11371,17 +11304,10 @@ async def present_mystery_drops(
     *,
     owner_id: int,
 ) -> None:
-    """Public rattle → rarity tease → pin. Extra boxes wait behind Open next."""
+    """Public pin reveal. Extra boxes wait behind Open next on the same message."""
     if not drops:
         return
     who = interaction.user.mention
-    try:
-        await interaction.followup.send(
-            "👀 Your Mystery Box is opening **in chat**…",
-            ephemeral=True,
-        )
-    except discord.HTTPException:
-        pass
     leftover = None
     if len(drops) > 1:
         leftover = MysteryUnwrapView(
@@ -11628,13 +11554,6 @@ class KrustyShopView(discord.ui.View):
         return self.kind == "pins" and self.filt == "owned"
 
     def _reset_qty(self) -> None:
-        if self.kind != "boosts":
-            self.qty = 1
-            return
-        selected = self.selected_item()
-        if selected and selected.get("id") == "mystery_box":
-            self.qty = MYSTERY_BOX_DEFAULT_QTY
-            return
         self.qty = SHOP_BOOST_DEFAULT_QTY
 
     def shop_attachments(self) -> list[discord.File]:
@@ -12869,7 +12788,7 @@ def build_patch_notes_embed(*, mentions: dict[str, str] | None = None) -> discor
     embed.add_field(
         name="📦 Mystery Box",
         value=(
-            f"{cmd('mystery')} — the desk: **public** unwrap (rattle → rarity → pin), "
+            f"{cmd('mystery')} — the desk: **public** unwrap (one reveal, no rattle), "
             "album of what you've pulled, collection like **30/100**.\n"
             "Expensive pins stay scarce (legendary **1%**). Duplicates **can** drop — that's luck; "
             "no second sticker, a few sponges back. "
@@ -13974,12 +13893,13 @@ async def help_cmd(interaction: discord.Interaction):
     )
     embed.add_field(name="① Cell", value="Tap a square on the board", inline=True)
     embed.add_field(name="② Number", value="1–9 on the pad", inline=True)
-    embed.add_field(name="③ Edit", value="Clear cell · Reset board · Notes", inline=True)
+    embed.add_field(name="③ Edit", value="Clear · Reset · Lock notes", inline=True)
     embed.add_field(
         name=f"{JELLY} Rules",
         value=(
             "Red cells = clash in row / column / box.\n"
-            "**Pencil mode** = draft notes · solve to earn XP in chat."
+            "Tap a number to place · **hold** for a note · **Lock notes** keeps notes on.\n"
+            "📒 Mrs. Puff fills empty cells after **10 hints** (`/shop`)."
         ),
         inline=False,
     )
