@@ -52,6 +52,11 @@ GLOBAL_API_BLOCK_STREAK_WINDOW_SEC = float(
 GLOBAL_API_RECENT_BLOCK_BOOT_SEC = float(
     os.getenv("DISCORD_GLOBAL_BLOCK_RECENT_BOOT_S", "7200") or 7200
 )
+# Failed pre-login GET /gateway wait. Do not bump the 3h streak — login never ran.
+GLOBAL_API_PROBE_RETRY_SEC = float(
+    os.getenv("DISCORD_GLOBAL_BLOCK_PROBE_RETRY_S", "1800") or 1800
+)
+DISCORD_GATEWAY_PROBE_URL = "https://discord.com/api/v10/gateway"
 _discord_api_gate_until = 0.0
 _discord_api_http_until = 0.0
 _discord_api_gate_detail = ""
@@ -287,7 +292,12 @@ def load_discord_api_gate() -> float:
         print(
             f"Loaded Discord REST hangover ({detail}); "
             f"slash/watch suppressed http≈{http_left:.0f}s probe={int(needs_probe)}. "
-            "Login allowed; do not /shop until REST probe ok."
+            "Login blocked until pre-login REST probe ok."
+        )
+        set_discord_gateway_status(
+            "rate_limited",
+            retry_after_s=http_left,
+            detail=detail or "prelogin_probe",
         )
     return remaining
 
@@ -346,6 +356,65 @@ def note_discord_api_block(
         detail=persist_detail,
     )
     return remaining
+
+
+def note_discord_probe_retry(
+    wait_s: float | None = None,
+    *,
+    detail: str = "prelogin_probe",
+) -> float:
+    """Keep login/slash down after a failed pre-login probe. Do not bump streak."""
+    global _discord_api_gate_until, _discord_api_http_until
+    global _discord_api_gate_detail, _discord_api_needs_probe
+    now = time.time()
+    wait_s = max(60.0, float(wait_s or GLOBAL_API_PROBE_RETRY_SEC))
+    until = now + wait_s
+    with _discord_api_gate_lock:
+        _discord_api_gate_until = max(_discord_api_gate_until, until)
+        _discord_api_http_until = max(_discord_api_http_until, until)
+        _discord_api_gate_detail = detail
+        _discord_api_needs_probe = True
+        remaining = max(0.0, _discord_api_gate_until - now)
+    _persist_discord_api_gate()
+    set_discord_gateway_status(
+        "rate_limited",
+        retry_after_s=remaining,
+        detail=detail,
+    )
+    return remaining
+
+
+def probe_discord_gateway() -> bool:
+    """True if this IP can reach Discord REST. No bot token, no static_login."""
+    req = urllib.request.Request(
+        DISCORD_GATEWAY_PROBE_URL,
+        headers={
+            "User-Agent": (
+                "SudokuSquarepants (https://github.com/joanafmaia/sudoku-squarepants)"
+            ),
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            status = int(getattr(resp, "status", 200) or 200)
+            body = resp.read(2048)
+        lower = body.lower()
+        if status != 200 or b"<html" in lower or b"cf-error" in lower:
+            print(f"Discord pre-login probe HTTP {status} (not reachable)")
+            return False
+        data = json.loads(body.decode("utf-8", errors="replace"))
+        if isinstance(data, dict) and data.get("url"):
+            return True
+        print("Discord pre-login probe: unexpected JSON")
+        return False
+    except urllib.error.HTTPError as exc:
+        print(f"Discord pre-login probe HTTPError {exc.code}")
+        return False
+    except Exception as exc:  # noqa: BLE001
+        print(f"Discord pre-login probe error: {exc}")
+        return False
 
 
 def mark_discord_rest_healthy() -> None:
