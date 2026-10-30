@@ -14673,6 +14673,148 @@ async def setstreak_cmd(
     )
 
 
+def find_players_by_name(
+    data: dict, needle: str, *, guild_id: int | None = None
+) -> list[tuple[int, int, dict]]:
+    q = (needle or "").strip().casefold()
+    hits: list[tuple[int, int, dict]] = []
+    if not q:
+        return hits
+    for gkey, gstats in list(data.items()):
+        if not str(gkey).isdigit() or not isinstance(gstats, dict):
+            continue
+        gid = int(gkey)
+        if guild_id is not None and gid != guild_id:
+            continue
+        for uid, stats in iter_players(gstats):
+            name = str(stats.get("name") or "")
+            if q in name.casefold():
+                hits.append((gid, int(uid), stats))
+    return hits
+
+
+def move_player_profile(
+    data: dict,
+    guild_id: int,
+    from_id: int,
+    to_id: int,
+    *,
+    new_name: str,
+) -> dict:
+    """Copy sponges/XP/pins from a locked Discord id onto a new account."""
+    if from_id == to_id:
+        return {"ok": False, "message": "Source and target are the same id."}
+    gstats = guild_stats(data, guild_id)
+    src, dst = str(from_id), str(to_id)
+    raw = gstats.get(src)
+    if not isinstance(raw, dict) or not src.isdigit():
+        return {"ok": False, "message": f"No profile for `{from_id}` in this server."}
+    payload = deepcopy(raw)
+    payload["name"] = new_name or payload.get("name") or "Unknown"
+    gstats[dst] = payload
+    del gstats[src]
+    daily = get_guild_daily(data, guild_id)
+    results = daily.get("results")
+    if isinstance(results, dict) and src in results:
+        results[dst] = results.pop(src)
+    return {
+        "ok": True,
+        "xp": int(payload.get("xp") or 0),
+        "coins": int(payload.get("coins") or 0),
+        "wins": int(payload.get("wins") or payload.get("activity_wins") or 0),
+        "name": payload.get("name"),
+    }
+
+
+@admin_group.command(
+    name="findplayer",
+    description="Look up a stored player id by name (admin)",
+)
+@app_commands.describe(name="Name fragment, e.g. joanafsmaia")
+async def findplayer_cmd(interaction: discord.Interaction, name: str):
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+    if not await require_bot_admin(interaction):
+        return
+    hits = find_players_by_name(bot.data, name, guild_id=interaction.guild.id)
+    if not hits:
+        hits = find_players_by_name(bot.data, name)
+    if not hits:
+        await interaction.response.send_message(
+            f"No stored player matching `{name}`.",
+            ephemeral=True,
+        )
+        return
+    lines = []
+    for gid, uid, stats in hits[:15]:
+        lines.append(
+            f"`{uid}` · **{stats.get('name') or 'Unknown'}** · "
+            f"{format_xp(stats.get('xp') or 0)} · "
+            f"{format_sponges(stats.get('coins') or 0)}"
+            f"{'' if gid == interaction.guild.id else f' · guild `{gid}`'}"
+        )
+    await interaction.response.send_message(
+        f"{BUBBLE} Matches for `{name}`:\n" + "\n".join(lines),
+        ephemeral=True,
+    )
+
+
+@admin_group.command(
+    name="moveplayer",
+    description="Move all stats from a locked Discord id onto another account",
+)
+@app_commands.describe(
+    from_id="Old Discord user ID (Developer Mode → Copy User ID)",
+    to="New Discord account that should receive XP, sponges, pins",
+)
+async def moveplayer_cmd(
+    interaction: discord.Interaction,
+    from_id: str,
+    to: discord.Member,
+):
+    if interaction.guild is None:
+        await interaction.response.send_message("Server only.", ephemeral=True)
+        return
+    if not await require_bot_admin(interaction):
+        return
+    try:
+        src = int(from_id.strip())
+    except (TypeError, ValueError):
+        await interaction.response.send_message(
+            "from_id must be the numeric Discord user id.",
+            ephemeral=True,
+        )
+        return
+    result = move_player_profile(
+        bot.data,
+        interaction.guild.id,
+        src,
+        to.id,
+        new_name=to.display_name,
+    )
+    if not result.get("ok"):
+        await interaction.response.send_message(result["message"], ephemeral=True)
+        return
+    save_data(bot.data)
+    try:
+        await match_store.save_leaderboard(bot.data)
+    except Exception as exc:  # noqa: BLE001
+        print(f"moveplayer save_leaderboard failed: {exc}")
+        await interaction.response.send_message(
+            "Moved in memory but Mongo save failed — try again.",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.send_message(
+        f"{BUBBLE} Moved `{src}` → {to.mention} "
+        f"(**{result['name']}** · {format_xp(result['xp'])} · "
+        f"{format_sponges(result['coins'])} · {result['wins']} wins).\n"
+        f"The old id no longer has a profile on this server.",
+        ephemeral=True,
+    )
+
+
 @admin_group.command(
     name="clearsolvetime",
     description="Clear a player's career best/longest solve times (admin)",
